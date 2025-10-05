@@ -1,0 +1,146 @@
+import React from "react";
+import { Text, View, StyleSheet, TouchableOpacity, Image } from "react-native";
+
+export default function Title() {
+  return (
+    <View style={styles.container}>
+      {/* Первый контейнер: логотип, заголовок, линия и подзаголовок */}
+      <View style={styles.topContainer}>
+        <View style={styles.headerContent}>
+          <Image
+            source={require("@/assets/images/icon.png")}
+            style={styles.logo}
+            resizeMode="contain"
+          />
+          
+          <View style={styles.textContent}>
+            <Text style={styles.titleText}>EatWisely</Text>
+            <View style={styles.divider} />
+            <Text style={styles.subtitleText}>
+              Ваш персональный гид по здоровому питанию!
+            </Text>
+          </View>
+        </View>
+      </View>
+      
+      {/* Второй контейнер: описание по центру */}
+      <View style={styles.middleContainer}>
+        <Text style={styles.descriptionText}>
+          Создавайте сбалансированные рационы на неделю всего за пару минут.
+        </Text>
+      </View>
+      
+      {/* Третий контейнер: кнопка снизу */}
+      <View style={styles.bottomContainer}>
+        <TouchableOpacity 
+          style={styles.button}
+          onPress={() => console.log('Кнопка нажата!')}
+        >
+          <Text style={styles.buttonText}>Начать!</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    paddingHorizontal: 20,
+    backgroundColor: "#C2DAE2"
+  },
+  // Первый контейнер - сверху
+  topContainer: {
+    flex: 0.4, // Занимает 40% пространства
+    justifyContent: "flex-start",
+    paddingTop: 150, // Отступ сверху
+  },
+  headerContent: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    width: "100%",
+  },
+  logo: {
+    width: 150,
+    height: 150,
+    marginRight: 20,
+  },
+  textContent: {
+    flex: 1,
+    justifyContent: "flex-start",
+  },
+  titleText: {
+    color: 'black',
+    fontFamily: 'Playfair Display Regular', // Используем правильное имя
+    fontSize: 40,
+    fontWeight: 'normal', // Убираем fontWeight т.к. используем конкретный файл
+    textAlign: 'center',
+    marginBottom: 10,
+  },
+  subtitleText: {
+    color: 'black',
+    fontFamily: 'Playfair Display Regular',
+    fontSize: 18,
+    textAlign: 'center',
+    lineHeight: 24,
+    marginTop: 10,
+  },
+  divider: {
+    width: "100%",
+    height: 3,
+    backgroundColor: "#000",
+    borderRadius: 3,
+  },
+  // Второй контейнер - по центру
+  middleContainer: {
+    flex: 0.3, // Занимает 30% пространства
+    justifyContent: "center",
+    alignItems: "center",
+    paddingBottom: 50
+  },
+  descriptionText: {
+    color: 'black',
+    fontFamily: 'Playfair Display Regular',
+    fontSize: 16,
+    textAlign: 'center',
+    lineHeight: 20,
+    width: "100%",
+  },
+  // Третий контейнер - снизу
+  bottomContainer: {
+    flex: 0.3, // Занимает 30% пространства
+    justifyContent: "flex-end",
+    alignItems: "center",
+    paddingBottom: 150, // Отступ снизу
+  },
+  button: {
+    backgroundColor: '#9BDF11',
+    borderRadius: 75,
+    paddingVertical: 15,
+    paddingHorizontal: 40,
+    minWidth: 200,
+    alignItems: 'center',
+    justifyContent: 'center',
+    // Обводка (граница)
+    borderWidth: 2,
+    borderColor: '#C2DAE2', 
+    
+    // Тень для iOS
+    shadowColor: '#000',
+    shadowOffset: {
+      width: 0,
+      height: 4,
+    },
+    shadowOpacity: 0.3,
+    shadowRadius: 5,
+    
+    // Тень для Android
+    elevation: 8,
+  },
+  buttonText: {
+    color: 'black',
+    fontFamily: 'Playfair Display Regular',
+    fontSize: 18,
+    fontWeight: 'normal',
+  }
+});
