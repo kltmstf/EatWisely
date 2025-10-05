@@ -1,7 +1,9 @@
 import React from "react";
 import { Text, View, StyleSheet, TouchableOpacity, Image } from "react-native";
+import { useRouter } from "expo-router";
 
 export default function Title() {
+    const router = useRouter();
   return (
     <View style={styles.container}>
       {/* Первый контейнер: логотип, заголовок, линия и подзаголовок */}
@@ -34,7 +36,7 @@ export default function Title() {
       <View style={styles.bottomContainer}>
         <TouchableOpacity 
           style={styles.button}
-          onPress={() => console.log('Кнопка нажата!')}
+          onPress={() => router.push('/welcome')}
         >
           <Text style={styles.buttonText}>Начать!</Text>
         </TouchableOpacity>
@@ -63,7 +65,7 @@ const styles = StyleSheet.create({
   logo: {
     width: 150,
     height: 150,
-    marginRight: 20,
+    marginRight: 10,
   },
   textContent: {
     flex: 1,
@@ -84,6 +86,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     lineHeight: 24,
     marginTop: 10,
+    width: "100%"
   },
   divider: {
     width: "100%",
@@ -101,10 +104,10 @@ const styles = StyleSheet.create({
   descriptionText: {
     color: 'black',
     fontFamily: 'Playfair Display Regular',
-    fontSize: 16,
+    fontSize: 18,
     textAlign: 'center',
     lineHeight: 20,
-    width: "100%",
+    width: "80%",
   },
   // Третий контейнер - снизу
   bottomContainer: {
