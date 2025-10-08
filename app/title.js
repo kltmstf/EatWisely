@@ -10,7 +10,7 @@ export default function Title() {
       <View style={styles.topContainer}>
         <View style={styles.headerContent}>
           <Image
-            source={require("@/assets/images/icon.png")}
+            source={require("@/assets/images/logo.png")}
             style={styles.logo}
             resizeMode="contain"
           />
@@ -66,6 +66,7 @@ const styles = StyleSheet.create({
     width: 150,
     height: 150,
     marginRight: 10,
+
   },
   textContent: {
     flex: 1,
@@ -73,11 +74,11 @@ const styles = StyleSheet.create({
   },
   titleText: {
     color: 'black',
-    fontFamily: 'Playfair Display Regular', // Используем правильное имя
+    fontFamily: 'Playfair Display Bold', // Используем правильное имя
     fontSize: 40,
     fontWeight: 'normal', // Убираем fontWeight т.к. используем конкретный файл
     textAlign: 'center',
-    marginBottom: 10,
+    marginBottom: 5,
   },
   subtitleText: {
     color: 'black',
@@ -85,7 +86,7 @@ const styles = StyleSheet.create({
     fontSize: 18,
     textAlign: 'center',
     lineHeight: 24,
-    marginTop: 10,
+    marginTop: 5,
     width: "100%"
   },
   divider: {
@@ -99,7 +100,6 @@ const styles = StyleSheet.create({
     flex: 0.3, // Занимает 30% пространства
     justifyContent: "center",
     alignItems: "center",
-    paddingBottom: 50
   },
   descriptionText: {
     color: 'black',

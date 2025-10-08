@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   View, 
   Text, 
@@ -7,7 +7,10 @@ import {
   TouchableOpacity, 
   KeyboardAvoidingView,
   Platform,
-  ScrollView
+  ScrollView,
+  Image,
+  BackHandler,
+  Alert
 } from 'react-native';
 import { useRouter } from 'expo-router';
 
@@ -15,6 +18,19 @@ export default function Login() {
   const router = useRouter();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+
+  useEffect(() => {
+    const backHandler = BackHandler.addEventListener(
+      'hardwareBackPress',
+      () => {
+        // Переходим на страницу title вместо welcome
+        router.push('/title');
+        return true; // Предотвращаем стандартное поведение
+      }
+    );
+
+    return () => backHandler.remove();
+  }, []);
 
   const handleLogin = () => {
     // Здесь будет логика авторизации
@@ -34,34 +50,67 @@ export default function Login() {
       style={styles.container}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
-      <ScrollView contentContainerStyle={styles.scrollContainer}>
-        <View style={styles.header}>
-          <Text style={styles.title}>Добро пожаловать в EatWisely!</Text>
-          <Text style={styles.subtitle}>
-            Войдите, чтобы получить персонализированный рацион на неделю.
-          </Text>
+      <ScrollView 
+        contentContainerStyle={styles.scrollContainer}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* Первый контейнер: изображение и текст */}
+        <View style={styles.headerContainer}>
+          <Image
+            source={require("@/assets/images/logo-circles.png")}
+            style={styles.headerImage}
+            resizeMode="contain"
+          />
+          <View style={styles.headerTextContainer}>
+            <Text style={styles.title}>Добро пожаловать в EatWisely!</Text>
+            <Text style={styles.subtitle}>
+              Войдите, чтобы получить персонализированный рацион на неделю.
+            </Text>
+          </View>
         </View>
 
-        <View style={styles.form}>
-          <Text style={styles.label}>Email</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="Введите ваш email"
-            value={email}
-            onChangeText={setEmail}
-            keyboardType="email-address"
-            autoCapitalize="none"
-          />
+        {/* Второй контейнер: форма ввода данных */}
+        <View style={styles.formContainer}>
+          {/* Поле Email с иконкой */}
+          <View style={styles.inputContainer}>
+            <View style={styles.inputWithIcon}>
+              <Image
+                source={require("@/assets/images/email-icon.png")}
+                style={styles.inputIcon}
+                resizeMode="contain"
+              />
+              <TextInput
+                style={styles.input}
+                placeholder="Email"
+                placeholderTextColor="#666"
+                value={email}
+                onChangeText={setEmail}
+                keyboardType="email-address"
+                autoCapitalize="none"
+              />
+            </View>
+          </View>
 
-          <Text style={styles.label}>Пароль</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="Введите ваш пароль"
-            value={password}
-            onChangeText={setPassword}
-            secureTextEntry
-          />
+          {/* Поле Пароль с иконкой */}
+          <View style={styles.inputContainer}>
+            <View style={styles.inputWithIcon}>
+              <Image
+                source={require("@/assets/images/password-icon.png")}
+                style={styles.inputIcon}
+                resizeMode="contain"
+              />
+              <TextInput
+                style={styles.input}
+                placeholder="Пароль"
+                placeholderTextColor="#666"
+                value={password}
+                onChangeText={setPassword}
+                secureTextEntry
+              />
+            </View>
+          </View>
 
+          {/* Кнопка входа */}
           <TouchableOpacity 
             style={styles.loginButton}
             onPress={handleLogin}
@@ -70,11 +119,15 @@ export default function Login() {
           </TouchableOpacity>
         </View>
 
-        <View style={styles.footer}>
-          <TouchableOpacity onPress={handleForgotPassword}>
+        {/* Третий контейнер: восстановление пароля - ВСЯ НАДПИСЬ КЛИКАБЕЛЬНА */}
+        <View style={styles.footerContainer}>
+          <TouchableOpacity 
+            style={styles.forgotPasswordContainer}
+            onPress={handleForgotPassword}
+          >
             <Text style={styles.link}>Забыли пароль?</Text>
+            <Text style={styles.recoveryText}>Восстановите его здесь.</Text>
           </TouchableOpacity>
-          <Text style={styles.recoveryText}>Восстановите его здесь.</Text>
         </View>
       </ScrollView>
     </KeyboardAvoidingView>
@@ -88,70 +141,122 @@ const styles = StyleSheet.create({
   },
   scrollContainer: {
     flexGrow: 1,
-    justifyContent: 'center',
     paddingHorizontal: 20,
-    paddingVertical: 40,
+    paddingBottom: 20, // Добавляем отступ снизу чтобы контент не залезал под навигацию
   },
-  header: {
+  // Первый контейнер - изображение и текст
+  headerContainer: {
+    flex: 0.35, // Уменьшили для компактности
+    justifyContent: "center",
     alignItems: 'center',
-    marginBottom: 40,
+    paddingTop: 20, // Уменьшили отступ сверху
+    paddingBottom: 20,
+  },
+  headerImage: {
+    width: 280, // Немного уменьшили
+    height: 280,
+  },
+  headerTextContainer: {
+    alignItems: 'center',
+    marginTop: 20,
   },
   title: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    textAlign: 'center',
-    marginBottom: 10,
+    fontFamily: 'Playfair Display Bold',
+    fontSize: 20,
+    fontWeight: 'normal',
     color: '#000',
+    marginBottom: 5,
+    textAlign: 'center',
   },
   subtitle: {
+    fontFamily: 'Playfair Display Regular',
     fontSize: 16,
+    color: '#000',
+    lineHeight: 20,
     textAlign: 'center',
-    color: '#000',
-    lineHeight: 22,
   },
-  form: {
-    marginBottom: 30,
+  // Второй контейнер - форма ввода данных
+  formContainer: {
+    flex: 0.45, // Увеличили для формы
+    justifyContent: 'center',
+    marginBottom: 60, // Уменьшили отступ
   },
-  label: {
-    fontSize: 16,
-    fontWeight: '600',
-    marginBottom: 8,
-    color: '#000',
+  inputContainer: {
+    marginBottom: 20, // Уменьшили отступ между полями
+  },
+  inputWithIcon: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#C2DAE2',
+    borderRadius: 75,
+    borderWidth: 4,
+    borderColor: '#6A9AA9',
+    paddingHorizontal: 15,
+    paddingVertical: 5,
+  },
+  inputIcon: {
+    width: 20,
+    height: 20,
+    marginRight: 10,
+    tintColor: '#000',
   },
   input: {
-    backgroundColor: '#fff',
-    borderRadius: 10,
-    padding: 15,
-    marginBottom: 20,
+    flex: 1,
     fontSize: 16,
-    borderWidth: 1,
-    borderColor: '#ddd',
+    color: '#000',
+    paddingVertical: 12,
+    fontFamily: 'Playfair Display Regular',
   },
   loginButton: {
     backgroundColor: '#9BDF11',
-    borderRadius: 25,
+    borderRadius: 75,
     paddingVertical: 15,
+    paddingHorizontal: 40,
+    minWidth: 200,
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 10,
+    marginTop: 15, // Уменьшили отступ
+    borderWidth: 2,
+    borderColor: '#C2DAE2', 
+    shadowColor: '#000',
+    shadowOffset: {
+      width: 0,
+      height: 4,
+    },
+    shadowOpacity: 0.3,
+    shadowRadius: 5,
+    elevation: 8,
+    alignSelf: 'center',
   },
   loginButtonText: {
-    color: 'black',
+    fontFamily: 'Playfair Display Regular',
     fontSize: 18,
-    fontWeight: 'bold',
+    fontWeight: 'normal',
+    color: 'black',
   },
-  footer: {
+  // Третий контейнер - восстановление пароля
+  footerContainer: {
+    flex: 0.2, // Минимальное пространство
     alignItems: 'center',
+    justifyContent: 'flex-start',
+  },
+  forgotPasswordContainer: {
+    alignItems: 'center',
+    padding: 10, // Добавляем padding для удобства нажатия
   },
   link: {
-    color: '#007AFF',
+    fontFamily: 'Playfair Display Regular',
+    color: '#001226',
     fontSize: 16,
-    fontWeight: '600',
-    marginBottom: 5,
+    fontWeight: 'normal',
+    marginBottom: 0,
+    textAlign: 'center',
   },
   recoveryText: {
+    fontFamily: 'Playfair Display Regular',
     fontSize: 14,
-    color: '#666',
+    color: '#001226',
     textAlign: 'center',
+    
   },
 });

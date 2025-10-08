@@ -1,42 +1,56 @@
 import React, { useEffect } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, Image, BackHandler } from 'react-native';
 import { useRouter } from 'expo-router';
 
 export default function Welcome() {
   const router = useRouter();
 
+  // 🔧 ОБРАБОТКА КНОПКИ "НАЗАД" - добавляем этот useEffect
+  useEffect(() => {
+    const backHandler = BackHandler.addEventListener(
+      'hardwareBackPress',
+      () => {
+        router.push('/title'); // Переход на страницу title
+        return true;
+      }
+    );
+
+    return () => backHandler.remove();
+  }, []);
+
   useEffect(() => {
     const timer = setTimeout(() => {
       console.log('Автоматический переход на login...');
       router.push('/login');
-    }, 3000);
+    }, 1000);
 
-    return () => clearTimeout(timer);
+    return () => clearTimeout(timer);           
   }, []);
-
-  const handlePress = () => {
-    console.log('Ручной переход на login...');
-    router.push('/login');
-  };
 
   return (
     <View style={styles.container}>
-      <View style={styles.content}>
-        <Text style={styles.welcomeText}>
-          Добро пожаловать в EatWisely!
-        </Text>
-        
-        <Text style={styles.subText}>
-          ♂
-        </Text>
+      {/* Первый контейнер: изображение сверху */}
+      <View style={styles.topContainer}>
+        <Image
+          source={require("@/assets/images/logo-circles.png")}
+          style={styles.topImage}
+          resizeMode="contain"
+        />
       </View>
 
-      <TouchableOpacity 
-        style={styles.button}
-        onPress={handlePress}
-      >
-        <Text style={styles.buttonText}>Продолжить</Text>
-      </TouchableOpacity>
+      {/* Второй контейнер: текст и смайл по центру */}
+      <View style={styles.middleContainer}>
+        <View style={styles.textWithSmile}>
+          <Text style={styles.welcomeText}>
+            Добро пожаловать в EatWisely!
+          </Text>
+          <Image
+            source={require("@/assets/images/people-icon.png")}
+            style={styles.smileImage}
+            resizeMode="contain"
+          />
+        </View>
+      </View>
     </View>
   );
 }
@@ -44,40 +58,42 @@ export default function Welcome() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
     backgroundColor: '#C2DAE2',
     paddingHorizontal: 20,
   },
-  content: {
-    alignItems: 'center',
-    marginBottom: 50,
+  // Первый контейнер - изображение сверху
+  topContainer: {
+    flex: 0.15,
+    justifyContent: "flex-start",
+    alignItems: "center",
+    paddingTop: 40,
+  },
+  topImage: {
+    width: 280,
+    height: 280,
+  },
+  // Второй контейнер - текст и смайл по центру
+  middleContainer: {
+    flex: 0.75,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  textWithSmile: {
+    flexDirection: "row",
+    alignItems: "baseline",
+    justifyContent: "center",
+    flexWrap: "wrap",
   },
   welcomeText: {
+    fontFamily: 'Playfair Display Regular',
     fontSize: 28,
-    fontWeight: 'bold',
+    fontWeight: 'normal',
     textAlign: 'center',
-    marginBottom: 20,
     color: '#000',
   },
-  subText: {
-    fontSize: 40,
-    textAlign: 'center',
-  },
-  button: {
-    backgroundColor: '#9BDF11',
-    borderRadius: 25,
-    paddingVertical: 15,
-    paddingHorizontal: 40,
-    minWidth: 200,
-    alignItems: 'center',
-    justifyContent: 'center',
-    position: 'absolute',
-    bottom: 100,
-  },
-  buttonText: {
-    color: 'black',
-    fontSize: 18,
-    fontWeight: 'bold',
+  smileImage: {
+    width: 30,
+    height: 30,
+    marginLeft: 5,
   },
 });

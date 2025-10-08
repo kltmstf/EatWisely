@@ -11,6 +11,8 @@ export default function RootLayout() {
   const [fontsLoaded, error] = useFonts({
     'Playfair Display Regular': require('@/assets/fonts/PlayfairDisplay.ttf'),
     'Playfair Display Italic': require('@/assets/fonts/PlayfairDisplay-Italic.ttf'),
+    'Playfair Display Bold': require('@/assets/fonts/PlayfairDisplay-Bold.ttf'),
+    'Playfair Display BoldItalic': require('@/assets/fonts/PlayfairDisplay-BoldItalic.ttf'),
   });
 
   useEffect(() => {
@@ -26,10 +28,11 @@ export default function RootLayout() {
   return (
     <Stack>
       <Stack.Screen name="index" options={{ headerShown: false }} />
+      <Stack.Screen name="title" options={{ headerShown: false }} />
       <Stack.Screen name="welcome" options={{ headerShown: false }} />
       <Stack.Screen name="login" options={{ headerShown: false }} />
       <Stack.Screen name="home" options={{ headerShown: false }} />
     </Stack>
-    
+
   );
 }
