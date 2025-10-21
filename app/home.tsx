@@ -1,3 +1,4 @@
+// app/home.tsx
 import React, { useState } from "react";
 import {
   Image,
@@ -9,10 +10,12 @@ import {
   TouchableOpacity,
   View
 } from "react-native";
+import { useRouter } from "expo-router";
 import BottomNav from "../components/BottomNav";
-import ProfileMenu from "../components/ProfileMenu"; // Импортируем компонент меню
+import ProfileMenu from "../components/ProfileMenu";
 
 export default function Home() {
+  const router = useRouter();
   const [meals, setMeals] = useState([
     {
       category: "Завтрак",
@@ -76,8 +79,20 @@ export default function Home() {
     setMeals(updatedMeals);
   };
 
-  const navigateToMealPage = (mealCategory: string) => {
-    console.log(`Переход на страницу: ${mealCategory}`);
+  // Единая функция навигации
+  const navigateToMealPage = (mealIndex: number) => {
+    const meal = meals[mealIndex];
+    console.log(`Переход на страницу: ${meal.category}`);
+    
+    router.push({
+      pathname: "/meal",
+      params: {
+        mealName: meal.name,
+        category: meal.category,
+        mealIndex: mealIndex.toString(),
+        initialBookmarked: meal.bookmarked.toString(),
+      }
+    });
   };
 
   const handleProfileMenu = () => {
@@ -87,13 +102,9 @@ export default function Home() {
   const handleMenuAction = (action: string) => {
     console.log(`Выбрано действие: ${action}`);
     
-    // Здесь можно добавить навигацию или другие действия
     switch (action) {
-      case 'profile':
-        console.log('Переход в профиль');
-        break;
       case 'settings':
-        console.log('Переход в настройки приема');
+        console.log('Переход в настройки профиля');
         break;
       case 'logout':
         console.log('Выход из аккаунта');
@@ -140,6 +151,7 @@ export default function Home() {
           onClose={() => setProfileMenuVisible(false)}
           onMenuAction={handleMenuAction}
           userName={userData.name}
+          userImage={require('@/assets/images/people-icon.png')}
         />
 
         <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
@@ -167,7 +179,7 @@ export default function Home() {
               <View style={styles.mealColumn}>
                 <TouchableOpacity 
                   style={styles.mealCategoryHeader}
-                  onPress={() => navigateToMealPage(meals[0].category)}
+                  onPress={() => navigateToMealPage(0)}
                 >
                   <Text style={styles.mealCategoryTitle}>{meals[0].category}</Text>
                   <Image 
@@ -234,7 +246,7 @@ export default function Home() {
               <View style={styles.mealColumn}>
                 <TouchableOpacity 
                   style={styles.mealCategoryHeader}
-                  onPress={() => navigateToMealPage(meals[1].category)}
+                  onPress={() => navigateToMealPage(1)}
                 >
                   <Text style={styles.mealCategoryTitle}>{meals[1].category}</Text>
                   <Image 
@@ -304,7 +316,7 @@ export default function Home() {
               <View style={styles.mealColumn}>
                 <TouchableOpacity 
                   style={styles.mealCategoryHeader}
-                  onPress={() => navigateToMealPage(meals[2].category)}
+                  onPress={() => navigateToMealPage(2)}
                 >
                   <Text style={styles.mealCategoryTitle}>{meals[2].category}</Text>
                   <Image 
@@ -371,7 +383,7 @@ export default function Home() {
               <View style={styles.mealColumn}>
                 <TouchableOpacity 
                   style={styles.mealCategoryHeader}
-                  onPress={() => navigateToMealPage(meals[3].category)}
+                  onPress={() => navigateToMealPage(3)}
                 >
                   <Text style={styles.mealCategoryTitle}>{meals[3].category}</Text>
                   <Image 
