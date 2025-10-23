@@ -8,18 +8,26 @@ import {
   StyleSheet,
   Image
 } from 'react-native';
-
-// Импортируем иконки (замените на реальные пути к вашим иконкам)
-const BackIcon = require('@/assets/images/back-icon.png'); // Замените на реальный путь
-const SettingIcon = require('@/assets/images/settings-icon.png'); // Замените на реальный путь
-const SupportIcon = require('@/assets/images/support-icon.png'); // Замените на реальный путь
+import { useRouter } from 'expo-router';
 
 const ProfileMenu = ({ visible, onClose, onMenuAction, userName = "Пользователь", userImage }) => {
+  const router = useRouter();
+  
+
   const handleMenuAction = (action) => {
     onMenuAction(action);
-    if (action === 'logout') {
-      // Здесь должна быть логика перехода на страницу приветствия
-      // Например: navigation.navigate('Welcome')
+    
+    switch (action) {
+      case 'settings':
+        console.log('Переход в настройки профиля');
+        router.push('/profile-settings');
+        break;
+      case 'logout':
+        console.log('Выход из аккаунта');
+        break;
+      case 'help':
+        console.log('Переход в справку/поддержку');
+        break;
     }
     onClose();
   };
@@ -42,7 +50,7 @@ const ProfileMenu = ({ visible, onClose, onMenuAction, userName = "Пользо�
             <View style={styles.menuHeader}>
               <View style={styles.userInfo}>
                 <Image 
-                  source={userImage || require('@/assets/images/people-icon.png')} // Замените на путь к дефолтной аватарке
+                  source={userImage || require('@/assets/images/people-icon.png')}
                   style={styles.userAvatar}
                 />
                 <View style={styles.userTextInfo}>
@@ -58,7 +66,10 @@ const ProfileMenu = ({ visible, onClose, onMenuAction, userName = "Пользо�
               onPress={() => handleMenuAction('settings')}
             >
               <View style={styles.menuItemContent}>
-                <Image source={SettingIcon} style={styles.menuIcon} />
+                <Image 
+                    source={require('@/assets/images/settings-icon.png')}
+                    style={styles.likeIcon}
+                  />
                 <Text style={styles.menuItemText}>Настройки профиля</Text>
               </View>
             </TouchableOpacity>
@@ -70,7 +81,10 @@ const ProfileMenu = ({ visible, onClose, onMenuAction, userName = "Пользо�
               onPress={() => handleMenuAction('logout')}
             >
               <View style={styles.menuItemContent}>
-                <Image source={BackIcon} style={styles.menuIcon} />
+                <Image 
+                    source={require('@/assets/images/back-icon.png')}
+                    style={styles.likeIcon}
+                  />
                 <Text style={[styles.menuItemText, styles.logoutText]}>Выйти из аккаунта</Text>
               </View>
             </TouchableOpacity>
@@ -80,7 +94,10 @@ const ProfileMenu = ({ visible, onClose, onMenuAction, userName = "Пользо�
               onPress={() => handleMenuAction('help')}
             >
               <View style={styles.menuItemContent}>
-                <Image source={SupportIcon} style={styles.menuIcon} />
+                <Image 
+                    source={require('@/assets/images/support-icon.png')}
+                    style={styles.likeIcon}
+                  />
                 <Text style={styles.menuItemText}>Справка/Поддержка</Text>
               </View>
             </TouchableOpacity>
@@ -98,7 +115,7 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-start',
   },
   profileMenuContainer: {
-    marginTop: 50, // Отступ от верха экрана
+    marginTop: 50,
     alignItems: 'flex-end',
     paddingRight: 20,
     flex: 1,
@@ -156,11 +173,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
   },
-  menuIcon: {
-    width: 20,
-    height: 20,
+  iconText: {
+    fontSize: 18,
     marginRight: 12,
-    tintColor: '#000000ff', // Можно настроить цвет иконок
+    width: 24,
+    textAlign: 'center',
   },
   menuItemText: {
     fontSize: 14,
