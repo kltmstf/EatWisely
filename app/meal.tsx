@@ -304,10 +304,10 @@ export default function Meal() {
           {/* Ингредиенты */}
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Ингредиенты:</Text>
-            {mealData.ingredients.map((ingredient, index) => (
-              <View style={styles.ingredientItem}>
-                <Text style={styles.ingredientText}>{`• ${ingredient}`}</Text>
-              </View>
+              {mealData.ingredients.map((ingredient, index) => (
+                <View key={`ingredient-${index}`} style={styles.ingredientItem}>
+                  <Text style={styles.ingredientText}>{`• ${ingredient}`}</Text>
+          </View>
             ))}
           </View>
 
@@ -345,8 +345,8 @@ const styles = StyleSheet.create({
     padding: 8,
   },
   backIcon: {
-    width: 24,
-    height: 24,
+    width: 35,
+    height: 15,
     tintColor: "#000000",
   },
   headerTitleContainer: {
