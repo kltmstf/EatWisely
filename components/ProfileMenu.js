@@ -178,10 +178,12 @@ const styles = StyleSheet.create({
     marginRight: 12,
     width: 24,
     textAlign: 'center',
+    color: "#000",
+    marginLeft: 8,
   },
   menuItemText: {
     fontSize: 14,
-    color: '#212529',
+    color: '#000000ff',
     fontFamily: "Playfair Display Regular",
   },
   logoutText: {
