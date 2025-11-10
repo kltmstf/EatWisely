@@ -305,9 +305,8 @@ export default function Meal() {
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Ингредиенты:</Text>
             {mealData.ingredients.map((ingredient, index) => (
-              <View key={index} style={styles.ingredientItem}>
-                <Text style={styles.bullet}>•</Text>
-                <Text style={styles.ingredientText}>{ingredient}</Text>
+              <View style={styles.ingredientItem}>
+                <Text style={styles.ingredientText}>{`• ${ingredient}`}</Text>
               </View>
             ))}
           </View>
@@ -512,12 +511,6 @@ const styles = StyleSheet.create({
     alignItems: "flex-start",
     marginBottom: 8,
     paddingLeft: 8,
-  },
-  bullet: {
-    fontSize: 16,
-    color: "#6A9AA9",
-    marginRight: 12,
-    fontFamily: "Playfair Display Regular",
   },
   ingredientText: {
     fontSize: 16,

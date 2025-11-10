@@ -9,8 +9,7 @@ import {
   Platform,
   ScrollView,
   Image,
-  BackHandler,
-  Alert
+  BackHandler
 } from 'react-native';
 import { useRouter } from 'expo-router';
 
@@ -23,9 +22,9 @@ export default function Login() {
     const backHandler = BackHandler.addEventListener(
       'hardwareBackPress',
       () => {
-        // Переходим на страницу title вместо welcome
+
         router.push('/title');
-        return true; // Предотвращаем стандартное поведение
+        return true;
       }
     );
 
@@ -33,16 +32,16 @@ export default function Login() {
   }, []);
 
   const handleLogin = () => {
-    // Здесь будет логика авторизации
+
     console.log('Email:', email, 'Password:', password);
     
-    // После успешной авторизации переходим на главную
+
     router.push('/home');
   };
 
+
   const handleForgotPassword = () => {
-    // Логика восстановления пароля
-    console.log('Восстановление пароля');
+    router.push('/forgot-password');
   };
 
   return (
@@ -142,7 +141,7 @@ const styles = StyleSheet.create({
   scrollContainer: {
     flexGrow: 1,
     paddingHorizontal: 20,
-    paddingBottom: 20, // Добавляем отступ снизу чтобы контент не залезал под навигацию
+    paddingBottom: 20, 
   },
   // Первый контейнер - изображение и текст
   headerContainer: {

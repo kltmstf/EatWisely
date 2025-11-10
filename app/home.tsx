@@ -423,7 +423,7 @@ export default function Home() {
                       </Text>
                       <View style={styles.mealDetails}>
                         <Text style={styles.mealCalories}>{meals[3].calories} ккал</Text>
-                        <Text style={styles.mealWeight}>• {meals[3].weight}</Text>
+                        <Text style={styles.mealWeight}>{`• ${meals[3].weight}`}</Text>
                       </View>
                     </View>
                     <TouchableOpacity 

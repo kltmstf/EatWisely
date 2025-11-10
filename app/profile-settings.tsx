@@ -423,11 +423,11 @@ const styles = StyleSheet.create({
         backgroundColor: "#C2DAE2",
     },
     backButton: {
-        padding: 8,
+        padding: 10,
     },
     backIcon: {
-        width: 24,
-        height: 24,
+        width: 30,
+        height: 15,
         tintColor: "#000000",
     },
     headerTitleContainer: {
@@ -495,7 +495,7 @@ const styles = StyleSheet.create({
         fontSize: 16,
         fontWeight: "600",
         color: "#000000",
-        marginBottom: 6,
+        marginBottom: 8,
         fontFamily: "Playfair Display Regular",
     },
     descriptionTitle: {
@@ -503,7 +503,7 @@ const styles = StyleSheet.create({
     },
     input: {
         backgroundColor: "white",
-        borderWidth: 1,
+        borderWidth: 2,
         borderColor: "#6A9AA9", // Голубая обводка
         borderRadius: 8,
         paddingHorizontal: 12,
@@ -515,7 +515,7 @@ const styles = StyleSheet.create({
     },
     inputSmall: {
         backgroundColor: "white",
-        borderWidth: 1,
+        borderWidth: 2,
         borderColor: "#6A9AA9", // Голубая обводка
         borderRadius: 8,
         paddingHorizontal: 12,
@@ -530,9 +530,9 @@ const styles = StyleSheet.create({
         textAlignVertical: 'top',
     },
     divider: {
-        height: 1,
+        height: 2,
         backgroundColor: "#C2DAE2",
-        marginHorizontal: 20,
+        marginHorizontal: 10,
     },
     dividerThin: {
         height: 1,
@@ -561,7 +561,7 @@ const styles = StyleSheet.create({
         fontSize: 16,
         color: "#000000",
         backgroundColor: "white",
-        borderWidth: 1,
+        borderWidth: 2,
         borderColor: "#6A9AA9", // Голубая обводка
         borderRadius: 8,
         paddingHorizontal: 12,
@@ -577,7 +577,7 @@ const styles = StyleSheet.create({
     genderButton: {
         flex: 1,
         backgroundColor: "white",
-        borderWidth: 1,
+        borderWidth: 2,
         borderColor: "#6A9AA9", // Голубая обводка
         borderRadius: 12,
         paddingHorizontal: 12,
@@ -602,7 +602,7 @@ const styles = StyleSheet.create({
     },
     optionButton: {
         backgroundColor: "white",
-        borderWidth: 1,
+        borderWidth: 2,
         borderColor: "#6A9AA9", // Голубая обводка
         borderRadius: 12,
         paddingHorizontal: 16,
@@ -634,7 +634,7 @@ const styles = StyleSheet.create({
     },
     allergyInput: {
         backgroundColor: "white",
-        borderWidth: 1,
+        borderWidth: 2,
         borderColor: "#6A9AA9", // Голубая обводка
         borderRadius: 8,
         paddingHorizontal: 12,

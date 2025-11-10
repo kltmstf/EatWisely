@@ -13,5 +13,5 @@
     "**/*.tsx",
     ".expo/types/**/*.ts",
     "expo-env.d.ts"
-, "components/BottomNav.tsx"  ]
+, "components/BottomNav.tsx", "app/title.js", "components/ProfileMenu.js", "app/login.js"  ]
 }

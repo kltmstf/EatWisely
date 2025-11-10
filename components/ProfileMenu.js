@@ -6,31 +6,37 @@ import {
   View,
   Text,
   StyleSheet,
-  Image
+  Image,
+  Dimensions
 } from 'react-native';
 import { useRouter } from 'expo-router';
+
+const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 const ProfileMenu = ({ visible, onClose, onMenuAction, userName = "Пользователь", userImage }) => {
   const router = useRouter();
   
 
   const handleMenuAction = (action) => {
-    onMenuAction(action);
-    
-    switch (action) {
-      case 'settings':
-        console.log('Переход в настройки профиля');
-        router.push('/profile-settings');
-        break;
-      case 'logout':
-        console.log('Выход из аккаунта');
-        break;
-      case 'help':
-        console.log('Переход в справку/поддержку');
-        break;
-    }
-    onClose();
-  };
+  onMenuAction(action);
+  
+  switch (action) {
+    case 'settings':
+      console.log('Переход в настройки профиля');
+      router.push('/profile-settings');
+      break;
+    case 'logout':
+      console.log('Выход из аккаунта');
+      // Переход на страницу приветствия
+      router.push('/login');
+      break;
+    case 'help':
+      console.log('Переход в справку/поддержку');
+      router.push('/help-support');
+      break;
+  }
+  onClose();
+};
 
   return (
     <Modal
@@ -67,9 +73,9 @@ const ProfileMenu = ({ visible, onClose, onMenuAction, userName = "Пользо�
             >
               <View style={styles.menuItemContent}>
                 <Image 
-                    source={require('@/assets/images/settings-icon.png')}
-                    style={styles.likeIcon}
-                  />
+                  source={require('@/assets/images/settings-icon.png')}
+                  style={styles.menuIcon}
+                />
                 <Text style={styles.menuItemText}>Настройки профиля</Text>
               </View>
             </TouchableOpacity>
@@ -82,12 +88,14 @@ const ProfileMenu = ({ visible, onClose, onMenuAction, userName = "Пользо�
             >
               <View style={styles.menuItemContent}>
                 <Image 
-                    source={require('@/assets/images/back-icon.png')}
-                    style={styles.likeIcon}
-                  />
+                  source={require('@/assets/images/back-icon.png')}
+                  style={[styles.menuIcon, styles.logoutIcon]}
+                />
                 <Text style={[styles.menuItemText, styles.logoutText]}>Выйти из аккаунта</Text>
               </View>
             </TouchableOpacity>
+
+            <View style={styles.menuDivider} />
             
             <TouchableOpacity 
               style={styles.menuItem}
@@ -95,9 +103,9 @@ const ProfileMenu = ({ visible, onClose, onMenuAction, userName = "Пользо�
             >
               <View style={styles.menuItemContent}>
                 <Image 
-                    source={require('@/assets/images/support-icon.png')}
-                    style={styles.likeIcon}
-                  />
+                  source={require('@/assets/images/support-icon.png')}
+                  style={styles.menuIcon}
+                />
                 <Text style={styles.menuItemText}>Справка/Поддержка</Text>
               </View>
             </TouchableOpacity>
@@ -112,13 +120,12 @@ const styles = StyleSheet.create({
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    justifyContent: 'flex-start',
   },
   profileMenuContainer: {
-    marginTop: 50,
+    position: 'absolute',
+    top: 10, // Отступ от верхнего края экрана
+    right: 10, // Отступ от правого края экрана
     alignItems: 'flex-end',
-    paddingRight: 20,
-    flex: 1,
   },
   profileMenu: {
     backgroundColor: 'white',
@@ -138,7 +145,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#E9ECEF',
+    borderBottomColor: '#6A9AA9',
   },
   userInfo: {
     flexDirection: 'row',
@@ -154,15 +161,15 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   userName: {
-    fontSize: 14,
-    color: '#6C757D',
+    fontSize: 16,
+    color: '#212529',
     marginBottom: 4,
     fontFamily: "Playfair Display Regular",
   },
   menuTitle: {
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: '600',
-    color: '#212529',
+    color: '#6C757D',
     fontFamily: "Playfair Display Regular",
   },
   menuItem: {
@@ -173,25 +180,27 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
   },
-  iconText: {
-    fontSize: 18,
-    marginRight: 12,
+  menuIcon: {
     width: 24,
-    textAlign: 'center',
-    color: "#000",
-    marginLeft: 8,
+    height: 24,
+    marginRight: 12,
+    resizeMode: 'contain',
+  },
+  logoutIcon: {
+    tintColor: '#DC3545',
   },
   menuItemText: {
     fontSize: 14,
     color: '#000000ff',
     fontFamily: "Playfair Display Regular",
+    marginLeft: 0,
   },
   logoutText: {
     color: '#DC3545',
   },
   menuDivider: {
     height: 1,
-    backgroundColor: '#E9ECEF',
+    backgroundColor: '#6A9AA9',
     marginVertical: 4,
   },
 });

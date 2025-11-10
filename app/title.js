@@ -51,11 +51,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     backgroundColor: "#C2DAE2"
   },
-  // Первый контейнер - сверху
+
   topContainer: {
-    flex: 0.4, // Занимает 40% пространства
+    flex: 0.4, 
     justifyContent: "flex-start",
-    paddingTop: 150, // Отступ сверху
+    paddingTop: 150, 
   },
   headerContent: {
     flexDirection: "row",
@@ -74,9 +74,9 @@ const styles = StyleSheet.create({
   },
   titleText: {
     color: 'black',
-    fontFamily: 'Playfair Display Bold', // Используем правильное имя
+    fontFamily: 'Playfair Display Bold', 
     fontSize: 40,
-    fontWeight: 'normal', // Убираем fontWeight т.к. используем конкретный файл
+    fontWeight: 'normal', 
     textAlign: 'center',
     marginBottom: 5,
   },
@@ -95,9 +95,9 @@ const styles = StyleSheet.create({
     backgroundColor: "#000",
     borderRadius: 3,
   },
-  // Второй контейнер - по центру
+
   middleContainer: {
-    flex: 0.3, // Занимает 30% пространства
+    flex: 0.3, 
     justifyContent: "center",
     alignItems: "center",
   },
@@ -109,12 +109,12 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     width: "80%",
   },
-  // Третий контейнер - снизу
+
   bottomContainer: {
-    flex: 0.3, // Занимает 30% пространства
+    flex: 0.3, 
     justifyContent: "flex-end",
     alignItems: "center",
-    paddingBottom: 150, // Отступ снизу
+    paddingBottom: 150,
   },
   button: {
     backgroundColor: '#9BDF11',
@@ -124,11 +124,11 @@ const styles = StyleSheet.create({
     minWidth: 200,
     alignItems: 'center',
     justifyContent: 'center',
-    // Обводка (граница)
+
     borderWidth: 2,
     borderColor: '#C2DAE2', 
     
-    // Тень для iOS
+
     shadowColor: '#000',
     shadowOffset: {
       width: 0,
@@ -137,7 +137,7 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.3,
     shadowRadius: 5,
     
-    // Тень для Android
+
     elevation: 8,
   },
   buttonText: {

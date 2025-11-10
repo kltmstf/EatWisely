@@ -4,6 +4,7 @@ import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { useEffect } from 'react';
 
+
 // Keep the splash screen visible while we fetch resources
 SplashScreen.preventAutoHideAsync();
 
@@ -27,14 +28,16 @@ export default function RootLayout() {
 
   return (
     <Stack>
-      <Stack.Screen name="index" options={{ headerShown: false }} />
-      <Stack.Screen name="title" options={{ headerShown: false }} />
-      <Stack.Screen name="welcome" options={{ headerShown: false }} />
-      <Stack.Screen name="login" options={{ headerShown: false }} />
-      <Stack.Screen name="home" options={{ headerShown: false }} />
-      <Stack.Screen name="meal" options={{ headerShown: false }} />
-      <Stack.Screen name="profile-settings" options={{ headerShown: false }} />
-    </Stack>
+    <Stack.Screen name="index" options={{ headerShown: false }} />
+    <Stack.Screen name="title" options={{ headerShown: false }} />
+    <Stack.Screen name="welcome" options={{ headerShown: false }} />
+    <Stack.Screen name="login" options={{ headerShown: false }} />
+    <Stack.Screen name="home" options={{ headerShown: false }} />
+    <Stack.Screen name="meal" options={{ headerShown: false }} />
+    <Stack.Screen name="profile-settings" options={{ headerShown: false }} />
+    <Stack.Screen name="forgot-password" options={{headerShown: false}} />
+    <Stack.Screen name="help-support" options={{ headerShown: false }} />
+  </Stack>
 
   );
 }

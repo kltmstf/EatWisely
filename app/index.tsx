@@ -1,11 +1,11 @@
 import React from "react";
 import { StyleSheet, View } from "react-native";
-import Title from "./title"; // Импортируем компонент Title
+import Title from "./title.js"; 
 
 export default function Index() {
   return (
     <View style={styles.container}>
-      <Title /> {/* Отображаем компонент Title */}
+      <Title /> 
     </View>
   );
 }

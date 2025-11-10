@@ -7,10 +7,10 @@ const BottomNav = () => {
 
   const tabs = [
 
-    { id: 'recipes', icon: require('@/assets/images/dishes-icon.png'), label: 'Рацион' },
-        { id: 'home', icon: require('@/assets/images/people-icon.png'), label: 'Сообщество' },
-    { id: 'favorites', icon: require('@/assets/images/recipes-icon.png'), label: 'Рецепты' },
-    { id: 'profile', icon: require('@/assets/images/bookmarks-page-icon.png'), label: 'Избранные' },
+    { id: 'community', icon: require('@/assets/images/people-icon.png')},
+    { id: 'home', icon: require('@/assets/images/dishes-icon.png')},
+    { id: 'recipes', icon: require('@/assets/images/recipes-icon.png')},
+    { id: 'favorites', icon: require('@/assets/images/bookmarks-page-icon.png')},
   ];
 
   const handleTabPress = (tabId: string) => {
