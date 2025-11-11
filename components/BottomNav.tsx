@@ -1,22 +1,50 @@
 // components/BottomNav.tsx
-import React, { useState } from 'react';
+import React from 'react';
 import { View, TouchableOpacity, Image, StyleSheet } from 'react-native';
+import { useRouter, usePathname } from 'expo-router';
 
 const BottomNav = () => {
-  const [activeTab, setActiveTab] = useState('home');
+  const router = useRouter();
+  const pathname = usePathname(); // Получаем текущий путь
 
   const tabs = [
-
     { id: 'community', icon: require('@/assets/images/people-icon.png')},
     { id: 'home', icon: require('@/assets/images/dishes-icon.png')},
     { id: 'recipes', icon: require('@/assets/images/recipes-icon.png')},
     { id: 'favorites', icon: require('@/assets/images/bookmarks-page-icon.png')},
   ];
 
+  // Определяем активную вкладку на основе текущего пути
+  const getActiveTab = () => {
+    if (pathname === '/home') return 'home';
+    if (pathname === '/recipes') return 'recipes';
+    if (pathname === '/favorites') return 'favorites';
+    if (pathname === '/community') return 'community';
+    return 'home'; // по умолчанию
+  };
+
+  const activeTab = getActiveTab();
+
   const handleTabPress = (tabId: string) => {
-    setActiveTab(tabId);
-    // Здесь будет навигация по табам
-    console.log(`Переход на вкладку: ${tabId}`);
+    // Не нужно setActiveTab, так как активная вкладка определяется по пути
+    
+    // Навигация по табам
+    switch (tabId) {
+      case 'home':
+        router.push('/home');
+        break;
+      case 'recipes':
+        router.push('/recipes');
+        break;
+      case 'favorites':
+        router.push('/favorites');
+        break;
+      case 'community':
+        router.push('/community');
+        break;
+      default:
+        router.push('/home');
+    }
   };
 
   return (
@@ -42,6 +70,7 @@ const BottomNav = () => {
     </View>
   );
 };
+
 
 const styles = StyleSheet.create({
   container: {
@@ -76,7 +105,7 @@ const styles = StyleSheet.create({
     elevation: 3,
   },
   activeTabButton: {
-    backgroundColor: '#7BBF01', // Более темный зеленый для активной кнопки
+    backgroundColor: '#7BBF01', 
     shadowColor: "#000",
     shadowOffset: {
       width: 0,

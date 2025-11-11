@@ -3,6 +3,7 @@ import { useFonts } from 'expo-font';
 import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { useEffect } from 'react';
+import { StackScreen } from 'react-native-screens';
 
 
 // Keep the splash screen visible while we fetch resources
@@ -37,6 +38,9 @@ export default function RootLayout() {
     <Stack.Screen name="profile-settings" options={{ headerShown: false }} />
     <Stack.Screen name="forgot-password" options={{headerShown: false}} />
     <Stack.Screen name="help-support" options={{ headerShown: false }} />
+    <Stack.Screen name='recipes' options={{headerShown: false}} />
+    <Stack.Screen name='community' options={{headerShown: false}} />
+    <Stack.Screen name="favorites" options={{headerShown: false}} />
   </Stack>
 
   );

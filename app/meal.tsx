@@ -156,6 +156,7 @@ export default function Meal() {
   };
 
   const handleChooseFromList = () => {
+    router.push('/recipes')
     console.log("Выбор из списка блюд");
   };
 

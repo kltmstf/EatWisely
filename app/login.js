@@ -17,6 +17,7 @@ export default function Login() {
   const router = useRouter();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
 
   useEffect(() => {
     const backHandler = BackHandler.addEventListener(
@@ -91,23 +92,38 @@ export default function Login() {
           </View>
 
           {/* Поле Пароль с иконкой */}
-          <View style={styles.inputContainer}>
-            <View style={styles.inputWithIcon}>
-              <Image
-                source={require("@/assets/images/password-icon.png")}
-                style={styles.inputIcon}
-                resizeMode="contain"
-              />
-              <TextInput
-                style={styles.input}
-                placeholder="Пароль"
-                placeholderTextColor="#666"
-                value={password}
-                onChangeText={setPassword}
-                secureTextEntry
-              />
-            </View>
-          </View>
+<View style={styles.inputContainer}>
+  <View style={styles.inputWithIcon}>
+    <Image
+      source={require("@/assets/images/password-icon.png")}
+      style={styles.inputIcon}
+      resizeMode="contain"
+    />
+    <TextInput
+      style={styles.input}
+      placeholder="Пароль"
+      placeholderTextColor="#666"
+      value={password}
+      onChangeText={setPassword}
+      secureTextEntry={!showPassword} // ИЗМЕНИТЕ НА ЭТО
+    />
+    {/* ДОБАВЬТЕ ЭТУ КНОПКУ ДЛЯ ПОКАЗА/СКРЫТИЯ ПАРОЛЯ */}
+    <TouchableOpacity 
+      onPress={() => setShowPassword(!showPassword)}
+      style={styles.eyeButton}
+    >
+      <Image
+        source={
+          showPassword 
+            ? require("@/assets/images/edit-icon.png") // Нужно добавить эту иконку
+            : require("@/assets/images/edit-icon.png") // И эту иконку
+        }
+        style={styles.eyeIcon}
+        resizeMode="contain"
+      />
+    </TouchableOpacity>
+  </View>
+</View>
 
           {/* Кнопка входа */}
           <TouchableOpacity 
@@ -257,5 +273,14 @@ const styles = StyleSheet.create({
     color: '#001226',
     textAlign: 'center',
     
+  },
+  eyeButton: {
+    padding: 8,
+    marginLeft: 8,
+  },
+  eyeIcon: {
+    width: 20,
+    height: 20,
+    tintColor: '#000',
   },
 });

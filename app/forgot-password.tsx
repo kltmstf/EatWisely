@@ -4,10 +4,8 @@ import {
   Text, 
   StyleSheet, 
   TextInput, 
-  TouchableOpacity, 
-  KeyboardAvoidingView,
+  TouchableOpacity,
   Platform,
-  ScrollView,
   Image,
   BackHandler,
   Alert
@@ -56,45 +54,40 @@ export default function ForgotPassword() {
   };
 
   return (
-    <KeyboardAvoidingView 
-      style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-    >
-      <ScrollView 
-        contentContainerStyle={styles.scrollContainer}
-        showsVerticalScrollIndicator={false}
+    <View style={styles.container}>
+      {/* Кнопка назад */}
+      <TouchableOpacity 
+        style={styles.backButton}
+        onPress={handleBack}
       >
-        {/* Кнопка назад */}
-        <TouchableOpacity 
-          style={styles.backButton}
-          onPress={handleBack}
-        >
+        <Image
+          source={require("@/assets/images/back-icon.png")}
+          style={styles.backIcon}
+          resizeMode="contain"
+        />
+      </TouchableOpacity>
+
+      {/* Основной контент */}
+      <View style={styles.content}>
+        {/* Заголовок и описание */}
+        <View style={styles.headerContainer}>
           <Image
-            source={require("@/assets/images/back-icon.png")}
-            style={styles.backIcon}
+            source={require("@/assets/images/logo.png")}
+            style={styles.headerImage}
             resizeMode="contain"
           />
-        </TouchableOpacity>
+          
+          <View style={styles.headerTextContainer}>
+            <Text style={styles.title}>EatWisely</Text>
+            
+            <Text style={styles.subtitle}>
+              Ваш персональный гид по здоровому питанию!
+            </Text>
+          </View>
+        </View>
 
-        {/* Заголовок и описание */}
-<View style={styles.headerContainer}>
-  <Image
-    source={require("@/assets/images/logo.png")}
-    style={styles.headerImage}
-    resizeMode="contain"
-  />
-  
-  <View style={styles.headerTextContainer}>
-    <Text style={styles.title}>EatWisely</Text>
-    
-    <Text style={styles.subtitle}>
-      Ваш персональный гид по здоровому питанию!
-    </Text>
-  </View>
-</View>
-
-        {/* Основной контент */}
-        <View style={styles.contentContainer}>
+        {/* Форма восстановления */}
+        <View style={styles.formContainer}>
           <Text style={styles.instructionText}>
             Введите электронную почту для восстановления пароля.
           </Text>
@@ -135,8 +128,8 @@ export default function ForgotPassword() {
             На указанный email будет отправлено письмо с инструкциями по восстановлению пароля.
           </Text>
         </View>
-      </ScrollView>
-    </KeyboardAvoidingView>
+      </View>
+    </View>
   );
 }
 
@@ -145,15 +138,16 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#C2DAE2',
   },
-  scrollContainer: {
-    flexGrow: 1,
+  content: {
+    flex: 1,
+    justifyContent: 'center',
     paddingHorizontal: 20,
     paddingBottom: 20,
   },
   // Кнопка назад
   backButton: {
     position: 'absolute',
-    top: 50,
+    top: Platform.OS === 'ios' ? 50 : 30,
     left: 20,
     zIndex: 10,
     padding: 10,
@@ -163,19 +157,18 @@ const styles = StyleSheet.create({
     height: 24,
     tintColor: '#000',
   },
-   // Заголовок
+  // Заголовок
   headerContainer: {
     alignItems: 'center',
-    paddingTop: 80,
-    paddingBottom: 30,
+    marginBottom: 40,
   },
   headerImage: {
-    width: 150, // Уменьшенный логотип
-    height: 150, // Уменьшенный логотип
+    width: 150,
+    height: 150,
   },
   headerTextContainer: {
     alignItems: 'center',
-    marginTop: 0, // Убрали отступ сверху, так как теперь есть разделитель
+    marginTop: 0,
   },
   title: {
     fontFamily: 'Playfair Display Bold',
@@ -184,12 +177,12 @@ const styles = StyleSheet.create({
     color: '#000',
     marginBottom: 15,
     textAlign: 'center',
-    paddingBottom: 10, // Отступ для линии
-    borderBottomWidth: 3, // Линия как бордер
+    paddingBottom: 10,
+    borderBottomWidth: 3,
     borderRadius: 2,
     borderBottomColor: '#000000',
-    width: '80%', // Ширина линии
-},
+    width: '80%',
+  },
   subtitle: {
     fontFamily: 'Playfair Display Regular',
     fontSize: 16,
@@ -197,11 +190,10 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     textAlign: 'center',
     maxWidth: 300,
+    marginTop: 10,
   },
-  // Основной контент
-  contentContainer: {
-    flex: 1,
-    justifyContent: 'center',
+  // Форма
+  formContainer: {
     alignItems: 'center',
     marginBottom: 30,
   },
