@@ -1,3 +1,4 @@
+import { useRouter } from "expo-router";
 import React, { useState } from "react";
 import {
   Image,
@@ -6,13 +7,11 @@ import {
   StatusBar,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
-  View,
-  TextInput
+  View
 } from "react-native";
-import { useRouter } from "expo-router";
-import BottomNav from "../../components/BottomNav";
-import ProfileMenu from "../../components/ProfileMenu";
+import ProfileMenu from "../components/ProfileMenu";
 
 export default function Community() {
   const router = useRouter();

@@ -11,7 +11,7 @@ import {
     TouchableOpacity,
     View
 } from "react-native";
-import ProfileMenu from "../../components/ProfileMenu";
+import ProfileMenu from "../components/ProfileMenu";
 
 export default function Home() {
   const router = useRouter();

@@ -98,8 +98,7 @@ const styles = StyleSheet.create({
     borderTopWidth: 2,
     borderTopColor: '#6A9AA9',
     
-    height: 120,
-    // Убираем отступы безопасной зоны
+    height: 100,
     paddingBottom: 45,
     marginBottom: 0,
   },
@@ -120,7 +119,6 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.1,
     shadowRadius: 3,
     elevation: 3,
-    // Поднимаем кнопки выше
     marginTop: -10,
   },
   activeTabButton: {
