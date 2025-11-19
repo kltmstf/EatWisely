@@ -3,10 +3,8 @@ import { useFonts } from 'expo-font';
 import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { useEffect } from 'react';
-import { StackScreen } from 'react-native-screens';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
-
-// Keep the splash screen visible while we fetch resources
 SplashScreen.preventAutoHideAsync();
 
 export default function RootLayout() {
@@ -28,20 +26,30 @@ export default function RootLayout() {
   }
 
   return (
-    <Stack>
-    <Stack.Screen name="index" options={{ headerShown: false }} />
-    <Stack.Screen name="title" options={{ headerShown: false }} />
-    <Stack.Screen name="welcome" options={{ headerShown: false }} />
-    <Stack.Screen name="login" options={{ headerShown: false }} />
-    <Stack.Screen name="home" options={{ headerShown: false }} />
-    <Stack.Screen name="meal" options={{ headerShown: false }} />
-    <Stack.Screen name="profile-settings" options={{ headerShown: false }} />
-    <Stack.Screen name="forgot-password" options={{headerShown: false}} />
-    <Stack.Screen name="help-support" options={{ headerShown: false }} />
-    <Stack.Screen name='recipes' options={{headerShown: false}} />
-    <Stack.Screen name='community' options={{headerShown: false}} />
-    <Stack.Screen name="favorites" options={{headerShown: false}} />
-  </Stack>
-
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <Stack screenOptions={{ headerShown: false }}>
+        {/* Страницы без нижней навигации */}
+        <Stack.Screen name="index" />
+        <Stack.Screen name="title" />
+        <Stack.Screen name="welcome" />
+        <Stack.Screen name="login" />
+        <Stack.Screen name="forgot-password" />
+        
+        {/* Основные страницы с нижней навигацией - без заголовка и кнопки назад */}
+        <Stack.Screen 
+          name="(tabs)" 
+          options={{ 
+            headerShown: false,
+            // Отключаем жесты для назад на iOS
+            gestureEnabled: false 
+          }} 
+        />
+        
+        {/* Остальные страницы */}
+        <Stack.Screen name="meal" />
+        <Stack.Screen name="profile-settings" />
+        <Stack.Screen name="help-support" />
+      </Stack>
+    </GestureHandlerRootView>
   );
 }

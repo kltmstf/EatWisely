@@ -11,8 +11,8 @@ import {
   TextInput
 } from "react-native";
 import { useRouter } from "expo-router";
-import BottomNav from "../components/BottomNav";
-import ProfileMenu from "../components/ProfileMenu";
+import BottomNav from "../../components/BottomNav";
+import ProfileMenu from "../../components/ProfileMenu";
 
 export default function Community() {
   const router = useRouter();
@@ -327,8 +327,6 @@ export default function Community() {
           </View>
         </ScrollView>
 
-        {/* Нижнее меню */}
-        <BottomNav />
       </View>
     </ImageBackground>
   );

@@ -1,18 +1,17 @@
+import { useRouter } from "expo-router";
 import React, { useState } from "react";
 import {
-  Image,
-  ImageBackground,
-  ScrollView,
-  StatusBar,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
-  TextInput
+    Image,
+    ImageBackground,
+    ScrollView,
+    StatusBar,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View
 } from "react-native";
-import { useRouter } from "expo-router";
-import BottomNav from "../components/BottomNav";
-import ProfileMenu from "../components/ProfileMenu";
+import ProfileMenu from "../../components/ProfileMenu";
 
 export default function Favorites() {
   const router = useRouter();
@@ -393,8 +392,7 @@ export default function Favorites() {
           </View>
         </ScrollView>
 
-        {/* Нижнее меню */}
-        <BottomNav />
+      
       </View>
     </ImageBackground>
   );

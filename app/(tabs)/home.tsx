@@ -1,18 +1,17 @@
 // app/home.tsx
+import { useRouter } from "expo-router";
 import React, { useState } from "react";
 import {
-  Image,
-  ImageBackground,
-  ScrollView,
-  StatusBar,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View
+    Image,
+    ImageBackground,
+    ScrollView,
+    StatusBar,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    View
 } from "react-native";
-import { useRouter } from "expo-router";
-import BottomNav from "../components/BottomNav";
-import ProfileMenu from "../components/ProfileMenu";
+import ProfileMenu from "../../components/ProfileMenu";
 
 export default function Home() {
   const router = useRouter();
@@ -116,6 +115,7 @@ export default function Home() {
   };
 
   return (
+    
     <ImageBackground 
       source={require('@/assets/images/background.png')}
       style={styles.background}
@@ -449,8 +449,7 @@ export default function Home() {
           </View>
         </ScrollView>
 
-        {/* Нижнее меню (отдельный компонент) */}
-        <BottomNav />
+
       </View>
     </ImageBackground>
   );
