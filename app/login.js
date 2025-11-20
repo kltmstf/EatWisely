@@ -1,3 +1,4 @@
+// app/login.js
 import React, { useState, useEffect } from 'react';
 import { 
   View, 
@@ -9,22 +10,41 @@ import {
   Platform,
   ScrollView,
   Image,
-  BackHandler
+  BackHandler,
+  Alert,
+  ActivityIndicator
 } from 'react-native';
 import { useRouter } from 'expo-router';
+import { useAuthContext } from '@/app//contexts/AuthContext';
 
 export default function Login() {
   const router = useRouter();
+  const { signIn, loading: authLoading, error, clearError, isAuthenticated } = useAuthContext();
+  
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+
+  // Редирект если уже авторизован
+  useEffect(() => {
+    if (isAuthenticated) {
+      router.replace('/home');
+    }
+  }, [isAuthenticated]);
+
+  // Очищаем ошибки при монтировании компонента
+  useEffect(() => {
+    if (error) {
+      clearError();
+    }
+  }, []);
 
   useEffect(() => {
     const backHandler = BackHandler.addEventListener(
       'hardwareBackPress',
       () => {
-
-        router.push('/title');
+        router.push('/');
         return true;
       }
     );
@@ -32,18 +52,88 @@ export default function Login() {
     return () => backHandler.remove();
   }, []);
 
-  const handleLogin = () => {
+  // Показываем ошибки
+  useEffect(() => {
+    if (error && !authLoading) {
+      Alert.alert('Ошибка входа', error, [{ text: 'OK', onPress: clearError }]);
+    }
+  }, [error, authLoading]);
 
-    console.log('Email:', email, 'Password:', password);
+  const handleLogin = async () => {
+  // Валидация полей
+  if (!email.trim() || !password.trim()) {
+    Alert.alert('Ошибка', 'Пожалуйста, заполните все поля');
+    return;
+  }
+
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(email)) {
+    Alert.alert('Ошибка', 'Пожалуйста, введите корректный email');
+    return;
+  }
+
+  setIsLoading(true);
+  clearError(); // Очищаем предыдущие ошибки
+
+  try {
+    console.log('🔄 Attempting login for:', email);
+    await signIn(email, password);
+    console.log('✅ Login successful');
     
-
-    router.push('/home');
-  };
-
+  } catch (error) {
+    console.log('❌ Login failed:', error.message);
+    console.log('🔍 Full error:', error);
+    
+    let alertTitle = 'Ошибка входа';
+    let alertMessage = error.message;
+    
+    // Улучшенная обработка ошибок
+    if (error.message.includes('Неверный email или пароль') || 
+        error.message.includes('Неверный пароль') || 
+        error.message.includes('Пользователь не найден')) {
+      alertTitle = 'Неверные данные';
+      alertMessage = 'Неверный email или пароль.\n\nПроверьте:\n• Правильность email адреса\n• Правильность пароля\n• Регистр букв\n• Язык раскладки клавиатуры';
+    }
+    
+    const alertButtons = [{ text: 'Понятно' }];
+    
+    // Добавляем полезные кнопки
+    if (error.message.includes('Неверный email или пароль') || 
+        error.message.includes('Неверный пароль') || 
+        error.message.includes('Пользователь не найден')) {
+      alertButtons.push(
+        {
+          text: 'Восстановить пароль',
+          onPress: () => {
+            router.push('/forgot-password');
+          }
+        },
+        {
+          text: 'Зарегистрироваться',
+          onPress: () => {
+            router.push('/registration');
+          }
+        }
+      );
+    }
+    
+    Alert.alert(alertTitle, alertMessage, alertButtons);
+    
+  } finally {
+    setIsLoading(false);
+  }
+};
 
   const handleForgotPassword = () => {
     router.push('/forgot-password');
   };
+
+  const handleSignUpRedirect = () => {
+    router.push('/registration');
+  };
+
+  // Блокируем кнопку если идет загрузка или поля пустые
+  const isLoginDisabled = isLoading || authLoading || !email.trim() || !password.trim();
 
   return (
     <KeyboardAvoidingView 
@@ -53,6 +143,7 @@ export default function Login() {
       <ScrollView 
         contentContainerStyle={styles.scrollContainer}
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
       >
         {/* Первый контейнер: изображение и текст */}
         <View style={styles.headerContainer}>
@@ -87,58 +178,73 @@ export default function Login() {
                 onChangeText={setEmail}
                 keyboardType="email-address"
                 autoCapitalize="none"
+                autoComplete="email"
+                editable={!isLoading && !authLoading}
               />
             </View>
           </View>
 
           {/* Поле Пароль с иконкой */}
-<View style={styles.inputContainer}>
-  <View style={styles.inputWithIcon}>
-    <Image
-      source={require("@/assets/images/password-icon.png")}
-      style={styles.inputIcon}
-      resizeMode="contain"
-    />
-    <TextInput
-      style={styles.input}
-      placeholder="Пароль"
-      placeholderTextColor="#666"
-      value={password}
-      onChangeText={setPassword}
-      secureTextEntry={!showPassword} // ИЗМЕНИТЕ НА ЭТО
-    />
-    {/* ДОБАВЬТЕ ЭТУ КНОПКУ ДЛЯ ПОКАЗА/СКРЫТИЯ ПАРОЛЯ */}
-    <TouchableOpacity 
-      onPress={() => setShowPassword(!showPassword)}
-      style={styles.eyeButton}
-    >
-      <Image
-        source={
-          showPassword 
-            ? require("@/assets/images/edit-icon.png") // Нужно добавить эту иконку
-            : require("@/assets/images/edit-icon.png") // И эту иконку
-        }
-        style={styles.eyeIcon}
-        resizeMode="contain"
-      />
-    </TouchableOpacity>
-  </View>
-</View>
+          <View style={styles.inputContainer}>
+            <View style={styles.inputWithIcon}>
+              <Image
+                source={require("@/assets/images/password-icon.png")}
+                style={styles.inputIcon}
+                resizeMode="contain"
+              />
+              <TextInput
+                style={styles.input}
+                placeholder="Пароль"
+                placeholderTextColor="#666"
+                value={password}
+                onChangeText={setPassword}
+                secureTextEntry={!showPassword}
+                autoComplete="password"
+                editable={!isLoading && !authLoading}
+              />
+              <TouchableOpacity 
+                onPress={() => setShowPassword(!showPassword)}
+                style={styles.eyeButton}
+                disabled={isLoading || authLoading}
+              >
+                <Text style={styles.eyeText}>
+                  {showPassword ? '🙈' : '👁️'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
 
           {/* Кнопка входа */}
           <TouchableOpacity 
-            style={styles.loginButton}
+            style={[
+              styles.loginButton,
+              isLoginDisabled && styles.loginButtonDisabled
+            ]}
             onPress={handleLogin}
+            disabled={isLoginDisabled}
           >
-            <Text style={styles.loginButtonText}>Войти</Text>
+            {isLoading || authLoading ? (
+              <ActivityIndicator color="#000" size="small" />
+            ) : (
+              <Text style={styles.loginButtonText}>Войти</Text>
+            )}
           </TouchableOpacity>
+
+          {/* Ссылка на регистрацию */}
+          <View style={styles.signUpContainer}>
+            <Text style={styles.signUpText}>Еще нет аккаунта? </Text>
+            <TouchableOpacity onPress={handleSignUpRedirect}>
+              <Text style={styles.signUpLink}>Зарегистрируйтесь</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
-        {/* Третий контейнер: восстановление пароля - ВСЯ НАДПИСЬ КЛИКАБЕЛЬНА */}
+        {/* Третий контейнер: восстановление пароля */}
         <View style={styles.footerContainer}>
           <TouchableOpacity 
             style={styles.forgotPasswordContainer}
             onPress={handleForgotPassword}
+            disabled={isLoading || authLoading}
           >
             <Text style={styles.link}>Забыли пароль?</Text>
             <Text style={styles.recoveryText}>Восстановите его здесь.</Text>
@@ -149,6 +255,7 @@ export default function Login() {
   );
 }
 
+
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -157,18 +264,18 @@ const styles = StyleSheet.create({
   scrollContainer: {
     flexGrow: 1,
     paddingHorizontal: 20,
-    paddingBottom: 20, 
+    paddingBottom: 20,
   },
   // Первый контейнер - изображение и текст
   headerContainer: {
-    flex: 0.35, // Уменьшили для компактности
+    flex: 0.35,
     justifyContent: "center",
     alignItems: 'center',
-    paddingTop: 20, // Уменьшили отступ сверху
+    paddingTop: 20,
     paddingBottom: 20,
   },
   headerImage: {
-    width: 280, // Немного уменьшили
+    width: 280,
     height: 280,
   },
   headerTextContainer: {
@@ -192,12 +299,12 @@ const styles = StyleSheet.create({
   },
   // Второй контейнер - форма ввода данных
   formContainer: {
-    flex: 0.45, // Увеличили для формы
+    flex: 0.45,
     justifyContent: 'center',
-    marginBottom: 60, // Уменьшили отступ
+    marginBottom: 60,
   },
   inputContainer: {
-    marginBottom: 20, // Уменьшили отступ между полями
+    marginBottom: 20,
   },
   inputWithIcon: {
     flexDirection: 'row',
@@ -230,7 +337,7 @@ const styles = StyleSheet.create({
     minWidth: 200,
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 15, // Уменьшили отступ
+    marginTop: 15,
     borderWidth: 2,
     borderColor: '#C2DAE2', 
     shadowColor: '#000',
@@ -243,21 +350,43 @@ const styles = StyleSheet.create({
     elevation: 8,
     alignSelf: 'center',
   },
+  loginButtonDisabled: {
+    backgroundColor: '#B8D48A',
+    opacity: 0.7,
+  },
   loginButtonText: {
     fontFamily: 'Playfair Display Regular',
     fontSize: 18,
     fontWeight: 'normal',
     color: 'black',
   },
+  // Ссылка на регистрацию
+  signUpContainer: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 20,
+  },
+  signUpText: {
+    fontFamily: 'Playfair Display Regular',
+    fontSize: 14,
+    color: '#000',
+  },
+  signUpLink: {
+    fontFamily: 'Playfair Display Regular',
+    fontSize: 14,
+    color: '#001226',
+    textDecorationLine: 'underline',
+  },
   // Третий контейнер - восстановление пароля
   footerContainer: {
-    flex: 0.2, // Минимальное пространство
+    flex: 0.2,
     alignItems: 'center',
     justifyContent: 'flex-start',
   },
   forgotPasswordContainer: {
     alignItems: 'center',
-    padding: 10, // Добавляем padding для удобства нажатия
+    padding: 10,
   },
   link: {
     fontFamily: 'Playfair Display Regular',
@@ -272,7 +401,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#001226',
     textAlign: 'center',
-    
   },
   eyeButton: {
     padding: 8,

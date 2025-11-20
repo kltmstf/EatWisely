@@ -8,13 +8,32 @@ import {
   Platform,
   Image,
   BackHandler,
-  Alert
+  Alert,
+  ActivityIndicator
 } from 'react-native';
 import { useRouter } from 'expo-router';
+import { authService } from '@/app//services/authService';
+
+// Определяем тип для ошибки Firebase
+interface FirebaseError extends Error {
+  code: string;
+  message: string;
+}
+
+function isFirebaseError(error: unknown): error is FirebaseError {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    'message' in error
+  );
+}
 
 export default function ForgotPassword() {
   const router = useRouter();
-  const [email, setEmail] = useState('');
+  const [email, setEmail] = useState<string>('');
+  const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [isSuccess, setIsSuccess] = useState<boolean>(false);
 
   useEffect(() => {
     const backHandler = BackHandler.addEventListener(
@@ -26,31 +45,81 @@ export default function ForgotPassword() {
     );
 
     return () => backHandler.remove();
-  }, []);
+  }, [router]);
 
-  const handleResetPassword = () => {
-    if (!email) {
+  const handleResetPassword = async (): Promise<void> => {
+    // Валидация email
+    if (!email.trim()) {
       Alert.alert('Ошибка', 'Пожалуйста, введите email');
       return;
     }
 
-    // Здесь будет логика отправки email для восстановления пароля
-    console.log('Восстановление пароля для:', email);
-    
-    Alert.alert(
-      'Письмо отправлено',
-      'Инструкции по восстановлению пароля отправлены на вашу электронную почту.',
-      [
-        {
-          text: 'OK',
-          onPress: () => router.back()
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      Alert.alert('Ошибка', 'Пожалуйста, введите корректный email');
+      return;
+    }
+
+    setIsLoading(true);
+
+    try {
+      // Используем сервис для отправки email восстановления
+      await authService.resetPassword(email);
+      
+      setIsSuccess(true);
+      
+      Alert.alert(
+        'Письмо отправлено!',
+        'Инструкции по восстановлению пароля отправлены на вашу электронную почту. Пожалуйста, проверьте вашу почту и следуйте инструкциям.',
+        [
+          {
+            text: 'OK',
+            onPress: () => router.back()
+          }
+        ]
+      );
+      
+    } catch (error: unknown) {
+      console.error('Password reset error:', error);
+      
+      // Обработка различных ошибок Firebase
+      let errorMessage = 'Произошла ошибка при отправке письма. Попробуйте еще раз.';
+      
+      if (isFirebaseError(error)) {
+        switch (error.code) {
+          case 'auth/user-not-found':
+            errorMessage = 'Пользователь с таким email не найден.';
+            break;
+          case 'auth/invalid-email':
+            errorMessage = 'Неверный формат email адреса.';
+            break;
+          case 'auth/too-many-requests':
+            errorMessage = 'Слишком много попыток. Попробуйте позже.';
+            break;
+          case 'auth/network-request-failed':
+            errorMessage = 'Ошибка сети. Проверьте подключение к интернету.';
+            break;
+          default:
+            errorMessage = error.message || 'Неизвестная ошибка';
         }
-      ]
-    );
+      }
+      
+      Alert.alert('Ошибка', errorMessage);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  const handleBack = () => {
+  const handleBack = (): void => {
     router.back();
+  };
+
+  const handleEmailChange = (text: string): void => {
+    setEmail(text);
+    // Сбрасываем состояние успеха при изменении email
+    if (isSuccess) {
+      setIsSuccess(false);
+    }
   };
 
   return (
@@ -59,10 +128,14 @@ export default function ForgotPassword() {
       <TouchableOpacity 
         style={styles.backButton}
         onPress={handleBack}
+        disabled={isLoading}
       >
         <Image
           source={require("@/assets/images/back-icon.png")}
-          style={styles.backIcon}
+          style={[
+            styles.backIcon,
+            isLoading && styles.disabledIcon
+          ]}
           resizeMode="contain"
         />
       </TouchableOpacity>
@@ -81,7 +154,7 @@ export default function ForgotPassword() {
             <Text style={styles.title}>EatWisely</Text>
             
             <Text style={styles.subtitle}>
-              Ваш персональный гид по здоровому питанию!
+              Восстановление пароля
             </Text>
           </View>
         </View>
@@ -89,45 +162,99 @@ export default function ForgotPassword() {
         {/* Форма восстановления */}
         <View style={styles.formContainer}>
           <Text style={styles.instructionText}>
-            Введите электронную почту для восстановления пароля.
+            {isSuccess 
+              ? 'Письмо отправлено! Проверьте вашу почту.'
+              : 'Введите электронную почту, связанную с вашим аккаунтом, и мы отправим инструкции по восстановлению пароля.'
+            }
           </Text>
 
-          {/* Поле Email с иконкой */}
-          <View style={styles.inputContainer}>
-            <View style={styles.inputWithIcon}>
+          {!isSuccess && (
+            <>
+              {/* Поле Email с иконкой */}
+              <View style={styles.inputContainer}>
+                <View style={styles.inputWithIcon}>
+                  <Image
+                    source={require("@/assets/images/email-icon.png")}
+                    style={styles.inputIcon}
+                    resizeMode="contain"
+                  />
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Ваш email"
+                    placeholderTextColor="#666"
+                    value={email}
+                    onChangeText={handleEmailChange}
+                    keyboardType="email-address"
+                    autoCapitalize="none"
+                    autoComplete="email"
+                    editable={!isLoading}
+                  />
+                </View>
+              </View>
+
+              {/* Кнопка подтверждения */}
+              <TouchableOpacity 
+                style={[
+                  styles.confirmButton,
+                  isLoading && styles.confirmButtonDisabled,
+                  !email.trim() && styles.confirmButtonDisabled
+                ]}
+                onPress={handleResetPassword}
+                disabled={isLoading || !email.trim()}
+              >
+                {isLoading ? (
+                  <ActivityIndicator color="#000" size="small" />
+                ) : (
+                  <Text style={styles.confirmButtonText}>
+                    Отправить инструкции
+                  </Text>
+                )}
+              </TouchableOpacity>
+            </>
+          )}
+
+          {/* Сообщение об успехе */}
+          {isSuccess && (
+            <View style={styles.successContainer}>
               <Image
-                source={require("@/assets/images/email-icon.png")}
-                style={styles.inputIcon}
+                source={require("@/assets/images/checkmark-done.png")}
+                style={styles.successIcon}
                 resizeMode="contain"
               />
-              <TextInput
-                style={styles.input}
-                placeholder="Email"
-                placeholderTextColor="#666"
-                value={email}
-                onChangeText={setEmail}
-                keyboardType="email-address"
-                autoCapitalize="none"
-                autoComplete="email"
-              />
+              <Text style={styles.successText}>
+                Проверьте вашу почту {email} и следуйте инструкциям в письме.
+              </Text>
+              
+              <TouchableOpacity 
+                style={styles.backToLoginButton}
+                onPress={() => router.back()}
+              >
+                <Text style={styles.backToLoginText}>Вернуться к входу</Text>
+              </TouchableOpacity>
             </View>
-          </View>
-
-          {/* Кнопка подтверждения */}
-          <TouchableOpacity 
-            style={styles.confirmButton}
-            onPress={handleResetPassword}
-          >
-            <Text style={styles.confirmButtonText}>Подтвердить</Text>
-          </TouchableOpacity>
+          )}
         </View>
 
         {/* Дополнительная информация */}
-        <View style={styles.footerContainer}>
-          <Text style={styles.footerText}>
-            На указанный email будет отправлено письмо с инструкциями по восстановлению пароля.
-          </Text>
-        </View>
+        {!isSuccess && (
+          <View style={styles.footerContainer}>
+            <Text style={styles.footerText}>
+              На указанный email будет отправлено письмо со ссылкой для сброса пароля. 
+              Ссылка действительна в течение 1 часа.
+            </Text>
+            
+            {/* Ссылка на помощь */}
+            <TouchableOpacity 
+              style={styles.helpLink}
+              onPress={() => Alert.alert(
+                'Нужна помощь?',
+                'Если вы не получили письмо:\n• Проверьте папку "Спам"\n• Убедитесь, что ввели правильный email\n• Попробуйте еще раз через несколько минут'
+              )}
+            >
+              <Text style={styles.helpLinkText}>Не получили письмо?</Text>
+            </TouchableOpacity>
+          </View>
+        )}
       </View>
     </View>
   );
@@ -157,6 +284,9 @@ const styles = StyleSheet.create({
     height: 24,
     tintColor: '#000',
   },
+  disabledIcon: {
+    opacity: 0.5,
+  },
   // Заголовок
   headerContainer: {
     alignItems: 'center',
@@ -185,7 +315,7 @@ const styles = StyleSheet.create({
   },
   subtitle: {
     fontFamily: 'Playfair Display Regular',
-    fontSize: 16,
+    fontSize: 18,
     color: '#000',
     lineHeight: 20,
     textAlign: 'center',
@@ -199,11 +329,11 @@ const styles = StyleSheet.create({
   },
   instructionText: {
     fontFamily: 'Playfair Display Regular',
-    fontSize: 18,
+    fontSize: 16,
     color: '#000',
     textAlign: 'center',
     marginBottom: 30,
-    lineHeight: 24,
+    lineHeight: 22,
   },
   inputContainer: {
     width: '100%',
@@ -251,16 +381,54 @@ const styles = StyleSheet.create({
     shadowRadius: 5,
     elevation: 8,
   },
+  confirmButtonDisabled: {
+    backgroundColor: '#B8D48A',
+    opacity: 0.7,
+  },
   confirmButtonText: {
     fontFamily: 'Playfair Display Regular',
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: 'normal',
     color: 'black',
+  },
+  // Сообщение об успехе
+  successContainer: {
+    alignItems: 'center',
+    backgroundColor: 'rgba(155, 223, 17, 0.1)',
+    borderRadius: 20,
+    padding: 25,
+    borderWidth: 2,
+    borderColor: '#9BDF11',
+    width: '100%',
+  },
+  successIcon: {
+    width: 60,
+    height: 60,
+    marginBottom: 15,
+  },
+  successText: {
+    fontFamily: 'Playfair Display Regular',
+    fontSize: 16,
+    color: '#000',
+    textAlign: 'center',
+    lineHeight: 22,
+    marginBottom: 20,
+  },
+  backToLoginButton: {
+    backgroundColor: '#6A9AA9',
+    borderRadius: 75,
+    paddingVertical: 12,
+    paddingHorizontal: 30,
+  },
+  backToLoginText: {
+    fontFamily: 'Playfair Display Regular',
+    fontSize: 16,
+    color: '#FFF',
   },
   // Футер
   footerContainer: {
     alignItems: 'center',
-    paddingHorizontal: 20,
+    paddingHorizontal: 10,
   },
   footerText: {
     fontFamily: 'Playfair Display Regular',
@@ -268,5 +436,16 @@ const styles = StyleSheet.create({
     color: '#001226',
     textAlign: 'center',
     lineHeight: 18,
+    marginBottom: 20,
+  },
+  helpLink: {
+    padding: 10,
+  },
+  helpLinkText: {
+    fontFamily: 'Playfair Display Regular',
+    fontSize: 14,
+    color: '#001226',
+    textDecorationLine: 'underline',
+    textAlign: 'center',
   },
 });

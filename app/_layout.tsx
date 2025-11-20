@@ -4,6 +4,11 @@ import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { useEffect } from 'react';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { AuthProvider } from '../app/contexts/AuthContext';
+import AuthInitializer from '../app/components/AuthInitializer';
+
+// Импортируем конфигурацию Firebase
+import '../app/firebase/config';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -27,29 +32,34 @@ export default function RootLayout() {
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <Stack screenOptions={{ headerShown: false }}>
-        {/* Страницы без нижней навигации */}
-        <Stack.Screen name="index" />
-        <Stack.Screen name="title" />
-        <Stack.Screen name="welcome" />
-        <Stack.Screen name="login" />
-        <Stack.Screen name="forgot-password" />
-        
-        {/* Основные страницы с нижней навигацией - без заголовка и кнопки назад */}
-        <Stack.Screen 
-          name="(tabs)" 
-          options={{ 
-            headerShown: false,
-            // Отключаем жесты для назад на iOS
-            gestureEnabled: false 
-          }} 
-        />
-        
-        {/* Остальные страницы */}
-        <Stack.Screen name="meal" />
-        <Stack.Screen name="profile-settings" />
-        <Stack.Screen name="help-support" />
-      </Stack>
+      <AuthProvider>
+        <AuthInitializer>
+          <Stack screenOptions={{ headerShown: false }}>
+            {/* Страницы без нижней навигации */}
+            <Stack.Screen name="index" />
+            <Stack.Screen name="title" />
+            <Stack.Screen name="welcome" />
+            <Stack.Screen name="login" />
+            <Stack.Screen name="forgot-password" />
+            <Stack.Screen name='registration'/>
+            
+            {/* Основные страницы с нижней навигацией - без заголовка и кнопки назад */}
+            <Stack.Screen 
+              name="(tabs)" 
+              options={{ 
+                headerShown: false,
+                // Отключаем жесты для назад на iOS
+                gestureEnabled: false 
+              }} 
+            />
+            
+            {/* Остальные страницы */}
+            <Stack.Screen name="meal" />
+            <Stack.Screen name="profile-settings" />
+            <Stack.Screen name="help-support" />
+          </Stack>
+        </AuthInitializer>
+      </AuthProvider>
     </GestureHandlerRootView>
   );
 }
