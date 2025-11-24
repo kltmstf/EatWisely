@@ -1,5 +1,4 @@
-// app/profile-setup.tsx
-import React, { useState } from 'react';
+import React, { useState } from "react";
 import {
   View,
   Text,
@@ -7,13 +6,15 @@ import {
   TextInput,
   TouchableOpacity,
   ScrollView,
-  Image,
   KeyboardAvoidingView,
   Platform,
-  Alert
-} from 'react-native';
-import { useRouter } from 'expo-router';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+  Alert,
+  SafeAreaView,
+} from "react-native";
+import { useRouter } from "expo-router";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+// Импортируем иконки
+import { Ionicons } from "@expo/vector-icons";
 
 type ProfileData = {
   description: string;
@@ -29,71 +30,65 @@ type ProfileData = {
   isPrivate: boolean;
 };
 
-const PROFILE_STORAGE_KEY = 'user_profile_data';
+const PROFILE_STORAGE_KEY = "user_profile_data";
 
 export default function ProfileSetup() {
   const router = useRouter();
   const [currentStep, setCurrentStep] = useState(0);
-  
   const [profileData, setProfileData] = useState<ProfileData>({
-    description: '',
-    age: '',
-    height: '',
-    gender: 'Муж',
-    weight: '',
-    goal: 'Поддержание веса',
-    activity: 'Низкий (0-1 тренировка в неделю)',
-    nutritionType: 'Обычное',
-    allergies: '',
-    dislikes: '',
-    isPrivate: false
+    description: "",
+    age: "",
+    height: "",
+    gender: "Муж",
+    weight: "",
+    goal: "Поддержание веса",
+    activity: "Низкий (0-1 тренировка в неделю)",
+    nutritionType: "Обычное",
+    allergies: "",
+    dislikes: "",
+    isPrivate: false,
   });
 
-  const goals = [
-    "Похудение",
-    "Поддержание веса", 
-    "Набор веса"
-  ];
+  const goals = ["Похудение", "Поддержание веса", "Набор веса"];
 
   const activityLevels = [
     "Низкий (0-1 тренировка в неделю)",
     "Умеренный (2-3 тренировки в неделю)",
-    "Интенсивный (3 и более тренировки в неделю)"
+    "Интенсивный (3 и более тренировки в неделю)",
   ];
 
-  const nutritionTypes = [
-    "Обычное",
-    "Вегетарианское",
-    "Веганское"
-  ];
+  const nutritionTypes = ["Обычное", "Вегетарианское", "Веганское"];
 
   const genders = ["Муж", "Жен"];
 
   const steps = [
     {
       title: "Основная информация",
-      description: "Расскажите немного о себе"
+      description: "Расскажите немного о себе",
     },
     {
-      title: "Физические данные", 
-      description: "Помогите нам лучше понять ваши потребности"
+      title: "Физические данные",
+      description: "Помогите нам лучше понять ваши потребности",
     },
     {
       title: "Цели и активность",
-      description: "Что вы хотите достичь?"
+      description: "Что вы хотите достичь?",
     },
     {
       title: "Питание",
-      description: "Ваши предпочтения в еде"
-    }
+      description: "Ваши предпочтения в еде",
+    },
   ];
 
   const saveProfileData = async () => {
     try {
-      await AsyncStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(profileData));
+      await AsyncStorage.setItem(
+        PROFILE_STORAGE_KEY,
+        JSON.stringify(profileData)
+      );
       return true;
     } catch (error) {
-      console.error('Error saving profile data:', error);
+      console.error("Error saving profile data:", error);
       return false;
     }
   };
@@ -106,10 +101,10 @@ export default function ProfileSetup() {
       const success = await saveProfileData();
       if (success) {
         // Помечаем, что профиль настроен
-        await AsyncStorage.setItem('profile_setup_complete', 'true');
-        router.replace('/(tabs)');
+        await AsyncStorage.setItem("profile_setup_complete", "true");
+        router.replace("/home");
       } else {
-        Alert.alert('Ошибка', 'Не удалось сохранить данные профиля');
+        Alert.alert("Ошибка", "Не удалось сохранить данные профиля");
       }
     }
   };
@@ -125,8 +120,8 @@ export default function ProfileSetup() {
   const handleSkip = async () => {
     const success = await saveProfileData();
     if (success) {
-      await AsyncStorage.setItem('profile_setup_complete', 'true');
-      router.replace('/(tabs)');
+      await AsyncStorage.setItem("profile_setup_complete", "true");
+      router.replace("/home");
     }
   };
 
@@ -136,15 +131,12 @@ export default function ProfileSetup() {
   const Step1 = () => (
     <View style={styles.stepContent}>
       <View style={styles.photoContainer}>
-        <Image 
-          source={require('@/assets/images/people-icon.png')}
-          style={styles.profilePhoto}
-        />
+        {/* Заменили Image на иконку-плейсхолдер */}
+        <View style={styles.placeholderPhoto}>
+          <Ionicons name="person" size={60} color="#6A9AA9" />
+        </View>
         <TouchableOpacity style={styles.editPhotoButton}>
-          <Image 
-            source={require('@/assets/images/edit-icon.png')}
-            style={styles.editIcon}
-          />
+          <Ionicons name="pencil" size={16} color="#FFF" />
         </TouchableOpacity>
       </View>
 
@@ -153,8 +145,11 @@ export default function ProfileSetup() {
         <TextInput
           style={[styles.input, styles.textArea]}
           value={profileData.description}
-          onChangeText={(text) => setProfileData({...profileData, description: text})}
+          onChangeText={(text) =>
+            setProfileData({ ...profileData, description: text })
+          }
           placeholder="Расскажите о своих целях, интересах..."
+          placeholderTextColor="#999"
           multiline
           numberOfLines={4}
           textAlignVertical="top"
@@ -172,8 +167,11 @@ export default function ProfileSetup() {
           <TextInput
             style={styles.input}
             value={profileData.age}
-            onChangeText={(text) => setProfileData({...profileData, age: text})}
+            onChangeText={(text) =>
+              setProfileData({ ...profileData, age: text })
+            }
             placeholder="лет"
+            placeholderTextColor="#999"
             keyboardType="numeric"
           />
         </View>
@@ -183,8 +181,11 @@ export default function ProfileSetup() {
           <TextInput
             style={styles.input}
             value={profileData.height}
-            onChangeText={(text) => setProfileData({...profileData, height: text})}
+            onChangeText={(text) =>
+              setProfileData({ ...profileData, height: text })
+            }
             placeholder="см"
+            placeholderTextColor="#999"
             keyboardType="numeric"
           />
         </View>
@@ -194,8 +195,11 @@ export default function ProfileSetup() {
           <TextInput
             style={styles.input}
             value={profileData.weight}
-            onChangeText={(text) => setProfileData({...profileData, weight: text})}
+            onChangeText={(text) =>
+              setProfileData({ ...profileData, weight: text })
+            }
             placeholder="кг"
+            placeholderTextColor="#999"
             keyboardType="numeric"
           />
         </View>
@@ -208,14 +212,16 @@ export default function ProfileSetup() {
                 key={gender}
                 style={[
                   styles.genderButton,
-                  profileData.gender === gender && styles.genderButtonActive
+                  profileData.gender === gender && styles.genderButtonActive,
                 ]}
-                onPress={() => setProfileData({...profileData, gender})}
+                onPress={() => setProfileData({ ...profileData, gender })}
               >
-                <Text style={[
-                  styles.genderText,
-                  profileData.gender === gender && styles.genderTextActive
-                ]}>
+                <Text
+                  style={[
+                    styles.genderText,
+                    profileData.gender === gender && styles.genderTextActive,
+                  ]}
+                >
                   {gender}
                 </Text>
               </TouchableOpacity>
@@ -237,14 +243,16 @@ export default function ProfileSetup() {
               key={goal}
               style={[
                 styles.optionButton,
-                profileData.goal === goal && styles.optionButtonActive
+                profileData.goal === goal && styles.optionButtonActive,
               ]}
-              onPress={() => setProfileData({...profileData, goal})}
+              onPress={() => setProfileData({ ...profileData, goal })}
             >
-              <Text style={[
-                styles.optionText,
-                profileData.goal === goal && styles.optionTextActive
-              ]}>
+              <Text
+                style={[
+                  styles.optionText,
+                  profileData.goal === goal && styles.optionTextActive,
+                ]}
+              >
                 {goal}
               </Text>
             </TouchableOpacity>
@@ -260,14 +268,16 @@ export default function ProfileSetup() {
               key={activity}
               style={[
                 styles.optionButton,
-                profileData.activity === activity && styles.optionButtonActive
+                profileData.activity === activity && styles.optionButtonActive,
               ]}
-              onPress={() => setProfileData({...profileData, activity})}
+              onPress={() => setProfileData({ ...profileData, activity })}
             >
-              <Text style={[
-                styles.optionText,
-                profileData.activity === activity && styles.optionTextActive
-              ]}>
+              <Text
+                style={[
+                  styles.optionText,
+                  profileData.activity === activity && styles.optionTextActive,
+                ]}
+              >
                 {activity}
               </Text>
             </TouchableOpacity>
@@ -288,14 +298,18 @@ export default function ProfileSetup() {
               key={type}
               style={[
                 styles.optionButton,
-                profileData.nutritionType === type && styles.optionButtonActive
+                profileData.nutritionType === type && styles.optionButtonActive,
               ]}
-              onPress={() => setProfileData({...profileData, nutritionType: type})}
+              onPress={() =>
+                setProfileData({ ...profileData, nutritionType: type })
+              }
             >
-              <Text style={[
-                styles.optionText,
-                profileData.nutritionType === type && styles.optionTextActive
-              ]}>
+              <Text
+                style={[
+                  styles.optionText,
+                  profileData.nutritionType === type && styles.optionTextActive,
+                ]}
+              >
                 {type}
               </Text>
             </TouchableOpacity>
@@ -308,8 +322,11 @@ export default function ProfileSetup() {
         <TextInput
           style={styles.input}
           value={profileData.allergies}
-          onChangeText={(text) => setProfileData({...profileData, allergies: text})}
+          onChangeText={(text) =>
+            setProfileData({ ...profileData, allergies: text })
+          }
           placeholder="орехи, цитрусы, молоко..."
+          placeholderTextColor="#999"
         />
       </View>
 
@@ -318,8 +335,11 @@ export default function ProfileSetup() {
         <TextInput
           style={styles.input}
           value={profileData.dislikes}
-          onChangeText={(text) => setProfileData({...profileData, dislikes: text})}
+          onChangeText={(text) =>
+            setProfileData({ ...profileData, dislikes: text })
+          }
           placeholder="грибы, брокколи, рыба..."
+          placeholderTextColor="#999"
         />
       </View>
     </View>
@@ -329,55 +349,57 @@ export default function ProfileSetup() {
   const CurrentStepComponent = stepComponents[currentStep];
 
   return (
-    <KeyboardAvoidingView 
+    <KeyboardAvoidingView
       style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
     >
       {/* Шапка */}
-      <View style={styles.header}>
-        <TouchableOpacity style={styles.backButton} onPress={handleBack}>
-          <Image 
-            source={require('@/assets/images/back-icon.png')}
-            style={styles.backIcon}
-          />
-        </TouchableOpacity>
-        
-        <View style={styles.progressContainer}>
-          <View style={styles.progressBar}>
-            <View style={[styles.progressFill, { width: `${progress}%` }]} />
+      <SafeAreaView style={styles.safeAreaHeader}>
+        <View style={styles.headerContent}>
+          <TouchableOpacity style={styles.backButton} onPress={handleBack}>
+            <Ionicons name="arrow-back" size={24} color="#000" />
+          </TouchableOpacity>
+          <View style={styles.progressContainer}>
+            <View style={styles.progressBar}>
+              <View style={[styles.progressFill, { width: `${progress}%` }]} />
+            </View>
+            <Text style={styles.progressText}>
+              {currentStep + 1} из {steps.length}
+            </Text>
           </View>
-          <Text style={styles.progressText}>
-            {currentStep + 1} из {steps.length}
-          </Text>
-        </View>
 
-        <TouchableOpacity style={styles.skipButton} onPress={handleSkip}>
-          <Text style={styles.skipText}>Пропустить</Text>
-        </TouchableOpacity>
-      </View>
+          <TouchableOpacity style={styles.skipButton} onPress={handleSkip}>
+            <Text style={styles.skipText}>Пропустить</Text>
+          </TouchableOpacity>
+        </View>
+      </SafeAreaView>
 
       {/* Контент */}
-      <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        style={styles.scrollView}
+        showsVerticalScrollIndicator={false}
+      >
         <View style={styles.content}>
           <Text style={styles.stepTitle}>{steps[currentStep].title}</Text>
-          <Text style={styles.stepDescription}>{steps[currentStep].description}</Text>
-          
+          <Text style={styles.stepDescription}>
+            {steps[currentStep].description}
+          </Text>
           <CurrentStepComponent />
         </View>
       </ScrollView>
 
       {/* Кнопка продолжения */}
       <View style={styles.footer}>
-        <TouchableOpacity 
-          style={styles.nextButton}
-          onPress={handleNext}
-        >
+        <TouchableOpacity style={styles.nextButton} onPress={handleNext}>
           <Text style={styles.nextButtonText}>
-            {currentStep === steps.length - 1 ? 'Завершить' : 'Далее'}
+            {currentStep === steps.length - 1 ? "Завершить" : "Далее"}
           </Text>
-          <Image 
-            source={require('@/assets/images/forward-icon.png')}
-            style={styles.nextIcon}
+          <Ionicons
+            name={
+              currentStep === steps.length - 1 ? "checkmark" : "arrow-forward"
+            }
+            size={20}
+            color="#000"
           />
         </TouchableOpacity>
       </View>
@@ -390,32 +412,29 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: "white",
   },
-  header: {
+  safeAreaHeader: {
+    backgroundColor: "#C2DAE2",
+  },
+  headerContent: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     paddingHorizontal: 20,
-    paddingTop: 60,
-    paddingBottom: 20,
-    backgroundColor: "#C2DAE2",
+    paddingVertical: 15,
+    marginTop: Platform.OS === "android" ? 30 : 0,
   },
   backButton: {
-    padding: 10,
-  },
-  backIcon: {
-    width: 30,
-    height: 15,
-    tintColor: "#000000",
+    padding: 5,
   },
   progressContainer: {
     flex: 1,
     alignItems: "center",
-    marginHorizontal: 20,
+    marginHorizontal: 15,
   },
   progressBar: {
     width: "100%",
     height: 4,
-    backgroundColor: "#E5E7EB",
+    backgroundColor: "rgba(255,255,255,0.5)",
     borderRadius: 2,
     overflow: "hidden",
   },
@@ -431,12 +450,13 @@ const styles = StyleSheet.create({
     fontFamily: "Playfair Display Regular",
   },
   skipButton: {
-    padding: 10,
+    padding: 5,
   },
   skipText: {
     fontSize: 14,
-    color: "#6A9AA9",
+    color: "#4A7A89",
     fontFamily: "Playfair Display Regular",
+    fontWeight: "600",
   },
   scrollView: {
     flex: 1,
@@ -449,7 +469,7 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: "#000000",
     marginBottom: 8,
-    fontFamily: "Playfair Display Regular",
+    fontFamily: "Playfair Display Bold", // Исправлено на Bold если есть, иначе Regular
     textAlign: "center",
   },
   stepDescription: {
@@ -465,19 +485,31 @@ const styles = StyleSheet.create({
   photoContainer: {
     alignItems: "center",
     marginBottom: 32,
+    position: "relative",
+    alignSelf: "center",
   },
-  profilePhoto: {
+  placeholderPhoto: {
     width: 120,
     height: 120,
     borderRadius: 60,
-    marginBottom: 12,
+    backgroundColor: "#E1F0F5",
+    justifyContent: "center",
+    alignItems: "center",
+    borderWidth: 2,
+    borderColor: "#6A9AA9",
   },
   editPhotoButton: {
-    padding: 8,
-  },
-  editIcon: {
-    width: 24,
-    height: 24,
+    position: "absolute",
+    bottom: 0,
+    right: 0,
+    backgroundColor: "#6A9AA9",
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    justifyContent: "center",
+    alignItems: "center",
+    borderWidth: 2,
+    borderColor: "white",
   },
   inputGroup: {
     marginBottom: 24,
@@ -501,14 +533,14 @@ const styles = StyleSheet.create({
     fontFamily: "Playfair Display Regular",
   },
   textArea: {
-    height: 100,
-    textAlignVertical: 'top',
+    height: 120,
+    textAlignVertical: "top",
   },
   dataGrid: {
     gap: 16,
   },
   genderContainer: {
-    flexDirection: 'row',
+    flexDirection: "row",
     gap: 12,
   },
   genderButton: {
@@ -519,7 +551,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     paddingHorizontal: 16,
     paddingVertical: 12,
-    alignItems: 'center',
+    alignItems: "center",
   },
   genderButtonActive: {
     backgroundColor: "#9BDF11",
@@ -553,7 +585,7 @@ const styles = StyleSheet.create({
   optionText: {
     fontSize: 16,
     color: "#000000",
-    textAlign: 'center',
+    textAlign: "center",
     fontFamily: "Playfair Display Regular",
     fontWeight: "500",
   },
@@ -582,10 +614,5 @@ const styles = StyleSheet.create({
     color: "#000000",
     fontFamily: "Playfair Display Regular",
     marginRight: 8,
-  },
-  nextIcon: {
-    width: 20,
-    height: 20,
-    tintColor: "#000000",
   },
 });

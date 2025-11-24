@@ -1,39 +1,40 @@
-// app/login.js
 import React, { useState, useEffect } from 'react';
-import { 
-  View, 
-  Text, 
-  StyleSheet, 
-  TextInput, 
-  TouchableOpacity, 
+import {
+  View,
+  Text,
+  StyleSheet,
+  TextInput,
+  TouchableOpacity,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
   Image,
   BackHandler,
   Alert,
-  ActivityIndicator
+  ActivityIndicator,
+  Dimensions 
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import { useAuthContext } from '@/app//contexts/AuthContext';
+import { useAuthContext } from '@/app/contexts/AuthContext';
+import { Ionicons } from '@expo/vector-icons'; 
+
+// Получаем высоту экрана
+const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 export default function Login() {
   const router = useRouter();
   const { signIn, loading: authLoading, error, clearError, isAuthenticated } = useAuthContext();
-  
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
 
-  // Редирект если уже авторизован
   useEffect(() => {
     if (isAuthenticated) {
       router.replace('/home');
     }
   }, [isAuthenticated]);
 
-  // Очищаем ошибки при монтировании компонента
   useEffect(() => {
     if (error) {
       clearError();
@@ -44,15 +45,14 @@ export default function Login() {
     const backHandler = BackHandler.addEventListener(
       'hardwareBackPress',
       () => {
-        router.push('/');
-        return true;
+        // Лучше выходить из приложения или ничего не делать,
+        // чем пушить на '/' (что может создать цикл)
+        return false;
       }
     );
-
     return () => backHandler.remove();
   }, []);
 
-  // Показываем ошибки
   useEffect(() => {
     if (error && !authLoading) {
       Alert.alert('Ошибка входа', error, [{ text: 'OK', onPress: clearError }]);
@@ -60,69 +60,54 @@ export default function Login() {
   }, [error, authLoading]);
 
   const handleLogin = async () => {
-  // Валидация полей
-  if (!email.trim() || !password.trim()) {
-    Alert.alert('Ошибка', 'Пожалуйста, заполните все поля');
-    return;
-  }
-
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  if (!emailRegex.test(email)) {
-    Alert.alert('Ошибка', 'Пожалуйста, введите корректный email');
-    return;
-  }
-
-  setIsLoading(true);
-  clearError(); // Очищаем предыдущие ошибки
-
-  try {
-    console.log('🔄 Attempting login for:', email);
-    await signIn(email, password);
-    console.log('✅ Login successful');
-    
-  } catch (error) {
-    console.log('❌ Login failed:', error.message);
-    console.log('🔍 Full error:', error);
-    
-    let alertTitle = 'Ошибка входа';
-    let alertMessage = error.message;
-    
-    // Улучшенная обработка ошибок
-    if (error.message.includes('Неверный email или пароль') || 
-        error.message.includes('Неверный пароль') || 
-        error.message.includes('Пользователь не найден')) {
-      alertTitle = 'Неверные данные';
-      alertMessage = 'Неверный email или пароль.\n\nПроверьте:\n• Правильность email адреса\n• Правильность пароля\n• Регистр букв\n• Язык раскладки клавиатуры';
+    if (!email.trim() || !password.trim()) {
+      Alert.alert('Ошибка', 'Пожалуйста, заполните все поля');
+      return;
     }
-    
-    const alertButtons = [{ text: 'Понятно' }];
-    
-    // Добавляем полезные кнопки
-    if (error.message.includes('Неверный email или пароль') || 
-        error.message.includes('Неверный пароль') || 
-        error.message.includes('Пользователь не найден')) {
-      alertButtons.push(
-        {
-          text: 'Восстановить пароль',
-          onPress: () => {
-            router.push('/forgot-password');
-          }
-        },
-        {
-          text: 'Зарегистрироваться',
-          onPress: () => {
-            router.push('/registration');
-          }
-        }
-      );
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      Alert.alert('Ошибка', 'Пожалуйста, введите корректный email');
+      return;
     }
-    
-    Alert.alert(alertTitle, alertMessage, alertButtons);
-    
-  } finally {
-    setIsLoading(false);
-  }
-};
+
+    setIsLoading(true);
+    clearError();
+
+    try {
+      await signIn(email, password);
+    } catch (error) {
+      console.log('❌ Login failed:', error.message);
+      let alertTitle = 'Ошибка входа';
+      let alertMessage = error.message;
+      const isInvalidCredentials = error.message.includes('Неверный email или пароль');
+
+      if (isInvalidCredentials) {
+        alertTitle = 'Неверные данные';
+        alertMessage = error.message;
+      }
+      const alertButtons = [{ text: 'Понятно' }];
+      if (isInvalidCredentials) {
+        alertButtons.push(
+          {
+            text: 'Восстановить пароль',
+            onPress: () => {
+              router.push('/forgot-password');
+            }
+          },
+          {
+            text: 'Зарегистрироваться',
+            onPress: () => {
+              router.push('/registration');
+            }
+          }
+        );
+      }
+      Alert.alert(alertTitle, alertMessage, alertButtons);
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   const handleForgotPassword = () => {
     router.push('/forgot-password');
@@ -132,18 +117,19 @@ export default function Login() {
     router.push('/registration');
   };
 
-  // Блокируем кнопку если идет загрузка или поля пустые
   const isLoginDisabled = isLoading || authLoading || !email.trim() || !password.trim();
 
   return (
-    <KeyboardAvoidingView 
+    <KeyboardAvoidingView
       style={styles.container}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
-      <ScrollView 
+      <ScrollView
         contentContainerStyle={styles.scrollContainer}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
+        // bounces={false} предотвращает "прыжки" на iOS
+        bounces={false}
       >
         {/* Первый контейнер: изображение и текст */}
         <View style={styles.headerContainer}>
@@ -162,14 +148,10 @@ export default function Login() {
 
         {/* Второй контейнер: форма ввода данных */}
         <View style={styles.formContainer}>
-          {/* Поле Email с иконкой */}
           <View style={styles.inputContainer}>
             <View style={styles.inputWithIcon}>
-              <Image
-                source={require("@/assets/images/email-icon.png")}
-                style={styles.inputIcon}
-                resizeMode="contain"
-              />
+              
+              <Ionicons name="mail-outline" size={20} color="black" style={styles.inputIcon} />
               <TextInput
                 style={styles.input}
                 placeholder="Email"
@@ -184,14 +166,10 @@ export default function Login() {
             </View>
           </View>
 
-          {/* Поле Пароль с иконкой */}
           <View style={styles.inputContainer}>
             <View style={styles.inputWithIcon}>
-              <Image
-                source={require("@/assets/images/password-icon.png")}
-                style={styles.inputIcon}
-                resizeMode="contain"
-              />
+             
+              <Ionicons name="lock-closed-outline" size={20} color="black" style={styles.inputIcon} />
               <TextInput
                 style={styles.input}
                 placeholder="Пароль"
@@ -202,20 +180,17 @@ export default function Login() {
                 autoComplete="password"
                 editable={!isLoading && !authLoading}
               />
-              <TouchableOpacity 
+              <TouchableOpacity
                 onPress={() => setShowPassword(!showPassword)}
                 style={styles.eyeButton}
                 disabled={isLoading || authLoading}
               >
-                <Text style={styles.eyeText}>
-                  {showPassword ? '🙈' : '👁️'}
-                </Text>
+                <Ionicons name={showPassword ? "eye-off-outline" : "eye-outline"} size={20} color="black" />
               </TouchableOpacity>
             </View>
           </View>
 
-          {/* Кнопка входа */}
-          <TouchableOpacity 
+          <TouchableOpacity
             style={[
               styles.loginButton,
               isLoginDisabled && styles.loginButtonDisabled
@@ -230,7 +205,6 @@ export default function Login() {
             )}
           </TouchableOpacity>
 
-          {/* Ссылка на регистрацию */}
           <View style={styles.signUpContainer}>
             <Text style={styles.signUpText}>Еще нет аккаунта? </Text>
             <TouchableOpacity onPress={handleSignUpRedirect}>
@@ -241,7 +215,7 @@ export default function Login() {
 
         {/* Третий контейнер: восстановление пароля */}
         <View style={styles.footerContainer}>
-          <TouchableOpacity 
+          <TouchableOpacity
             style={styles.forgotPasswordContainer}
             onPress={handleForgotPassword}
             disabled={isLoading || authLoading}
@@ -255,7 +229,6 @@ export default function Login() {
   );
 }
 
-
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -265,22 +238,28 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     paddingHorizontal: 20,
     paddingBottom: 20,
+    
+    // Устанавливаем минимальную высоту равную высоте экрана.
+    // Это заставляет flex-контейнеры внутри ScrollView работать корректно.
+    minHeight: SCREEN_HEIGHT,
+    justifyContent: 'space-between' // Распределяем контент
   },
-  // Первый контейнер - изображение и текст
   headerContainer: {
+    // Используем height в % или фиксированные значения вместо flex внутри ScrollView,
+    // либо flex работает только благодаря minHeight у родителя
     flex: 0.35,
     justifyContent: "center",
     alignItems: 'center',
-    paddingTop: 20,
+    paddingTop: 40, 
     paddingBottom: 20,
   },
   headerImage: {
-    width: 280,
-    height: 280,
+    width: 250,
+    height: 250,
   },
   headerTextContainer: {
     alignItems: 'center',
-    marginTop: 20,
+    marginTop: 10,
   },
   title: {
     fontFamily: 'Playfair Display Bold',
@@ -297,11 +276,10 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     textAlign: 'center',
   },
-  // Второй контейнер - форма ввода данных
   formContainer: {
     flex: 0.45,
     justifyContent: 'center',
-    marginBottom: 60,
+    marginBottom: 20,
   },
   inputContainer: {
     marginBottom: 20,
@@ -314,19 +292,17 @@ const styles = StyleSheet.create({
     borderWidth: 4,
     borderColor: '#6A9AA9',
     paddingHorizontal: 15,
-    paddingVertical: 5,
+    // Фиксированная высота для стабильности
+    height: 60,
   },
   inputIcon: {
-    width: 20,
-    height: 20,
     marginRight: 10,
-    tintColor: '#000',
   },
   input: {
     flex: 1,
     fontSize: 16,
     color: '#000',
-    paddingVertical: 12,
+    height: '100%', // Занимает всю высоту контейнера
     fontFamily: 'Playfair Display Regular',
   },
   loginButton: {
@@ -339,7 +315,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginTop: 15,
     borderWidth: 2,
-    borderColor: '#C2DAE2', 
+    borderColor: '#C2DAE2',
     shadowColor: '#000',
     shadowOffset: {
       width: 0,
@@ -360,7 +336,6 @@ const styles = StyleSheet.create({
     fontWeight: 'normal',
     color: 'black',
   },
-  // Ссылка на регистрацию
   signUpContainer: {
     flexDirection: 'row',
     justifyContent: 'center',
@@ -378,11 +353,11 @@ const styles = StyleSheet.create({
     color: '#001226',
     textDecorationLine: 'underline',
   },
-  // Третий контейнер - восстановление пароля
   footerContainer: {
     flex: 0.2,
     alignItems: 'center',
-    justifyContent: 'flex-start',
+    justifyContent: 'flex-end', // Выравнивание по центру по вертикали
+    paddingBottom: 0,
   },
   forgotPasswordContainer: {
     alignItems: 'center',
@@ -401,14 +376,9 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#001226',
     textAlign: 'center',
+    textDecorationLine: 'underline',
   },
   eyeButton: {
     padding: 8,
-    marginLeft: 8,
-  },
-  eyeIcon: {
-    width: 20,
-    height: 20,
-    tintColor: '#000',
   },
 });

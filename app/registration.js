@@ -1,11 +1,10 @@
-// app/registration.js
 import React, { useState, useEffect } from 'react';
-import { 
-  View, 
-  Text, 
-  StyleSheet, 
-  TextInput, 
-  TouchableOpacity, 
+import {
+  View,
+  Text,
+  StyleSheet,
+  TextInput,
+  TouchableOpacity,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
@@ -19,7 +18,7 @@ import { useAuthContext } from '@/app/contexts/AuthContext';
 export default function Registration() {
   const router = useRouter();
   const { signUp, loading: authLoading, error, clearError } = useAuthContext();
-  
+
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -29,12 +28,14 @@ export default function Registration() {
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
 
+  // Очистка ошибки при первом рендере
   useEffect(() => {
     if (error) {
       clearError();
     }
   }, []);
 
+  // Отображение ошибки
   useEffect(() => {
     if (error && !authLoading) {
       Alert.alert('Ошибка регистрации', error, [{ text: 'OK' }]);
@@ -53,11 +54,20 @@ export default function Registration() {
       return;
     }
 
+    // Проверка длины и сложности пароля
     if (password.length < 6) {
       Alert.alert('Ошибка', 'Пароль должен содержать минимум 6 символов');
       return;
     }
 
+    // Проверка на сложность (заглавная буква и цифра)
+    const passwordRegex = /^(?=.*[A-Z])(?=.*\d).+$/;
+    if (!passwordRegex.test(password)) {
+      Alert.alert('Ошибка', 'Пароль должен содержать хотя бы одну заглавную букву (A-Z) и одну цифру (0-9).');
+      return;
+    }
+
+    // Проверка формата email
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email)) {
       Alert.alert('Ошибка', 'Пожалуйста, введите корректный email');
@@ -72,28 +82,29 @@ export default function Registration() {
         lastName: lastName.trim()
       });
       Alert.alert('Успешно', 'Регистрация прошла успешно!', [
-      { 
-    text: 'Продолжить', 
-    onPress: () => router.push('/profile-setup') 
-      }
+        {
+          text: 'Продолжить',
+          onPress: () => router.push('/profile-setup')
+        }
       ]);
     } catch (error) {
       console.error('Registration error:', error);
+      // Ошибка будет отображена через useEffect
     } finally {
       setIsLoading(false);
     }
   };
 
-  const isSignUpDisabled = isLoading || authLoading || 
-    !email.trim() || !password.trim() || !firstName.trim() || 
+  const isSignUpDisabled = isLoading || authLoading ||
+    !email.trim() || !password.trim() || !firstName.trim() ||
     password !== confirmPassword;
 
   return (
-    <KeyboardAvoidingView 
+    <KeyboardAvoidingView
       style={styles.container}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
-      <ScrollView 
+      <ScrollView
         contentContainerStyle={styles.scrollContainer}
         showsVerticalScrollIndicator={false}
       >
@@ -110,7 +121,7 @@ export default function Registration() {
         <View style={styles.formContainer}>
           {/* Имя и Фамилия */}
           <View style={styles.rowContainer}>
-            <View style={[styles.inputContainer, styles.halfInput]}>
+            <View style={[styles.inputWrapper, styles.halfInput]}>
               <TextInput
                 style={styles.input}
                 placeholder="Имя *"
@@ -120,7 +131,7 @@ export default function Registration() {
                 editable={!isLoading && !authLoading}
               />
             </View>
-            <View style={[styles.inputContainer, styles.halfInput]}>
+            <View style={[styles.inputWrapper, styles.halfInput]}>
               <TextInput
                 style={styles.input}
                 placeholder="Фамилия"
@@ -134,23 +145,25 @@ export default function Registration() {
 
           {/* Email */}
           <View style={styles.inputContainer}>
-            <TextInput
-              style={styles.input}
-              placeholder="Email *"
-              placeholderTextColor="#666"
-              value={email}
-              onChangeText={setEmail}
-              keyboardType="email-address"
-              autoCapitalize="none"
-              editable={!isLoading && !authLoading}
-            />
+            <View style={styles.inputWrapper}>
+              <TextInput
+                style={styles.input}
+                placeholder="Email *"
+                placeholderTextColor="#666"
+                value={email}
+                onChangeText={setEmail}
+                keyboardType="email-address"
+                autoCapitalize="none"
+                editable={!isLoading && !authLoading}
+              />
+            </View>
           </View>
 
           {/* Пароль */}
           <View style={styles.inputContainer}>
             <View style={styles.passwordContainer}>
               <TextInput
-                style={styles.input}
+                style={[styles.input, { flex: 1, paddingHorizontal: 0 }]}
                 placeholder="Пароль *"
                 placeholderTextColor="#666"
                 value={password}
@@ -158,7 +171,7 @@ export default function Registration() {
                 secureTextEntry={!showPassword}
                 editable={!isLoading && !authLoading}
               />
-              <TouchableOpacity 
+              <TouchableOpacity
                 onPress={() => setShowPassword(!showPassword)}
                 style={styles.eyeButton}
               >
@@ -167,13 +180,16 @@ export default function Registration() {
                 </Text>
               </TouchableOpacity>
             </View>
+            <Text style={styles.passwordHint}>
+              Пароль: 6+ символов, 1 заглавная буква, 1 цифра.
+            </Text>
           </View>
 
           {/* Подтверждение пароля */}
           <View style={styles.inputContainer}>
             <View style={styles.passwordContainer}>
               <TextInput
-                style={styles.input}
+                style={[styles.input, { flex: 1, paddingHorizontal: 0 }]}
                 placeholder="Подтвердите пароль *"
                 placeholderTextColor="#666"
                 value={confirmPassword}
@@ -181,7 +197,7 @@ export default function Registration() {
                 secureTextEntry={!showConfirmPassword}
                 editable={!isLoading && !authLoading}
               />
-              <TouchableOpacity 
+              <TouchableOpacity
                 onPress={() => setShowConfirmPassword(!showConfirmPassword)}
                 style={styles.eyeButton}
               >
@@ -193,7 +209,7 @@ export default function Registration() {
           </View>
 
           {/* Кнопка регистрации */}
-          <TouchableOpacity 
+          <TouchableOpacity
             style={[
               styles.signUpButton,
               isSignUpDisabled && styles.signUpButtonDisabled
@@ -229,7 +245,8 @@ const styles = StyleSheet.create({
   scrollContainer: {
     flexGrow: 1,
     paddingHorizontal: 20,
-    paddingBottom: 20,
+    // Уменьшен paddingBottom для более плотного контента
+    paddingBottom: 40,
   },
   headerContainer: {
     alignItems: 'center',
@@ -237,15 +254,17 @@ const styles = StyleSheet.create({
     paddingBottom: 30,
   },
   headerImage: {
-    width: 200,
-    height: 200,
-    marginBottom: 20,
+    // Немного уменьшен размер изображения
+    width: 150,
+    height: 150,
+    marginBottom: 15,
   },
   title: {
     fontFamily: 'Playfair Display Bold',
-    fontSize: 24,
+    fontSize: 28, // Слегка увеличен для акцента
     color: '#000',
-    marginBottom: 10,
+    marginBottom: 5,
+    textAlign: 'center',
   },
   subtitle: {
     fontFamily: 'Playfair Display Regular',
@@ -263,21 +282,35 @@ const styles = StyleSheet.create({
   },
   inputContainer: {
     marginBottom: 15,
+    // Контейнер для Input + Hint
   },
   halfInput: {
     flex: 0.48,
   },
-  input: {
+
+  // Стиль-обертка для TextInput (Имя, Фамилия, Email)
+  inputWrapper: {
     backgroundColor: '#C2DAE2',
     borderRadius: 75,
     borderWidth: 4,
     borderColor: '#6A9AA9',
     paddingHorizontal: 20,
-    paddingVertical: 15,
+    paddingVertical: 0, // Установлено 0, так как paddingVertical задается в input
+    height: 60, // Фиксированная высота для единообразия
+    justifyContent: 'center',
+  },
+
+  input: {
+    // Общие стили для всех TextInput, без границ и фона
+    flex: 1,
     fontSize: 16,
     color: '#000',
     fontFamily: 'Playfair Display Regular',
+    paddingVertical: 15, // Вертикальный padding определяет высоту текста
+    paddingHorizontal: 0, // Горизонтальный padding задан в inputWrapper
   },
+
+  // Специальный контейнер для пароля (с иконкой)
   passwordContainer: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -286,12 +319,25 @@ const styles = StyleSheet.create({
     borderWidth: 4,
     borderColor: '#6A9AA9',
     paddingHorizontal: 20,
+    height: 60, // Фиксированная высота для единообразия
   },
   eyeButton: {
-    padding: 5,
+    paddingLeft: 10,
+    paddingVertical: 5,
+    // Отцентровать иконку по высоте
+    height: '100%',
+    justifyContent: 'center',
   },
   eyeText: {
-    fontSize: 16,
+    fontSize: 20,
+  },
+  // Стиль для подсказки к паролю
+  passwordHint: {
+    fontFamily: 'Playfair Display Regular',
+    fontSize: 12,
+    color: '#333',
+    marginTop: 5,
+    marginLeft: 20, // Сдвиг, чтобы не сливаться с границей
   },
   signUpButton: {
     backgroundColor: '#9BDF11',
@@ -299,7 +345,7 @@ const styles = StyleSheet.create({
     paddingVertical: 15,
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 20,
+    marginTop: 30, // Увеличенный отступ
     borderWidth: 2,
     borderColor: '#C2DAE2',
     shadowColor: '#000',
@@ -316,12 +362,13 @@ const styles = StyleSheet.create({
     fontFamily: 'Playfair Display Regular',
     fontSize: 18,
     color: 'black',
+    fontWeight: '600',
   },
   loginContainer: {
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
-    marginTop: 20,
+    marginTop: 25,
   },
   loginText: {
     fontFamily: 'Playfair Display Regular',
@@ -333,5 +380,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#001226',
     textDecorationLine: 'underline',
+    fontWeight: '600',
   },
 });

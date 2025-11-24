@@ -1,4 +1,3 @@
-// components/ProfileMenu.js
 import React from 'react';
 import {
   Modal,
@@ -6,37 +5,49 @@ import {
   View,
   Text,
   StyleSheet,
-  Image,
-  Dimensions
+  Dimensions,
+  Alert
 } from 'react-native';
 import { useRouter } from 'expo-router';
+// 1. Импортируем контекст и иконки
+import { useAuthContext } from '@/app/contexts/AuthContext';
+import { Ionicons } from '@expo/vector-icons';
 
-const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
-
-const ProfileMenu = ({ visible, onClose, onMenuAction, userName = "Пользователь", userImage }) => {
+const ProfileMenu = ({ visible, onClose, userName = "Пользователь" }) => {
   const router = useRouter();
-  
+  // 2. Достаем функцию выхода из контекста
+  const { signOut } = useAuthContext();
 
-  const handleMenuAction = (action) => {
-  onMenuAction(action);
-  
-  switch (action) {
-    case 'settings':
-      console.log('Переход в настройки профиля');
-      router.push('/profile-settings');
-      break;
-    case 'logout':
-      console.log('Выход из аккаунта');
-      // Переход на страницу приветствия
-      router.push('/login');
-      break;
-    case 'help':
-      console.log('Переход в справку/поддержку');
-      router.push('/help-support');
-      break;
-  }
-  onClose();
-};
+  const handleMenuAction = async (action) => {
+    // Сначала закрываем меню
+    onClose();
+
+    switch (action) {
+      case 'settings':
+        console.log('Переход в настройки профиля');
+        // router.push('/profile-settings');
+        // Если такой страницы еще нет, можно закомментировать
+        break;
+
+      case 'logout':
+        try {
+          // 3. Реальный выход из системы
+          await signOut();
+          console.log('Выход из аккаунта выполнен');
+          // 4. replace вместо push, чтобы очистить историю навигации
+          router.replace('/login');
+        } catch (error) {
+          console.error('Ошибка при выходе:', error);
+          Alert.alert('Ошибка', 'Не удалось выйти из аккаунта');
+        }
+        break;
+
+      case 'help':
+        console.log('Переход в справку/поддержку');
+        // router.push('/help-support');
+        break;
+    }
+  };
 
   return (
     <Modal
@@ -45,67 +56,54 @@ const ProfileMenu = ({ visible, onClose, onMenuAction, userName = "Пользо�
       animationType="fade"
       onRequestClose={onClose}
     >
-      <TouchableOpacity 
+      <TouchableOpacity
         style={styles.modalOverlay}
         activeOpacity={1}
         onPress={onClose}
       >
         <View style={styles.profileMenuContainer}>
           <View style={styles.profileMenu}>
-            {/* Заголовок меню с именем пользователя и аватаркой */}
+            {/* Заголовок меню */}
             <View style={styles.menuHeader}>
               <View style={styles.userInfo}>
-                <Image 
-                  source={userImage || require('@/assets/images/people-icon.png')}
-                  style={styles.userAvatar}
-                />
+                {/* Иконка пользователя вместо картинки */}
+                <View style={styles.avatarPlaceholder}>
+                  <Ionicons name="person" size={20} color="#FFF" />
+                </View>
                 <View style={styles.userTextInfo}>
-                  <Text style={styles.userName}>{userName}</Text>
+                  <Text style={styles.userName} numberOfLines={1}>{userName}</Text>
                   <Text style={styles.menuTitle}>Профиль</Text>
                 </View>
               </View>
             </View>
-            
             {/* Пункты меню */}
-            <TouchableOpacity 
+            <TouchableOpacity
               style={styles.menuItem}
               onPress={() => handleMenuAction('settings')}
             >
               <View style={styles.menuItemContent}>
-                <Image 
-                  source={require('@/assets/images/settings-icon.png')}
-                  style={styles.menuIcon}
-                />
+                <Ionicons name="settings-outline" size={22} color="#6A9AA9" style={styles.menuIcon} />
                 <Text style={styles.menuItemText}>Настройки профиля</Text>
               </View>
             </TouchableOpacity>
-            
             <View style={styles.menuDivider} />
-            
-            <TouchableOpacity 
+            <TouchableOpacity
               style={styles.menuItem}
               onPress={() => handleMenuAction('logout')}
             >
               <View style={styles.menuItemContent}>
-                <Image 
-                  source={require('@/assets/images/back-icon.png')}
-                  style={[styles.menuIcon, styles.logoutIcon]}
-                />
+                <Ionicons name="log-out-outline" size={22} color="#DC3545" style={styles.menuIcon} />
                 <Text style={[styles.menuItemText, styles.logoutText]}>Выйти из аккаунта</Text>
               </View>
             </TouchableOpacity>
 
             <View style={styles.menuDivider} />
-            
-            <TouchableOpacity 
+            <TouchableOpacity
               style={styles.menuItem}
               onPress={() => handleMenuAction('help')}
             >
               <View style={styles.menuItemContent}>
-                <Image 
-                  source={require('@/assets/images/support-icon.png')}
-                  style={styles.menuIcon}
-                />
+                <Ionicons name="help-circle-outline" size={22} color="#6A9AA9" style={styles.menuIcon} />
                 <Text style={styles.menuItemText}>Справка/Поддержка</Text>
               </View>
             </TouchableOpacity>
@@ -123,8 +121,8 @@ const styles = StyleSheet.create({
   },
   profileMenuContainer: {
     position: 'absolute',
-    top: 10, // Отступ от верхнего края экрана
-    right: 10, // Отступ от правого края экрана
+    top: 50, // Чуть ниже, чтобы не наезжало на статус бар
+    right: 20,
     alignItems: 'flex-end',
   },
   profileMenu: {
@@ -145,16 +143,19 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#6A9AA9',
+    borderBottomColor: '#E5E7EB',
   },
   userInfo: {
     flexDirection: 'row',
     alignItems: 'center',
   },
-  userAvatar: {
+  avatarPlaceholder: {
     width: 40,
     height: 40,
     borderRadius: 20,
+    backgroundColor: '#6A9AA9',
+    justifyContent: 'center',
+    alignItems: 'center',
     marginRight: 12,
   },
   userTextInfo: {
@@ -163,12 +164,12 @@ const styles = StyleSheet.create({
   userName: {
     fontSize: 16,
     color: '#212529',
-    marginBottom: 4,
+    marginBottom: 2,
     fontFamily: "Playfair Display Regular",
+    fontWeight: '600',
   },
   menuTitle: {
-    fontSize: 14,
-    fontWeight: '600',
+    fontSize: 12,
     color: '#6C757D',
     fontFamily: "Playfair Display Regular",
   },
@@ -181,27 +182,20 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   menuIcon: {
-    width: 24,
-    height: 24,
     marginRight: 12,
-    resizeMode: 'contain',
-  },
-  logoutIcon: {
-    tintColor: '#DC3545',
   },
   menuItemText: {
     fontSize: 14,
-    color: '#000000ff',
+    color: '#000',
     fontFamily: "Playfair Display Regular",
-    marginLeft: 0,
   },
   logoutText: {
     color: '#DC3545',
   },
   menuDivider: {
     height: 1,
-    backgroundColor: '#6A9AA9',
-    marginVertical: 4,
+    backgroundColor: '#E5E7EB',
+    marginVertical: 2,
   },
 });
 
