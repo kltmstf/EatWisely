@@ -1,88 +1,335 @@
-// app/home.tsx
 import { useRouter } from "expo-router";
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
-    Image,
-    ImageBackground,
-    ScrollView,
-    StatusBar,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View
+  Image,
+  ImageBackground,
+  ScrollView,
+  StatusBar,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+  ActivityIndicator,
 } from "react-native";
+import {
+  getAuth,
+  signInAnonymously,
+  signInWithCustomToken,
+  onAuthStateChanged,
+  Auth,
+} from "firebase/auth";
+import {
+  getFirestore,
+  doc,
+  onSnapshot,
+  setDoc,
+  updateDoc,
+  Firestore,
+  getDoc,
+  setLogLevel, // Добавлен import для установки уровня логирования
+} from "firebase/firestore";
+import { initializeApp, getApps, getApp } from "firebase/app"; // 💡 ИСПРАВЛЕНИЕ: Добавлены getApps и getApp
+
+// Предполагается, что ProfileMenu находится в ../components/ProfileMenu
+// В этой среде этот компонент должен быть определен в этом же файле,
+// но я оставлю ваш импорт, предполагая, что вы управляете им локально.
 import ProfileMenu from "../components/ProfileMenu";
+
+// Установка уровня логирования для Firestore (полезно для отладки)
+setLogLevel("debug");
+
+// --- ТИПИЗАЦИЯ ДЛЯ ЧИТАЕМОСТИ ---
+
+interface Meal {
+  category: string;
+  name: string;
+  calories: number;
+  weight: string;
+  marked: boolean;
+  bookmarked: boolean;
+  image: any;
+}
+
+interface UserDataState {
+  name: string;
+  dailyCalories: number;
+  consumedCalories: number;
+}
+
+// Шаблон данных о приемах пищи (используется для изображений и дефолтных значений)
+const initialMealsTemplate: Meal[] = [
+  {
+    category: "Завтрак",
+    name: "Овсяная каша с ягодами и медом на завтрак",
+    calories: 350,
+    weight: "320 гр.",
+    marked: false,
+    bookmarked: false,
+    // В реальной React Native/Expo среде нужно использовать локальный asset
+    // Здесь оставляем, как есть, предполагая, что пути корректны в вашем проекте
+    image: require("@/assets/images/breakfast-oats.png"),
+  },
+  {
+    category: "Обед",
+    name: "Куриный суп с лапшой и овощами",
+    calories: 250,
+    weight: "400 гр.",
+    marked: false,
+    bookmarked: false,
+    image: require("@/assets/images/lunch-soup.png"),
+  },
+  {
+    category: "Ужин",
+    name: "Рис с курицей и овощами",
+    calories: 550,
+    weight: "450 гр.",
+    marked: false,
+    bookmarked: false,
+    image: require("@/assets/images/dinner-rice.png"),
+  },
+  {
+    category: "Перекусы",
+    name: "Фрукты",
+    calories: 120,
+    weight: "80 гр.",
+    marked: false,
+    bookmarked: false,
+    image: require("@/assets/images/snack-fruits.png"),
+  },
+];
 
 export default function Home() {
   const router = useRouter();
-  const [meals, setMeals] = useState([
-    {
-      category: "Завтрак",
-      name: "Овсяная каша с ягодами и медом на завтрак",
-      calories: 350,
-      weight: "320 гр.",
-      marked: false,
-      bookmarked: false,
-      image: require('@/assets/images/breakfast-oats.png')
-    },
-    {
-      category: "Обед",
-      name: "Куриный суп с лапшой и овощами",
-      calories: 250,
-      weight: "400 гр.",
-      marked: false,
-      bookmarked: false,
-      image: require('@/assets/images/lunch-soup.png')
-    },
-    {
-      category: "Ужин",
-      name: "Рис с курицей и овощами",
-      calories: 550,
-      weight: "450 гр.",
-      marked: false,
-      bookmarked: false,
-      image: require('@/assets/images/dinner-rice.png')
-    },
-    {
-      category: "Перекусы",
-      name: "Фрукты",
-      calories: 120,
-      weight: "80 гр.",
-      marked: false,
-      bookmarked: false,
-      image: require('@/assets/images/snack-fruits.png')
-    }
-  ]);
+  // --- СОСТОЯНИЕ FIREBASE ---
+  const [db, setDb] = useState<Firestore | null>(null);
+  const [auth, setAuth] = useState<Auth | null>(null);
+  const [userId, setUserId] = useState<string | null>(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
+  const [appId] = useState(() =>
+    typeof __app_id !== "undefined" ? __app_id : "default-app-id"
+  );
 
-  const [profileMenuVisible, setProfileMenuVisible] = useState(false);
-
-  const userData = {
+  // --- СОСТОЯНИЕ ПРИЛОЖЕНИЯ ---
+  const [meals, setMeals] = useState<Meal[]>(initialMealsTemplate);
+  const [userData, setUserData] = useState<UserDataState>({
     name: "Пользователь",
     dailyCalories: 2000,
-    consumedCalories: 910,
+    consumedCalories: 0,
+  });
+  const [profileMenuVisible, setProfileMenuVisible] = useState(false);
+  const loading = !isAuthReady || !db;
+
+  // 1. Инициализация Firebase и Аутентификация
+  useEffect(() => {
+    try {
+      const firebaseConfig =
+        typeof __firebase_config !== "undefined"
+          ? JSON.parse(__firebase_config as string)
+          : {};
+      // 💡 ИСПРАВЛЕНИЕ: Безопасная инициализация:
+      // Проверяем, инициализировано ли приложение. Если нет, инициализируем.
+      // Это решает ошибку "Firebase App named '[DEFAULT]' already exists".
+      const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
+
+      const authInstance = getAuth(app);
+      const dbInstance = getFirestore(app);
+
+      setAuth(authInstance);
+      setDb(dbInstance);
+
+      const unsubscribe = onAuthStateChanged(authInstance, async (user) => {
+        if (user) {
+          setUserId(user.uid);
+        } else {
+          // Анонимный вход, если токен не предоставлен
+          const token =
+            typeof __initial_auth_token !== "undefined"
+              ? __initial_auth_token
+              : null;
+          if (token) {
+            await signInWithCustomToken(authInstance, token);
+          } else {
+            await signInAnonymously(authInstance);
+          }
+        }
+        setIsAuthReady(true);
+      });
+
+      return () => unsubscribe();
+    } catch (error) {
+      console.error("Ошибка инициализации Firebase:", error);
+      setIsAuthReady(true); // Завершить загрузку, даже если ошибка
+    }
+  }, []); // Пустой массив зависимостей гарантирует, что эффект сработает только один раз
+
+  // 2. Прослушивание данных пользователя (Имя, Цели)
+  useEffect(() => {
+    if (!db || !userId) return;
+
+    const userDocRef = doc(
+      db,
+      `artifacts/${appId}/users/${userId}/profile/data`
+    );
+
+    const unsubscribe = onSnapshot(
+      userDocRef,
+      async (docSnap) => {
+        if (docSnap.exists()) {
+          const data = docSnap.data() as {
+            name?: string;
+            dailyCalories?: number;
+          };
+          setUserData((prev) => ({
+            ...prev,
+            name: data.name || "Пользователь",
+            dailyCalories: data.dailyCalories || 2000,
+          }));
+        } else {
+          // Инициализация данных, если документ не существует
+          await setDoc(
+            userDocRef,
+            { name: "Пользователь", dailyCalories: 2000, initialized: true },
+            { merge: true }
+          ).catch((err) =>
+            console.error("Error setting default user profile:", err)
+          );
+        }
+      },
+      (error) => {
+        console.error("Error listening to user profile:", error);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [db, userId, appId]);
+
+  // 3. Прослушивание ежедневного журнала (Consumed Calories, Marked/Bookmarked status)
+  useEffect(() => {
+    if (!db || !userId) return;
+
+    const dailyLogDocRef = doc(
+      db,
+      `artifacts/${appId}/users/${userId}/daily_logs/today`
+    );
+
+    const unsubscribe = onSnapshot(
+      dailyLogDocRef,
+      async (docSnap) => {
+        if (docSnap.exists()) {
+          const data = docSnap.data() as {
+            consumedCalories?: number;
+            meals?: {
+              category: string;
+              marked: boolean;
+              bookmarked: boolean;
+            }[];
+          };
+          // Обновление потребленных калорий
+          setUserData((prev) => ({
+            ...prev,
+            consumedCalories: data.consumedCalories || 0,
+          }));
+
+          // Объединение состояния Firebase с локальным шаблоном (для сохранения изображений)
+          if (data.meals) {
+            setMeals((prevMeals) =>
+              prevMeals.map((templateMeal) => {
+                const firebaseState = data.meals!.find(
+                  (fm) => fm.category === templateMeal.category
+                );
+                return {
+                  ...templateMeal,
+                  marked: firebaseState?.marked ?? templateMeal.marked,
+                  bookmarked:
+                    firebaseState?.bookmarked ?? templateMeal.bookmarked,
+                };
+              })
+            );
+          }
+        } else {
+          // Инициализация журнала (это также создаст документ)
+          const initialLogData = {
+            consumedCalories: 0,
+            meals: initialMealsTemplate.map((m) => ({
+              category: m.category,
+              marked: false,
+              bookmarked: false,
+            })),
+          };
+          await setDoc(dailyLogDocRef, initialLogData).catch((err) =>
+            console.error("Error setting default daily log:", err)
+          );
+        }
+      },
+      (error) => {
+        console.error("Error listening to daily log:", error);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [db, userId, appId]);
+
+  // --- ФУНКЦИИ ОБНОВЛЕНИЯ FIREBASE ---
+
+  const updateMealStateInFirebase = async (
+    index: number,
+    field: "marked" | "bookmarked",
+    value: boolean
+  ) => {
+    if (!db || !userId) return;
+
+    const dailyLogDocRef = doc(
+      db,
+      `artifacts/${appId}/users/${userId}/daily_logs/today`
+    );
+
+    // Создаем новый массив meals для обновления
+    const updatedMealsArray = meals.map((meal, i) => {
+      const newMeal = {
+        category: meal.category,
+        marked: meal.marked,
+        bookmarked: meal.bookmarked,
+      };
+      if (i === index) {
+        newMeal[field] = value;
+      }
+      return newMeal;
+    });
+    // Пересчет потребленных калорий на основе нового состояния
+    const newConsumedCalories = updatedMealsArray
+      .filter((m) => m.marked)
+      .reduce((sum, m) => {
+        const template = initialMealsTemplate.find(
+          (t) => t.category === m.category
+        );
+        return sum + (template?.calories || 0);
+      }, 0);
+
+    try {
+      await updateDoc(dailyLogDocRef, {
+        meals: updatedMealsArray,
+        consumedCalories: newConsumedCalories,
+      });
+    } catch (error) {
+      console.error("Error updating meal state in Firebase:", error);
+    }
   };
 
   const toggleMeal = (index: number) => {
-    console.log(`Отмечен прием пищи: ${meals[index].name}`);
-    
-    const updatedMeals = [...meals];
-    updatedMeals[index].marked = !updatedMeals[index].marked;
-    setMeals(updatedMeals);
+    const newValue = !meals[index].marked;
+    updateMealStateInFirebase(index, "marked", newValue);
   };
 
   const toggleBookmark = (index: number) => {
-    console.log(`Закладка для: ${meals[index].name}`);
-    
-    const updatedMeals = [...meals];
-    updatedMeals[index].bookmarked = !updatedMeals[index].bookmarked;
-    setMeals(updatedMeals);
+    const newValue = !meals[index].bookmarked;
+    updateMealStateInFirebase(index, "bookmarked", newValue);
   };
 
-  // Единая функция навигации
+  // --- ФУНКЦИИ UI ---
+
   const navigateToMealPage = (mealIndex: number) => {
     const meal = meals[mealIndex];
     console.log(`Переход на страницу: ${meal.category}`);
-    
     router.push({
       pathname: "/meal",
       params: {
@@ -90,7 +337,7 @@ export default function Home() {
         category: meal.category,
         mealIndex: mealIndex.toString(),
         initialBookmarked: meal.bookmarked.toString(),
-      }
+      },
     });
   };
 
@@ -98,29 +345,21 @@ export default function Home() {
     setProfileMenuVisible(!profileMenuVisible);
   };
 
-  const handleMenuAction = (action: string) => {
-    console.log(`Выбрано действие: ${action}`);
-    
-    switch (action) {
-      case 'settings':
-        console.log('Переход в настройки профиля');
-        break;
-      case 'logout':
-        console.log('Выход из аккаунта');
-        break;
-      case 'help':
-        console.log('Переход в справку/поддержку');
-        break;
-    }
-  };
+  // --- ЛОАДЕР ---
+  if (loading) {
+    return (
+      <View style={styles.loadingContainer}>
+        <ActivityIndicator size="large" color="#6A9AA9" />
+        <Text style={styles.loadingText}>Загрузка данных...</Text>
+      </View>
+    );
+  }
+
+  const progressPercentage =
+    (userData.consumedCalories / userData.dailyCalories) * 100;
 
   return (
-    
-    <ImageBackground 
-      source={require('@/assets/images/background.png')}
-      style={styles.background}
-      resizeMode="cover"
-    >
+    <View style={styles.rootContainer}>
       <StatusBar barStyle="dark-content" />
       <View style={styles.container}>
         {/* Верхнее меню с приветствием */}
@@ -129,17 +368,14 @@ export default function Home() {
             <Text style={styles.greetingText}>
               Добрый день, {userData.name}!
             </Text>
-            <Text style={styles.dietText}>
-              Ваш рацион на сегодня
-            </Text>
+            <Text style={styles.dietText}>Ваш рацион на сегодня</Text>
           </View>
-          
-          <TouchableOpacity 
+          <TouchableOpacity
             style={styles.profileButton}
             onPress={handleProfileMenu}
           >
-            <Image 
-              source={require('@/assets/images/people-icon.png')}
+            <Image
+              source={require("@/assets/images/people-icon.png")}
               style={styles.profileImage}
             />
           </TouchableOpacity>
@@ -149,23 +385,25 @@ export default function Home() {
         <ProfileMenu
           visible={profileMenuVisible}
           onClose={() => setProfileMenuVisible(false)}
-          onMenuAction={handleMenuAction}
           userName={userData.name}
-          userImage={require('@/assets/images/people-icon.png')}
         />
 
-        <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
+        <ScrollView
+          style={styles.scrollView}
+          showsVerticalScrollIndicator={false}
+        >
           {/* Прогресс калорий */}
           <View style={styles.caloriesSection}>
             <Text style={styles.caloriesTitle}>
-              Вы употребили {userData.consumedCalories} из {userData.dailyCalories} ккал
+              Вы употребили {userData.consumedCalories} из{" "}
+              {userData.dailyCalories} ккал
             </Text>
             <View style={styles.progressBar}>
-              <View 
+              <View
                 style={[
-                  styles.progressFill, 
-                  { width: `${(userData.consumedCalories / userData.dailyCalories) * 100}%` }
-                ]} 
+                  styles.progressFill,
+                  { width: `${Math.min(100, progressPercentage)}%` },
+                ]}
               />
             </View>
             <View style={styles.sectionDivider} />
@@ -173,304 +411,123 @@ export default function Home() {
 
           {/* Приемы пищи в виде таблицы 2x2 */}
           <View style={styles.mealsSection}>
-            {/* Первая строка: Завтрак и Обед */}
-            <View style={styles.mealRow}>
-              {/* Карточка Завтрак */}
-              <View style={styles.mealColumn}>
-                <TouchableOpacity 
-                  style={styles.mealCategoryHeader}
-                  onPress={() => navigateToMealPage(0)}
-                >
-                  <Text style={styles.mealCategoryTitle}>{meals[0].category}</Text>
-                  <Image 
-                    source={require('@/assets/images/arrow-right.png')}
-                    style={styles.arrowIcon}
-                  />
-                </TouchableOpacity>
-                <View style={styles.mealCard}>
-                  <View style={styles.imageContainer}>
-                    <Image 
-                      source={meals[0].image}
-                      style={styles.mealImage}
-                      resizeMode="cover"
-                    />
-                    <TouchableOpacity 
-                      style={styles.bookmarkButton}
-                      onPress={() => toggleBookmark(0)}
-                    >
-                      <Image 
-                        source={
-                          meals[0].bookmarked 
-                            ? require('@/assets/images/bookmark-filled.png')
-                            : require('@/assets/images/bookmark-outline.png')
-                        }
-                        style={styles.bookmarkIcon}
-                      />
-                    </TouchableOpacity>
-                  </View>
-                  <View style={styles.mealContent}>
-                    <View style={styles.mealInfo}>
-                      <Text 
-                        style={styles.mealName}
-                        numberOfLines={2}
-                        ellipsizeMode="tail"
-                      >
-                        {meals[0].name}
-                      </Text>
-                      <View style={styles.mealDetails}>
-                        <Text style={styles.mealCalories}>{meals[0].calories} ккал</Text>
-                        <Text style={styles.mealWeight}>• {meals[0].weight}</Text>
+            {[0, 2].map((startIndex, rowIndex) => (
+              <View key={rowIndex} style={styles.mealRow}>
+                {meals
+                  .slice(startIndex, startIndex + 2)
+                  .map((meal, indexInRow) => {
+                    const mealIndex = startIndex + indexInRow;
+                    return (
+                      <View key={mealIndex} style={styles.mealColumn}>
+                        <TouchableOpacity
+                          style={styles.mealCategoryHeader}
+                          onPress={() => navigateToMealPage(mealIndex)}
+                        >
+                          <Text style={styles.mealCategoryTitle}>
+                            {meal.category}
+                          </Text>
+                          <Image
+                            source={require("@/assets/images/arrow-right.png")}
+                            style={styles.arrowIcon}
+                          />
+                        </TouchableOpacity>
+                        <View style={styles.mealCard}>
+                          <View style={styles.imageContainer}>
+                            <Image
+                              source={meal.image}
+                              style={styles.mealImage}
+                              resizeMode="cover"
+                            />
+                            <TouchableOpacity
+                              style={styles.bookmarkButton}
+                              onPress={() => toggleBookmark(mealIndex)}
+                            >
+                              <Image
+                                source={
+                                  meal.bookmarked
+                                    ? require("@/assets/images/bookmark-filled.png")
+                                    : require("@/assets/images/bookmark-outline.png")
+                                }
+                                style={styles.bookmarkIcon}
+                              />
+                            </TouchableOpacity>
+                          </View>
+                          <View style={styles.mealContent}>
+                            <View style={styles.mealInfo}>
+                              <Text
+                                style={styles.mealName}
+                                numberOfLines={2}
+                                ellipsizeMode="tail"
+                              >
+                                {meal.name}
+                              </Text>
+                              <View style={styles.mealDetails}>
+                                <Text style={styles.mealCalories}>
+                                  {meal.calories} ккал
+                                </Text>
+                                <Text style={styles.mealWeight}>
+                                  • {meal.weight}
+                                </Text>
+                              </View>
+                            </View>
+                            <TouchableOpacity
+                              style={[
+                                styles.markButton,
+                                meal.marked && styles.markButtonActive,
+                              ]}
+                              onPress={() => toggleMeal(mealIndex)}
+                            >
+                              {meal.marked ? (
+                                <Image
+                                  source={require("@/assets/images/checkmark-done.png")}
+                                  style={styles.checkmarkIcon}
+                                />
+                              ) : (
+                                <Text style={styles.markButtonText}>
+                                  Отметить
+                                </Text>
+                              )}
+                            </TouchableOpacity>
+                          </View>
+                        </View>
                       </View>
-                    </View>
-                    <TouchableOpacity 
-                      style={[
-                        styles.markButton,
-                        meals[0].marked && styles.markButtonActive
-                      ]}
-                      onPress={() => toggleMeal(0)}
-                    >
-                      {meals[0].marked ? (
-                        <Image 
-                          source={require('@/assets/images/checkmark-done.png')}
-                          style={styles.checkmarkIcon}
-                        />
-                      ) : (
-                        <Text style={styles.markButtonText}>Отметить</Text>
-                      )}
-                    </TouchableOpacity>
-                  </View>
-                </View>
+                    );
+                  })}
               </View>
-
-              {/* Карточка Обед */}
-              <View style={styles.mealColumn}>
-                <TouchableOpacity 
-                  style={styles.mealCategoryHeader}
-                  onPress={() => navigateToMealPage(1)}
-                >
-                  <Text style={styles.mealCategoryTitle}>{meals[1].category}</Text>
-                  <Image 
-                    source={require('@/assets/images/arrow-right.png')}
-                    style={styles.arrowIcon}
-                  />
-                </TouchableOpacity>
-                <View style={styles.mealCard}>
-                  <View style={styles.imageContainer}>
-                    <Image 
-                      source={meals[1].image}
-                      style={styles.mealImage}
-                      resizeMode="cover"
-                    />
-                    <TouchableOpacity 
-                      style={styles.bookmarkButton}
-                      onPress={() => toggleBookmark(1)}
-                    >
-                      <Image 
-                        source={
-                          meals[1].bookmarked 
-                            ? require('@/assets/images/bookmark-filled.png')
-                            : require('@/assets/images/bookmark-outline.png')
-                        }
-                        style={styles.bookmarkIcon}
-                      />
-                    </TouchableOpacity>
-                  </View>
-                  <View style={styles.mealContent}>
-                    <View style={styles.mealInfo}>
-                      <Text 
-                        style={styles.mealName}
-                        numberOfLines={2}
-                        ellipsizeMode="tail"
-                      >
-                        {meals[1].name}
-                      </Text>
-                      <View style={styles.mealDetails}>
-                        <Text style={styles.mealCalories}>{meals[1].calories} ккал</Text>
-                        <Text style={styles.mealWeight}>• {meals[1].weight}</Text>
-                      </View>
-                    </View>
-                    <TouchableOpacity 
-                      style={[
-                        styles.markButton,
-                        meals[1].marked && styles.markButtonActive
-                      ]}
-                      onPress={() => toggleMeal(1)}
-                    >
-                      {meals[1].marked ? (
-                        <Image 
-                          source={require('@/assets/images/checkmark-done.png')}
-                          style={styles.checkmarkIcon}
-                        />
-                      ) : (
-                        <Text style={styles.markButtonText}>Отметить</Text>
-                      )}
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              </View>
-            </View>
-
-            {/* Вторая строка: Ужин и Перекусы */}
-            <View style={styles.mealRow}>
-              {/* Карточка Ужин */}
-              <View style={styles.mealColumn}>
-                <TouchableOpacity 
-                  style={styles.mealCategoryHeader}
-                  onPress={() => navigateToMealPage(2)}
-                >
-                  <Text style={styles.mealCategoryTitle}>{meals[2].category}</Text>
-                  <Image 
-                    source={require('@/assets/images/arrow-right.png')}
-                    style={styles.arrowIcon}
-                  />
-                </TouchableOpacity>
-                <View style={styles.mealCard}>
-                  <View style={styles.imageContainer}>
-                    <Image 
-                      source={meals[2].image}
-                      style={styles.mealImage}
-                      resizeMode="cover"
-                    />
-                    <TouchableOpacity 
-                      style={styles.bookmarkButton}
-                      onPress={() => toggleBookmark(2)}
-                    >
-                      <Image 
-                        source={
-                          meals[2].bookmarked 
-                            ? require('@/assets/images/bookmark-filled.png')
-                            : require('@/assets/images/bookmark-outline.png')
-                        }
-                        style={styles.bookmarkIcon}
-                      />
-                    </TouchableOpacity>
-                  </View>
-                  <View style={styles.mealContent}>
-                    <View style={styles.mealInfo}>
-                      <Text 
-                        style={styles.mealName}
-                        numberOfLines={2}
-                        ellipsizeMode="tail"
-                      >
-                        {meals[2].name}
-                      </Text>
-                      <View style={styles.mealDetails}>
-                        <Text style={styles.mealCalories}>{meals[2].calories} ккал</Text>
-                        <Text style={styles.mealWeight}>• {meals[2].weight}</Text>
-                      </View>
-                    </View>
-                    <TouchableOpacity 
-                      style={[
-                        styles.markButton,
-                        meals[2].marked && styles.markButtonActive
-                      ]}
-                      onPress={() => toggleMeal(2)}
-                    >
-                      {meals[2].marked ? (
-                        <Image 
-                          source={require('@/assets/images/checkmark-done.png')}
-                          style={styles.checkmarkIcon}
-                        />
-                      ) : (
-                        <Text style={styles.markButtonText}>Отметить</Text>
-                      )}
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              </View>
-
-              {/* Карточка Перекусы */}
-              <View style={styles.mealColumn}>
-                <TouchableOpacity 
-                  style={styles.mealCategoryHeader}
-                  onPress={() => navigateToMealPage(3)}
-                >
-                  <Text style={styles.mealCategoryTitle}>{meals[3].category}</Text>
-                  <Image 
-                    source={require('@/assets/images/arrow-right.png')}
-                    style={styles.arrowIcon}
-                  />
-                </TouchableOpacity>
-                <View style={styles.mealCard}>
-                  <View style={styles.imageContainer}>
-                    <Image 
-                      source={meals[3].image}
-                      style={styles.mealImage}
-                      resizeMode="cover"
-                    />
-                    <TouchableOpacity 
-                      style={styles.bookmarkButton}
-                      onPress={() => toggleBookmark(3)}
-                    >
-                      <Image 
-                        source={
-                          meals[3].bookmarked 
-                            ? require('@/assets/images/bookmark-filled.png')
-                            : require('@/assets/images/bookmark-outline.png')
-                        }
-                        style={styles.bookmarkIcon}
-                      />
-                    </TouchableOpacity>
-                  </View>
-                  <View style={styles.mealContent}>
-                    <View style={styles.mealInfo}>
-                      <Text 
-                        style={styles.mealName}
-                        numberOfLines={2}
-                        ellipsizeMode="tail"
-                      >
-                        {meals[3].name}
-                      </Text>
-                      <View style={styles.mealDetails}>
-                        <Text style={styles.mealCalories}>{meals[3].calories} ккал</Text>
-                        <Text style={styles.mealWeight}>{`• ${meals[3].weight}`}</Text>
-                      </View>
-                    </View>
-                    <TouchableOpacity 
-                      style={[
-                        styles.markButton,
-                        meals[3].marked && styles.markButtonActive
-                      ]}
-                      onPress={() => toggleMeal(3)}
-                    >
-                      {meals[3].marked ? (
-                        <Image 
-                          source={require('@/assets/images/checkmark-done.png')}
-                          style={styles.checkmarkIcon}
-                        />
-                      ) : (
-                        <Text style={styles.markButtonText}>Отметить</Text>
-                      )}
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              </View>
-            </View>
+            ))}
           </View>
         </ScrollView>
-
-
       </View>
-    </ImageBackground>
+    </View>
   );
 }
 
-// Стили остаются без изменений
 const styles = StyleSheet.create({
-  background: {
+  loadingContainer: {
     flex: 1,
-    width: '100%',
-    height: '100%',
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "#f8f8f8",
+  },
+  loadingText: {
+    marginTop: 10,
+    fontSize: 16,
+    color: "#6A9AA9",
+  },
+  rootContainer: {
+    flex: 1,
+    backgroundColor: '#ffffff', // Белый фон
   },
   container: {
     flex: 1,
+    paddingTop: 40, // Для учета StatusBar
   },
   header: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
     paddingHorizontal: 20,
-    paddingTop: 20,
+    paddingTop: 0,
     paddingBottom: 15,
     backgroundColor: "rgba(255, 255, 255, 0.95)",
     borderBottomWidth: 2,
@@ -547,7 +604,7 @@ const styles = StyleSheet.create({
     marginBottom: 24,
   },
   mealColumn: {
-    width: '48%',
+    width: "48%",
   },
   mealCategoryHeader: {
     flexDirection: "row",
@@ -584,22 +641,22 @@ const styles = StyleSheet.create({
     height: 260,
   },
   imageContainer: {
-    position: 'relative',
+    position: "relative",
   },
   mealImage: {
-    width: '100%',
+    width: "100%",
     height: 120,
   },
   bookmarkButton: {
-    position: 'absolute',
+    position: "absolute",
     top: 8,
     right: 8,
     width: 32,
     height: 32,
     borderRadius: 16,
-    backgroundColor: 'rgba(255, 255, 255, 0.9)',
-    alignItems: 'center',
-    justifyContent: 'center',
+    backgroundColor: "rgba(255, 255, 255, 0.9)",
+    alignItems: "center",
+    justifyContent: "center",
     shadowColor: "#000",
     shadowOffset: {
       width: 0,
@@ -617,7 +674,7 @@ const styles = StyleSheet.create({
   mealContent: {
     padding: 12,
     flex: 1,
-    justifyContent: 'space-between',
+    justifyContent: "space-between",
   },
   mealInfo: {
     flex: 1,
@@ -634,7 +691,7 @@ const styles = StyleSheet.create({
   mealDetails: {
     flexDirection: "row",
     alignItems: "center",
-    flexWrap: 'wrap',
+    flexWrap: "wrap",
     marginTop: 4,
   },
   mealCalories: {
@@ -659,7 +716,7 @@ const styles = StyleSheet.create({
     minHeight: 36,
     marginTop: 8,
     borderWidth: 2,
-    borderColor: '#C2DAE2',
+    borderColor: "#C2DAE2",
   },
   markButtonActive: {
     backgroundColor: "rgba(155, 223, 17, 0.6)",

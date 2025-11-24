@@ -219,7 +219,7 @@ export default function ForgotPassword() {
           </View>
         </View>
 
-        {/* Футер (подсказки) - показываем только если нет успеха */}
+        {/* подсказки - показываем только если нет успеха */}
         {!isSuccess && (
           <View style={styles.footerContainer}>
             <TouchableOpacity

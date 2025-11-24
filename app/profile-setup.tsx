@@ -1,18 +1,18 @@
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { useRouter } from "expo-router";
 import React, { useState } from "react";
 import {
-  View,
-  Text,
-  StyleSheet,
-  TextInput,
-  TouchableOpacity,
-  ScrollView,
+  Alert,
   KeyboardAvoidingView,
   Platform,
-  Alert,
   SafeAreaView,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from "react-native";
-import { useRouter } from "expo-router";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 // Импортируем иконки
 import { Ionicons } from "@expo/vector-icons";
 
@@ -345,8 +345,20 @@ export default function ProfileSetup() {
     </View>
   );
 
-  const stepComponents = [Step1, Step2, Step3, Step4];
-  const CurrentStepComponent = stepComponents[currentStep];
+  const renderCurrentStep = () => {
+    switch (currentStep) {
+      case 0:
+        return <Step1 />;
+      case 1:
+        return <Step2 />;
+      case 2:
+        return <Step3 />;
+      case 3:
+        return <Step4 />;
+      default:
+        return null;
+    }
+  };
 
   return (
     <KeyboardAvoidingView
@@ -384,7 +396,7 @@ export default function ProfileSetup() {
           <Text style={styles.stepDescription}>
             {steps[currentStep].description}
           </Text>
-          <CurrentStepComponent />
+          {renderCurrentStep()}
         </View>
       </ScrollView>
 

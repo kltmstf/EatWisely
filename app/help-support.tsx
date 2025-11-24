@@ -1,13 +1,13 @@
-import React from 'react';
-import { 
-  ScrollView, 
-  StyleSheet, 
-  Text, 
-  TouchableOpacity, 
-  View, 
-  Image 
-} from 'react-native';
-import { useRouter } from 'expo-router';
+import { Ionicons } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
+import React from "react";
+import {
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from "react-native";
 
 export default function HelpSupport() {
   const router = useRouter();
@@ -15,24 +15,29 @@ export default function HelpSupport() {
   const faqItems = [
     {
       question: "Как создать рацион питания?",
-      answer: "Перейдите в раздел 'Рацион' и нажмите 'Создать новый рацион'. Система автоматически предложит варианты на основе ваших предпочтений."
+      answer:
+        "Перейдите в раздел 'Рацион' и нажмите 'Создать новый рацион'. Система автоматически предложит варианты на основе ваших предпочтений.",
     },
     {
       question: "Можно ли изменить тип питания?",
-      answer: "Да, в настройках профиля вы можете изменить тип питания на вегетарианское, веганское или обычное."
+      answer:
+        "Да, в настройках профиля вы можете изменить тип питания на вегетарианское, веганское или обычное.",
     },
     {
       question: "Как добавить аллергии и исключения?",
-      answer: "В разделе 'Настройки профиля' есть специальный раздел 'Аллергии и исключения' для указания продуктов, которые вы не употребляете."
+      answer:
+        "В разделе 'Настройки профиля' есть специальный раздел 'Аллергии и исключения' для указания продуктов, которые вы не употребляете.",
     },
     {
       question: "Как работает система оценок блюд?",
-      answer: "После каждого приема пищи вы можете оценить блюдо. Это поможет системе лучше подбирать рацион под ваши вкусы."
+      answer:
+        "После каждого приема пищи вы можете оценить блюдо. Это поможет системе лучше подбирать рацион под ваши вкусы.",
     },
     {
       question: "Можно ли сохранить понравившиеся рецепты?",
-      answer: "Да, нажимайте на иконку закладки на карточке блюда, чтобы добавить его в избранное."
-    }
+      answer:
+        "Да, нажимайте на иконку закладки на карточке блюда, чтобы добавить его в избранное.",
+    },
   ];
 
   const handleBack = () => {
@@ -43,11 +48,12 @@ export default function HelpSupport() {
     <View style={styles.container}>
       {/* Шапка */}
       <View style={styles.header}>
-        <TouchableOpacity style={styles.backButton} onPress={handleBack}>
-          <Image 
-            source={require('@/assets/images/back-icon.png')}
-            style={styles.backIcon}
-          />
+        <TouchableOpacity
+          style={styles.backButton}
+          onPress={handleBack}
+          accessibilityRole="button"
+        >
+          <Ionicons name="arrow-back" size={24} color="#000" />
         </TouchableOpacity>
         <View style={styles.headerTitleContainer}>
           <Text style={styles.headerTitle}>Справка и поддержка</Text>
@@ -55,16 +61,19 @@ export default function HelpSupport() {
         <View style={styles.placeholder} />
       </View>
 
-      <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        style={styles.scrollView}
+        showsVerticalScrollIndicator={false}
+      >
         {/* Приветственный блок */}
         <View style={styles.welcomeSection}>
-          <Image
-            source={require('@/assets/images/support-icon.png')}
-            style={styles.supportIcon}
-          />
+          <View style={styles.supportIcon}>
+            <Ionicons name="help-buoy-outline" size={40} color="#000" />
+          </View>
           <Text style={styles.welcomeTitle}>Мы здесь чтобы помочь!</Text>
           <Text style={styles.welcomeText}>
-            Найдите ответы на часто задаваемые вопросы или свяжитесь с нашей службой поддержки.
+            Найдите ответы на часто задаваемые вопросы или свяжитесь с нашей
+            службой поддержки.
           </Text>
         </View>
 
@@ -75,7 +84,9 @@ export default function HelpSupport() {
             <View key={index} style={styles.faqItem}>
               <Text style={styles.faqQuestion}>• {item.question}</Text>
               <Text style={styles.faqAnswer}>{item.answer}</Text>
-              {index < faqItems.length - 1 && <View style={styles.faqDivider} />}
+              {index < faqItems.length - 1 && (
+                <View style={styles.faqDivider} />
+              )}
             </View>
           ))}
         </View>
@@ -101,13 +112,20 @@ export default function HelpSupport() {
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Полезные советы</Text>
           <View style={styles.tipItem}>
-            <Text style={styles.tipText}>• Регулярно обновляйте свои предпочтения для более точных рекомендаций</Text>
+            <Text style={styles.tipText}>
+              • Регулярно обновляйте свои предпочтения для более точных
+              рекомендаций
+            </Text>
           </View>
           <View style={styles.tipItem}>
-            <Text style={styles.tipText}>• Используйте функцию оценки блюд для персонализации рациона</Text>
+            <Text style={styles.tipText}>
+              • Используйте функцию оценки блюд для персонализации рациона
+            </Text>
           </View>
           <View style={styles.tipItem}>
-            <Text style={styles.tipText}>• Не забывайте указывать сезонные аллергии</Text>
+            <Text style={styles.tipText}>
+              • Не забывайте указывать сезонные аллергии
+            </Text>
           </View>
         </View>
       </ScrollView>
@@ -128,19 +146,11 @@ const styles = StyleSheet.create({
     paddingTop: 20,
     paddingBottom: 15,
     backgroundColor: "#C2DAE2",
-    borderBottomWidth: 3,
-    borderBottomColor: "#6A9AA9",
   },
   backButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     padding: 8,
-  },
-  backIcon: {
-    width: 30,
-    height: 15,
-    tintColor: "#000000",
-    marginRight: 8,
   },
   headerTitleContainer: {
     flex: 1,
@@ -161,19 +171,24 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   welcomeSection: {
-    alignItems: 'center',
+    alignItems: "center",
     padding: 30,
-    backgroundColor: '#F8F9FA',
+    backgroundColor: "#F8F9FA",
     margin: 20,
     borderRadius: 12,
     borderWidth: 2,
-    borderColor: '#6A9AA9',
+    borderColor: "#6A9AA9",
   },
   supportIcon: {
-    width: 50,
-    height: 50,
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: "#E1F0F5",
+    borderWidth: 2,
+    borderColor: "#6A9AA9",
+    justifyContent: "center",
+    alignItems: "center",
     marginBottom: 16,
-    tintColor: '#000000ff',
   },
   welcomeTitle: {
     fontSize: 20,
@@ -181,13 +196,13 @@ const styles = StyleSheet.create({
     color: "#000000",
     fontFamily: "Playfair Display Regular",
     marginBottom: 8,
-    textAlign: 'center',
+    textAlign: "center",
   },
   welcomeText: {
     fontSize: 14,
     color: "#6C757D",
     fontFamily: "Playfair Display Regular",
-    textAlign: 'center',
+    textAlign: "center",
     lineHeight: 20,
   },
   section: {
@@ -223,9 +238,9 @@ const styles = StyleSheet.create({
     marginTop: 10,
   },
   contactItem: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
     marginBottom: 12,
     paddingVertical: 8,
   },

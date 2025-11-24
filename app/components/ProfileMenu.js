@@ -1,14 +1,13 @@
+import { useRouter } from 'expo-router';
 import React from 'react';
 import {
+  Alert,
   Modal,
-  TouchableOpacity,
-  View,
-  Text,
   StyleSheet,
-  Dimensions,
-  Alert
+  Text,
+  TouchableOpacity,
+  View
 } from 'react-native';
-import { useRouter } from 'expo-router';
 // 1. Импортируем контекст и иконки
 import { useAuthContext } from '@/app/contexts/AuthContext';
 import { Ionicons } from '@expo/vector-icons';
@@ -23,10 +22,13 @@ const ProfileMenu = ({ visible, onClose, userName = "Пользователь" }
     onClose();
 
     switch (action) {
+      case 'profile':
+        router.push('/profile');
+        break;
+
       case 'settings':
         console.log('Переход в настройки профиля');
-        // router.push('/profile-settings');
-        // Если такой страницы еще нет, можно закомментировать
+        router.push('/profile-settings');
         break;
 
       case 'logout':
@@ -44,7 +46,7 @@ const ProfileMenu = ({ visible, onClose, userName = "Пользователь" }
 
       case 'help':
         console.log('Переход в справку/поддержку');
-        // router.push('/help-support');
+        router.push('/help-support');
         break;
     }
   };
@@ -64,7 +66,11 @@ const ProfileMenu = ({ visible, onClose, userName = "Пользователь" }
         <View style={styles.profileMenuContainer}>
           <View style={styles.profileMenu}>
             {/* Заголовок меню */}
-            <View style={styles.menuHeader}>
+            <TouchableOpacity
+              style={styles.menuHeader}
+              activeOpacity={0.8}
+              onPress={() => handleMenuAction('profile')}
+            >
               <View style={styles.userInfo}>
                 {/* Иконка пользователя вместо картинки */}
                 <View style={styles.avatarPlaceholder}>
@@ -75,7 +81,7 @@ const ProfileMenu = ({ visible, onClose, userName = "Пользователь" }
                   <Text style={styles.menuTitle}>Профиль</Text>
                 </View>
               </View>
-            </View>
+            </TouchableOpacity>
             {/* Пункты меню */}
             <TouchableOpacity
               style={styles.menuItem}

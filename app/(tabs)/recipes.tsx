@@ -116,7 +116,7 @@ export default function Recipes() {
   const navigateToRecipe = (recipe: any) => {
     console.log(`Переход к рецепту: ${recipe.name}`);
     router.push({
-      pathname: "/meal",
+      pathname: "../pages/meal",
       params: {
         mealName: recipe.name,
         category: recipe.category,
@@ -163,9 +163,8 @@ export default function Recipes() {
         <ProfileMenu
           visible={profileMenuVisible}
           onClose={() => setProfileMenuVisible(false)}
-          onMenuAction={handleMenuAction}
           userName={userData.name}
-          userImage={require('@/assets/images/people-icon.png')}
+          
         />
 
         <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
