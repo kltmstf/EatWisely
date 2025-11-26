@@ -9,22 +9,53 @@ import {
   User,
   UserCredential,
 } from "firebase/auth";
-import { doc, setDoc, getDoc, DocumentSnapshot } from "firebase/firestore";
+import {
+  doc,
+  setDoc,
+  getDoc,
+  DocumentSnapshot,
+  Timestamp, // <-- 1. Импорт Timestamp
+} from "firebase/firestore";
 import { auth, db } from "../firebase/config";
 
-// Определяем типы прямо здесь
-interface UserProfile {
+// --- ИНТЕРФЕЙС 1: Как хранится в Firestore (с Timestamp) ---
+interface FirestoreProfile {
   id: string;
   email: string;
   firstName: string;
   lastName?: string;
-  dietaryPreferences: {
-    cuisines: string[];
-    excludedIngredients: string[];
-    cookingTimeLimit: number;
-  };
-  createdAt: Date;
-  updatedAt: Date;
+  // --- ПОЛЯ ПРОФИЛЯ ---
+  description: string;
+  age: string;
+  height: string;
+  gender: string;
+  weight: string;
+  goal: string;
+  activity: string;
+  dietType: string;
+  allergies: string;
+  excludedIngredients: string;
+  cookingTimeLimit: string;
+  isProfilePrivate: boolean;
+  isProfileFilled: boolean;
+
+  // ⭐️ НОВЫЕ ПОЛЯ ДЛЯ КБЖУ (в БД храним как number)
+  targetCalories: number;
+  targetProteinGrams: number;
+  targetFatGrams: number;
+  targetCarbGrams: number;
+
+  // --- ДАТЫ: Тип Timestamp для чтения из БД ---
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+}
+
+// --- ИНТЕРФЕЙС 2: Как возвращается в приложение (с Date) ---
+// Используем Omit, чтобы исключить Timestamp поля и заменить их на Date
+interface ClientProfile
+  extends Omit<FirestoreProfile, "createdAt" | "updatedAt"> {
+  createdAt: Date; // <-- Тип Date для приложения
+  updatedAt: Date; // <-- Тип Date для приложения
 }
 
 interface UserRegistrationData {
@@ -42,7 +73,6 @@ class AuthService {
     password: string,
     userData: UserRegistrationData
   ): Promise<void> {
-    let user: User | null = null; // Объявляем user снаружи try/catch
     try {
       console.log("🔄 Starting sign up process...");
 
@@ -52,23 +82,39 @@ class AuthService {
       const user: User = userCredential.user;
       console.log("✅ User created in Auth:", user.uid);
 
-      // Создаем профиль пользователя в Firestore
-      const userProfile: UserProfile = {
+      // 2. Создаем объект, который соответствует структуре Firestore.
+      const userProfile = {
         id: user.uid,
         email: email,
         firstName: userData.firstName,
         lastName: userData.lastName || "",
-        dietaryPreferences: {
-          cuisines: [],
-          excludedIngredients: [],
-          cookingTimeLimit: 60,
-        },
+        // Устанавливаем разумные значения по умолчанию
+        description: "",
+        age: "",
+        height: "",
+        gender: "Муж",
+        weight: "",
+        goal: "Поддержание веса",
+        activity: "Низкий (0-1 тренировка в неделю)",
+        dietType: "Обычное",
+        allergies: "",
+        excludedIngredients: "",
+        cookingTimeLimit: "60", // Дефолтное время готовки
+        isProfilePrivate: false, // Дефолтная приватность
+        isProfileFilled: false, // Профиль не заполнен на этом этапе
+
+        // ⭐️ Инициализируем новые поля КБЖУ нулями (0)
+        targetCalories: 0,
+        targetProteinGrams: 0,
+        targetFatGrams: 0,
+        targetCarbGrams: 0,
+
         createdAt: new Date(),
         updatedAt: new Date(),
       };
 
       await setDoc(doc(this.db, "users", user.uid), userProfile);
-      console.log("✅ User profile created in Firestore");
+      console.log("✅ User profile created in Firestore (NEW SCHEMA)");
 
       if (userData.firstName) {
         await updateProfile(user, {
@@ -85,25 +131,34 @@ class AuthService {
       throw new Error(this.getErrorMessage(error.code));
     }
   }
+
   // Вход пользователя
   async signIn(email: string, password: string): Promise<void> {
     try {
       console.log("🔄 Signing in...", email);
-      await signInWithEmailAndPassword(this.auth, email, password);
-      console.log("✅ Sign in successful");
+      console.log("🔧 Auth instance:", this.auth?.app?.name);
+      console.log("🔧 Project ID:", this.auth?.app?.options?.projectId);
+
+      const result = await signInWithEmailAndPassword(
+        this.auth,
+        email,
+        password
+      );
+      console.log("✅ Sign in successful", result.user.uid);
     } catch (error: any) {
-      // Проверяем, ожидаемая ли это ошибка (неверный пароль/логин)
+      console.error("❌ FULL Sign in error:", {
+        code: error.code,
+        message: error.message,
+        stack: error.stack,
+      });
+
       const isAuthError =
         error.code === "auth/invalid-credential" ||
         error.code === "auth/user-not-found" ||
         error.code === "auth/wrong-password";
 
       if (isAuthError) {
-        // Используем warn для обычных ошибок ввода, чтобы не пугать разработчика в консоли
         console.warn("⚠️ Login failed: Invalid credentials");
-      } else {
-        // Используем error только для системных проблем (сеть, настройки и т.д.)
-        console.error("❌ System Sign in error:", error.code, error.message);
       }
 
       throw new Error(this.getErrorMessage(error.code));
@@ -121,24 +176,50 @@ class AuthService {
     }
   }
 
-  // Получить профиль пользователя
-  async getUserProfile(userId: string): Promise<UserProfile | null> {
+  // --- ОБНОВЛЕННЫЙ МЕТОД getUserProfile ---
+  // 3. Возвращаем ClientProfile
+  async getUserProfile(userId: string): Promise<ClientProfile | null> {
     try {
       const docRef = doc(this.db, "users", userId);
       const docSnap: DocumentSnapshot = await getDoc(docRef);
 
       if (docSnap.exists()) {
-        const data = docSnap.data();
+        // 4. Читаем данные как FirestoreProfile (с Timestamp)
+        const data = docSnap.data() as FirestoreProfile;
         console.log("✅ User profile found");
+
+        // Преобразовываем Timestamp в Date при возврате
         return {
           id: docSnap.id,
           email: data.email,
           firstName: data.firstName,
-          lastName: data.lastName,
-          dietaryPreferences: data.dietaryPreferences,
-          createdAt: data.createdAt?.toDate(),
-          updatedAt: data.updatedAt?.toDate(),
-        } as UserProfile;
+          lastName: data.lastName || "",
+
+          description: data.description || "",
+          age: data.age || "",
+          height: data.height || "",
+          gender: data.gender || "Муж",
+          weight: data.weight || "",
+          goal: data.goal || "Поддержание веса",
+          activity: data.activity || "Низкий (0-1 тренировка в неделю)",
+
+          dietType: data.dietType || "Обычное",
+          allergies: data.allergies || "",
+          excludedIngredients: data.excludedIngredients || "",
+          cookingTimeLimit: data.cookingTimeLimit || "60",
+          isProfilePrivate: data.isProfilePrivate || false,
+          isProfileFilled: data.isProfileFilled || false,
+
+          // ⭐️ Читаем новые поля КБЖУ (используем 0 как дефолт, если поля еще не существуют)
+          targetCalories: data.targetCalories || 0,
+          targetProteinGrams: data.targetProteinGrams || 0,
+          targetFatGrams: data.targetFatGrams || 0,
+          targetCarbGrams: data.targetCarbGrams || 0,
+
+          // 5. Используем .toDate() для преобразования Timestamp в Date
+          createdAt: data.createdAt?.toDate() || new Date(),
+          updatedAt: data.updatedAt?.toDate() || new Date(),
+        } as ClientProfile; // 6. Утверждаем тип возвращаемого объекта
       } else {
         console.log("❌ User profile not found in Firestore");
         throw new Error("PROFILE_NOT_FOUND");
@@ -178,23 +259,18 @@ class AuthService {
 
   // Преобразование кодов ошибок в понятные сообщения
   private getErrorMessage(errorCode: string): string {
-    // Единое, общее сообщение для ошибок входа:
     const INVALID_CREDENTIALS_MSG =
       "Неверный email или пароль. Проверьте правильность введенных данных.";
 
     const errorMessages: { [key: string]: string } = {
-      // Ошибки регистрации
       "auth/email-already-in-use":
         "Этот email уже используется. Попробуйте войти или восстановить пароль.",
       "auth/invalid-email":
         "Неверный формат email. Проверьте правильность написания.",
       "auth/weak-password": "Пароль должен содержать минимум 6 символов.",
-
-      // Ошибки входа - ВСЕ ВЕДУТ К ОДНОМУ СООБЩЕНИЮ ДЛЯ БЕЗОПАСНОСТИ
       "auth/user-not-found": INVALID_CREDENTIALS_MSG,
       "auth/wrong-password": INVALID_CREDENTIALS_MSG,
       "auth/invalid-credential": INVALID_CREDENTIALS_MSG,
-      // остальные
       "auth/too-many-requests": "Слишком много попыток. Попробуйте позже.",
       "auth/network-request-failed":
         "Ошибка сети. Проверьте подключение к интернету.",
@@ -203,7 +279,6 @@ class AuthService {
         "Этот метод входа не разрешен. Обратитесь к администратору.",
     };
 
-    // Логируем неизвестные коды ошибок для отладки
     if (!errorMessages[errorCode]) {
       console.log("⚠️ Unknown Firebase error code:", errorCode);
       return `Ошибка авторизации. Пожалуйста, попробуйте снова. (${errorCode})`;

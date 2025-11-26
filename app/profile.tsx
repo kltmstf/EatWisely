@@ -12,7 +12,9 @@ import {
   View,
 } from "react-native";
 
+// --- ТИПЫ ДАННЫХ ---
 type ProfileData = {
+  name: string;
   description: string;
   age: string;
   height: string;
@@ -24,13 +26,20 @@ type ProfileData = {
   allergies: string;
   dislikes: string;
   isPrivate: boolean;
+  email: string;
+  customNutritionType: string;
+  cookingTimeLimit: string;
+  isProfileFilled: boolean; // Оставлено, но не используется для рендера уведомления
   avatarUri?: string | null;
 };
 
 const PROFILE_STORAGE_KEY = "user_profile_data";
 const PROFILE_SETUP_KEY = "profile_setup_complete";
 
+// --- ДАННЫЕ ПО УМОЛЧАНИЮ ---
 const defaultProfileData: ProfileData = {
+  name: "Пользователь",
+  email: "",
   description: "",
   age: "",
   height: "",
@@ -39,9 +48,12 @@ const defaultProfileData: ProfileData = {
   goal: "Поддержание веса",
   activity: "Низкий (0-1 тренировка в неделю)",
   nutritionType: "Обычное",
+  customNutritionType: "",
   allergies: "",
   dislikes: "",
   isPrivate: false,
+  cookingTimeLimit: "30 мин",
+  isProfileFilled: false,
 };
 
 export default function ProfileScreen() {
@@ -49,8 +61,11 @@ export default function ProfileScreen() {
   const [profileData, setProfileData] =
     useState<ProfileData>(defaultProfileData);
   const [loading, setLoading] = useState(true);
-  const [profileCompleted, setProfileCompleted] = useState(false);
 
+  // Переменная profileCompleted больше не используется для рендера, но оставлена в логике загрузки
+  const [, setProfileCompleted] = useState(false);
+
+  // --- ЛОГИКА ЗАГРУЗКИ ---
   const loadProfileData = useCallback(async () => {
     setLoading(true);
     try {
@@ -60,7 +75,12 @@ export default function ProfileScreen() {
       ]);
 
       if (storedProfile) {
-        setProfileData(JSON.parse(storedProfile));
+        const parsedData = JSON.parse(storedProfile);
+
+        // ⭐️ ВРЕМЕННЫЙ ЛОГ ДЛЯ ДИАГНОСТИКИ
+            console.log("Загруженные данные профиля:", parsedData); 
+            console.log("Значение поля 'name':", parsedData.name);
+        setProfileData({ ...defaultProfileData, ...parsedData });
       } else {
         setProfileData(defaultProfileData);
       }
@@ -79,21 +99,22 @@ export default function ProfileScreen() {
     }, [loadProfileData])
   );
 
+  // --- РАССЧИТЫВАЕМЫЕ ЗНАЧЕНИЯ ---
   const primaryInfo = useMemo(
     () => [
       {
         label: "Возраст",
-        value: profileData.age ? `${profileData.age} лет` : "—",
+        value: profileData.age ? `${profileData.age} лет` : "-",
       },
       {
         label: "Рост",
-        value: profileData.height ? `${profileData.height} см` : "—",
+        value: profileData.height ? `${profileData.height} см` : "-",
       },
       {
         label: "Вес",
-        value: profileData.weight ? `${profileData.weight} кг` : "—",
+        value: profileData.weight ? `${profileData.weight} кг` : "-",
       },
-      { label: "Пол", value: profileData.gender || "—" },
+      { label: "Пол", value: profileData.gender || "-" },
     ],
     [
       profileData.age,
@@ -105,9 +126,9 @@ export default function ProfileScreen() {
 
   const preferences = useMemo(
     () => [
-      { label: "Цель", value: profileData.goal || "—" },
-      { label: "Активность", value: profileData.activity || "—" },
-      { label: "Тип питания", value: profileData.nutritionType || "—" },
+      { label: "Цель", value: profileData.goal || "-" },
+      { label: "Активность", value: profileData.activity || "-" },
+      { label: "Тип питания", value: profileData.nutritionType || "-" },
       { label: "Аллергии", value: profileData.allergies || "Нет" },
       { label: "Нелюбимые продукты", value: profileData.dislikes || "Нет" },
     ],
@@ -120,17 +141,7 @@ export default function ProfileScreen() {
     ]
   );
 
-  const handleEdit = () => {
-    router.push("/profile-settings");
-  };
-
-  const handleSetup = () => {
-    router.push("/profile-setup");
-  };
-
-  const userName = profileData.description
-    ? profileData.description.split(" ")[0]
-    : "Пользователь";
+  const userName = profileData.name || "Пользователь";
 
   const profileTypeLabel = profileData.isPrivate
     ? "Приватный профиль"
@@ -139,6 +150,33 @@ export default function ProfileScreen() {
     ? "Ваш профиль и данные видны только вам."
     : "Другие пользователи могут просматривать ваши данные и рекомендации.";
 
+  // --- ОБРАБОТЧИКИ ---
+  const handleEdit = () => {
+    router.push("/profile-settings");
+  };
+
+  // 🚨 handleSetup удален, так как блок уведомления удален.
+  const handleNavigationStub = (path: string) => {
+    console.log(`Navigating to: ${path}`);
+    // router.push(path); // Закомментировано по требованию (оставить только внешне)
+  };
+
+  // --- ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ПУНКТОВ МЕНЮ ---
+  const renderMenuItem = (
+    iconName: string,
+    label: string,
+    onPress: () => void
+  ) => (
+    <TouchableOpacity style={styles.menuItem} onPress={onPress}>
+      <View style={styles.menuIconContainer}>
+        <Ionicons name={iconName as any} size={24} color="#6A9AA9" />
+      </View>
+      <Text style={styles.menuItemText}>{label}</Text>
+      <Ionicons name="chevron-forward" size={20} color="#ccc" />
+    </TouchableOpacity>
+  );
+
+  // --- РЕНДЕР ---
   return (
     <View style={styles.container}>
       <View style={styles.header}>
@@ -163,6 +201,7 @@ export default function ProfileScreen() {
           contentContainerStyle={styles.contentContainer}
           showsVerticalScrollIndicator={false}
         >
+          {/* 1. КАРТОЧКА ПРОФИЛЯ */}
           <View style={styles.profileCard}>
             <View style={styles.avatar}>
               {profileData.avatarUri ? (
@@ -184,6 +223,7 @@ export default function ProfileScreen() {
             </TouchableOpacity>
           </View>
 
+          {/* 2. ТИП ПРОФИЛЯ */}
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Тип профиля</Text>
             <View style={styles.profileTypeCard}>
@@ -205,25 +245,28 @@ export default function ProfileScreen() {
             </View>
           </View>
 
-          {!profileCompleted && (
-            <View style={styles.noticeCard}>
-              <Ionicons name="alert-circle-outline" size={24} color="#856404" />
-              <View style={styles.noticeTextContainer}>
-                <Text style={styles.noticeTitle}>Профиль не завершен</Text>
-                <Text style={styles.noticeDescription}>
-                  Заполните данные профиля, чтобы получать персональные
-                  рекомендации.
-                </Text>
-              </View>
-              <TouchableOpacity
-                style={styles.noticeButton}
-                onPress={handleSetup}
-              >
-                <Text style={styles.noticeButtonText}>Заполнить</Text>
-              </TouchableOpacity>
+          {/* 3. ОБНОВЛЕННЫЙ РАЗДЕЛ: Сообщество */}
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Сообщество</Text>
+            <View style={styles.communityMenu}>
+              {renderMenuItem(
+                "restaurant-outline",
+                "Опубликованные рецепты (12)",
+                () => handleNavigationStub("/my-recipes")
+              )}
+              {renderMenuItem("people-outline", "Подписки (8)", () =>
+                handleNavigationStub("/following")
+              )}
+              {renderMenuItem("person-add-outline", "Подписчики (55)", () =>
+                handleNavigationStub("/followers")
+              )}
+              {renderMenuItem("grid-outline", "Публикации (4)", () =>
+                handleNavigationStub("/posts")
+              )}
             </View>
-          )}
+          </View>
 
+          {/* 4. ОСНОВНЫЕ ДАННЫЕ */}
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Основные данные</Text>
             <View style={styles.infoGrid}>
@@ -236,11 +279,19 @@ export default function ProfileScreen() {
             </View>
           </View>
 
+          {/* 5. ПРЕДПОЧТЕНИЯ */}
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Предпочтения</Text>
             <View style={styles.preferences}>
-              {preferences.map((item) => (
-                <View key={item.label} style={styles.preferenceRow}>
+              {preferences.map((item, index) => (
+                <View
+                  key={item.label}
+                  style={[
+                    styles.preferenceRow,
+                    index === preferences.length - 1 &&
+                      styles.preferenceRowLast,
+                  ]}
+                >
                   <Text style={styles.preferenceLabel}>{item.label}</Text>
                   <Text style={styles.preferenceValue}>{item.value}</Text>
                 </View>
@@ -253,6 +304,7 @@ export default function ProfileScreen() {
   );
 }
 
+// --- СТИЛИ ---
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -357,42 +409,6 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     fontFamily: "Playfair Display Regular",
   },
-  noticeCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#FEF3C7",
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 20,
-    gap: 12,
-  },
-  noticeTextContainer: {
-    flex: 1,
-  },
-  noticeTitle: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: "#92400E",
-    marginBottom: 4,
-    fontFamily: "Playfair Display Regular",
-  },
-  noticeDescription: {
-    fontSize: 14,
-    color: "#92400E",
-    fontFamily: "Playfair Display Regular",
-  },
-  noticeButton: {
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    backgroundColor: "#FCD34D",
-    borderRadius: 8,
-  },
-  noticeButtonText: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: "#92400E",
-    fontFamily: "Playfair Display Regular",
-  },
   section: {
     marginBottom: 24,
   },
@@ -461,6 +477,7 @@ const styles = StyleSheet.create({
   preferenceRow: {
     paddingHorizontal: 16,
     paddingVertical: 14,
+    flexDirection: "column",
     borderBottomWidth: 1,
     borderBottomColor: "#F3F4F6",
   },
@@ -476,6 +493,31 @@ const styles = StyleSheet.create({
   preferenceValue: {
     fontSize: 16,
     color: "#111827",
+    fontFamily: "Playfair Display Regular",
+  },
+  communityMenu: {
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    overflow: "hidden",
+  },
+  menuItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: "#F3F4F6",
+  },
+  menuIconContainer: {
+    width: 32,
+    alignItems: "center",
+  },
+  menuItemText: {
+    flex: 1,
+    fontSize: 16,
+    color: "#111827",
+    marginLeft: 12,
     fontFamily: "Playfair Display Regular",
   },
 });

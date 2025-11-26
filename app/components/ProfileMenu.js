@@ -1,3 +1,4 @@
+// components/ProfileMenu.tsx
 import { useRouter } from 'expo-router';
 import React from 'react';
 import {
@@ -8,35 +9,47 @@ import {
   TouchableOpacity,
   View
 } from 'react-native';
-// 1. Импортируем контекст и иконки
 import { useAuthContext } from '@/app/contexts/AuthContext';
 import { Ionicons } from '@expo/vector-icons';
 
 const ProfileMenu = ({ visible, onClose, userName = "Пользователь" }) => {
   const router = useRouter();
-  // 2. Достаем функцию выхода из контекста
-  const { signOut } = useAuthContext();
+  const { signOut, user } = useAuthContext(); // Убрал deleteUserAccount
+
+  const isAuthenticated = !!user;
 
   const handleMenuAction = async (action) => {
-    // Сначала закрываем меню
     onClose();
 
     switch (action) {
       case 'profile':
-        router.push('/profile');
+        if (isAuthenticated) {
+          router.push('/profile');
+        } else {
+          router.push('/login');
+        }
         break;
 
       case 'settings':
-        console.log('Переход в настройки профиля');
-        router.push('/profile-settings');
+        if (isAuthenticated) {
+          router.push('/profile-settings');
+        } else {
+          router.push('/login');
+        }
+        break;
+
+      case 'login':
+        router.push('/login');
+        break;
+
+      case 'register':
+        router.push('/register');
         break;
 
       case 'logout':
         try {
-          // 3. Реальный выход из системы
           await signOut();
           console.log('Выход из аккаунта выполнен');
-          // 4. replace вместо push, чтобы очистить историю навигации
           router.replace('/login');
         } catch (error) {
           console.error('Ошибка при выходе:', error);
@@ -45,7 +58,6 @@ const ProfileMenu = ({ visible, onClose, userName = "Пользователь" }
         break;
 
       case 'help':
-        console.log('Переход в справку/поддержку');
         router.push('/help-support');
         break;
     }
@@ -72,36 +84,68 @@ const ProfileMenu = ({ visible, onClose, userName = "Пользователь" }
               onPress={() => handleMenuAction('profile')}
             >
               <View style={styles.userInfo}>
-                {/* Иконка пользователя вместо картинки */}
                 <View style={styles.avatarPlaceholder}>
                   <Ionicons name="person" size={20} color="#FFF" />
                 </View>
                 <View style={styles.userTextInfo}>
-                  <Text style={styles.userName} numberOfLines={1}>{userName}</Text>
-                  <Text style={styles.menuTitle}>Профиль</Text>
+                  <Text style={styles.userName} numberOfLines={1}>
+                    {isAuthenticated ? userName : 'Гость'}
+                  </Text>
+                  <Text style={styles.menuTitle}>
+                    {isAuthenticated ? 'Профиль' : 'Войдите в аккаунт'}
+                  </Text>
                 </View>
               </View>
             </TouchableOpacity>
-            {/* Пункты меню */}
-            <TouchableOpacity
-              style={styles.menuItem}
-              onPress={() => handleMenuAction('settings')}
-            >
-              <View style={styles.menuItemContent}>
-                <Ionicons name="settings-outline" size={22} color="#6A9AA9" style={styles.menuIcon} />
-                <Text style={styles.menuItemText}>Настройки профиля</Text>
-              </View>
-            </TouchableOpacity>
-            <View style={styles.menuDivider} />
-            <TouchableOpacity
-              style={styles.menuItem}
-              onPress={() => handleMenuAction('logout')}
-            >
-              <View style={styles.menuItemContent}>
-                <Ionicons name="log-out-outline" size={22} color="#DC3545" style={styles.menuIcon} />
-                <Text style={[styles.menuItemText, styles.logoutText]}>Выйти из аккаунта</Text>
-              </View>
-            </TouchableOpacity>
+
+            {isAuthenticated ? (
+              // Меню для авторизованного пользователя
+              <>
+                <TouchableOpacity
+                  style={styles.menuItem}
+                  onPress={() => handleMenuAction('settings')}
+                >
+                  <View style={styles.menuItemContent}>
+                    <Ionicons name="settings-outline" size={22} color="#6A9AA9" style={styles.menuIcon} />
+                    <Text style={styles.menuItemText}>Настройки профиля</Text>
+                  </View>
+                </TouchableOpacity>
+                
+                <View style={styles.menuDivider} />
+                
+                <TouchableOpacity
+                  style={styles.menuItem}
+                  onPress={() => handleMenuAction('logout')}
+                >
+                  <View style={styles.menuItemContent}>
+                    <Ionicons name="log-out-outline" size={22} color="#FF6B6B" style={styles.menuIcon} />
+                    <Text style={[styles.menuItemText, styles.logoutText]}>Выйти из аккаунта</Text>
+                  </View>
+                </TouchableOpacity>
+              </>
+            ) : (
+              // Меню для гостя
+              <>
+                <TouchableOpacity
+                  style={styles.menuItem}
+                  onPress={() => handleMenuAction('login')}
+                >
+                  <View style={styles.menuItemContent}>
+                    <Ionicons name="log-in-outline" size={22} color="#6A9AA9" style={styles.menuIcon} />
+                    <Text style={styles.menuItemText}>Войти</Text>
+                  </View>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.menuItem}
+                  onPress={() => handleMenuAction('register')}
+                >
+                  <View style={styles.menuItemContent}>
+                    <Ionicons name="person-add-outline" size={22} color="#6A9AA9" style={styles.menuIcon} />
+                    <Text style={styles.menuItemText}>Регистрация</Text>
+                  </View>
+                </TouchableOpacity>
+              </>
+            )}
 
             <View style={styles.menuDivider} />
             <TouchableOpacity
@@ -127,7 +171,7 @@ const styles = StyleSheet.create({
   },
   profileMenuContainer: {
     position: 'absolute',
-    top: 50, // Чуть ниже, чтобы не наезжало на статус бар
+    top: 50,
     right: 20,
     alignItems: 'flex-end',
   },
@@ -196,7 +240,7 @@ const styles = StyleSheet.create({
     fontFamily: "Playfair Display Regular",
   },
   logoutText: {
-    color: '#DC3545',
+    color: '#FF6B6B',
   },
   menuDivider: {
     height: 1,
