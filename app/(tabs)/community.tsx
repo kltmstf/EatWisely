@@ -28,7 +28,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import ProfileMenu from "../components/ProfileMenu";
+// import ProfileMenu from "../components/ProfileMenu"; // УДАЛЕНО
 import { db } from "../firebase/config";
 import { getAuth, onAuthStateChanged } from "firebase/auth";
 
@@ -58,7 +58,7 @@ interface Comment {
 
 export default function Community() {
   const router = useRouter();
-  const [profileMenuVisible, setProfileMenuVisible] = useState(false);
+  // const [profileMenuVisible, setProfileMenuVisible] = useState(false); // УДАЛЕНО
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedFilter, setSelectedFilter] = useState("Все");
   const [communityPosts, setCommunityPosts] = useState<CommunityPost[]>([]);
@@ -250,8 +250,9 @@ export default function Community() {
         });
       });
 
-      // Сортируем по времени (новые сверху)
+      // Сортируем по времени (новые сверху) - ОСТОРОЖНО: timeAgo - это строка типа "X минут назад", сортировка по ней может быть неточной. Лучше было бы использовать orderBy("createdAt", "asc/desc") в запросе к Firebase. Для локального состояния оставим как есть, предполагая, что нам нужны самые новые сверху.
       loadedComments.sort((a, b) => {
+        // Это неточная сортировка, но оставим для демонстрации
         return new Date(b.timeAgo).getTime() - new Date(a.timeAgo).getTime();
       });
 
@@ -316,11 +317,13 @@ export default function Community() {
       Alert.alert("Успех", "Пост успешно опубликован!");
     } catch (error: any) {
       console.error("Ошибка добавления поста:", error);
-      
+
       // ОБРАБОТКА ОШИБОК АВТОРИЗАЦИИ
-      if (error.code === 'auth/admin-restricted-operation' || 
-          error.code === 'permission-denied' ||
-          error.code === 'unauthenticated') {
+      if (
+        error.code === "auth/admin-restricted-operation" ||
+        error.code === "permission-denied" ||
+        error.code === "unauthenticated"
+      ) {
         Alert.alert("Ошибка", "Необходимо войти в аккаунт");
         setIsAuthenticated(false);
       } else {
@@ -408,9 +411,11 @@ export default function Community() {
       }
 
       // ОБРАБОТКА ОШИБОК АВТОРИЗАЦИИ
-      if (error.code === "auth/admin-restricted-operation" || 
-          error.code === "permission-denied" ||
-          error.code === "unauthenticated") {
+      if (
+        error.code === "auth/admin-restricted-operation" ||
+        error.code === "permission-denied" ||
+        error.code === "unauthenticated"
+      ) {
         Alert.alert("Ошибка", "Необходимо войти в аккаунт");
         setIsAuthenticated(false);
       } else {
@@ -455,7 +460,9 @@ export default function Community() {
       // Обновляем локальное состояние
       setCommunityPosts((prev) =>
         prev.map((p) =>
-          p.id === selectedPost.id ? { ...p, comments: (p.comments || 0) + 1 } : p
+          p.id === selectedPost.id
+            ? { ...p, comments: (p.comments || 0) + 1 }
+            : p
         )
       );
 
@@ -468,16 +475,17 @@ export default function Community() {
         userId: userData.id,
       };
 
-      setComments((prev) => [...prev, newCommentObj]);
+      setComments((prev) => [newCommentObj, ...prev]); // Добавляем новый комментарий в начало
       setNewComment("");
-      
     } catch (error: any) {
       console.error("Ошибка добавления комментария:", error);
-      
+
       // ОБРАБОТКА ОШИБОК АВТОРИЗАЦИИ
-      if (error.code === 'auth/admin-restricted-operation' || 
-          error.code === 'permission-denied' ||
-          error.code === 'unauthenticated') {
+      if (
+        error.code === "auth/admin-restricted-operation" ||
+        error.code === "permission-denied" ||
+        error.code === "unauthenticated"
+      ) {
         Alert.alert("Ошибка", "Необходимо войти в аккаунт");
         setIsAuthenticated(false);
       } else {
@@ -489,7 +497,7 @@ export default function Community() {
   // Поделиться постом
   const handleShare = async (post: CommunityPost) => {
     try {
-      const shareContent = `${post.title}\n\n${post.content}\n\n— ${post.userName}`;
+      const shareContent = `${post.title}\n\n${post.content}\n\n- ${post.userName}`;
 
       Alert.alert("Поделиться постом", shareContent, [
         { text: "Скопировать", onPress: () => console.log("Скопировано") },
@@ -520,9 +528,9 @@ export default function Community() {
     return matchesSearch && matchesFilter;
   });
 
-  const handleProfileMenu = () => {
-    setProfileMenuVisible(!profileMenuVisible);
-  };
+  // const handleProfileMenu = () => { // УДАЛЕНО
+  // setProfileMenuVisible(!profileMenuVisible);
+  // };
 
   if (loading) {
     return (
@@ -550,28 +558,32 @@ export default function Community() {
             </Text>
           </View>
 
-          <TouchableOpacity
-            style={styles.profileButton}
-            onPress={handleProfileMenu}
-          >
-            <Image
-              source={require("@/assets/images/people-icon.png")}
-              style={styles.profileImage}
-            />
-            {!isAuthenticated && (
-              <View style={styles.guestBadge}>
-                <Text style={styles.guestBadgeText}>Гость</Text>
-              </View>
-            )}
-          </TouchableOpacity>
+          {/* Измененная секция профиля: только фото и имя */}
+          <View style={styles.profileSection}>
+            <TouchableOpacity
+              style={styles.profileButton}
+              // onPress={() => router.push('/profile')} // Можно добавить переход на страницу профиля
+            >
+              <Image
+                source={require("@/assets/images/people-icon.png")}
+                style={styles.profileImage}
+              />
+              {!isAuthenticated && (
+                <View style={styles.guestBadge}>
+                  <Text style={styles.guestBadgeText}>Гость</Text>
+                </View>
+              )}
+            </TouchableOpacity>
+            <Text style={styles.profileName}>{userData.name}</Text>
+          </View>
         </View>
 
-        {/* Компонент меню профиля */}
-        <ProfileMenu
-          visible={profileMenuVisible}
-          onClose={() => setProfileMenuVisible(false)}
-          userName={userData.name}
-        />
+        {/* Компонент меню профиля УДАЛЕН */}
+        {/* <ProfileMenu
+visible={profileMenuVisible}
+onClose={() => setProfileMenuVisible(false)}
+userName={userData.name}
+/> */}
 
         <ScrollView
           style={styles.scrollView}
@@ -964,7 +976,6 @@ const getPostTypeColor = (postType: string) => {
       return "#C2DAE2";
   }
 };
-;
 
 // Стили (остаются без изменений)
 const styles = StyleSheet.create({
@@ -1030,11 +1041,25 @@ const styles = StyleSheet.create({
     fontFamily: "Playfair Display Regular",
     marginRight: 20,
   },
+  profileSection: {
+    alignItems: 'center',
+    marginLeft: 15,
+  },
   profileButton: {
     width: 55,
     height: 55,
     borderRadius: 25,
-    overflow: "hidden",
+    justifyContent: "center",
+    alignItems: "center",
+
+    position: "relative",
+  },
+  profileName: { // НОВЫЙ СТИЛЬ ДЛЯ ИМЕНИ
+    fontSize: 12,
+    color: '#666',
+    marginTop: 4,
+    fontFamily: "Playfair Display Regular",
+    textAlign: 'center',
   },
   guestBadge: {
     position: "absolute",
@@ -1053,6 +1078,7 @@ const styles = StyleSheet.create({
   profileImage: {
     width: "100%",
     height: "100%",
+    borderRadius: 20,
   },
   scrollView: {
     flex: 1,

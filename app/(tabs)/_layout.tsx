@@ -1,27 +1,24 @@
-// app/(tabs)/_layout.tsx
-import Ionicons from '@expo/vector-icons/Ionicons';
-import { Tabs } from 'expo-router';
-import { StyleSheet, Text, View } from 'react-native';
+import Ionicons from "@expo/vector-icons/Ionicons";
+import { Tabs } from "expo-router";
+import { StyleSheet, Text, View } from "react-native";
 
-function CustomTabBarIcon({ focused, iconName, label }: { 
-  focused: boolean; 
-  iconName: string; 
-  label: string; 
+function CustomTabBarIcon({
+  focused,
+  iconName,
+  label,
+}: {
+  focused: boolean;
+  iconName: string;
+  label: string;
 }) {
   return (
-    <View style={[
-      styles.tabButton,
-      focused && styles.activeTabButton
-    ]}>
-      <Ionicons 
-        name={iconName as any} 
-        size={28} 
-        color={focused ? '#000' : '#000'} 
+    <View style={[styles.tabButton, focused && styles.activeTabButton]}>
+      <Ionicons
+        name={iconName as any}
+        size={28}
+        color={focused ? "#000" : "#000"}
       />
-      <Text style={[
-        styles.tabLabel,
-        focused && styles.activeTabLabel
-      ]}>
+      <Text style={[styles.tabLabel, focused && styles.activeTabLabel]}>
         {label}
       </Text>
     </View>
@@ -37,50 +34,58 @@ export default function TabLayout() {
         tabBarShowLabel: false,
       }}
     >
-      <Tabs.Screen 
-        name="community" 
+      {/* 1. Главная (home) - обычно первая */}
+      <Tabs.Screen
+        name="home"
         options={{
           tabBarIcon: ({ focused }) => (
-            <CustomTabBarIcon 
+            <CustomTabBarIcon
               focused={focused}
-              iconName={focused ? 'people' : 'people-outline'}
-              label="Сообщество"
-            />
-          ),
-        }}
-      />
-      <Tabs.Screen 
-        name="home" 
-        options={{
-          tabBarIcon: ({ focused }) => (
-            <CustomTabBarIcon 
-              focused={focused}
-              iconName={focused ? 'home' : 'home-outline'}
+              iconName={focused ? "home" : "home-outline"}
               label="Главная"
             />
           ),
         }}
       />
-      <Tabs.Screen 
-        name="recipes" 
+
+      {/* 2. Рецепты (recipes) */}
+      <Tabs.Screen
+        name="recipes"
         options={{
           tabBarIcon: ({ focused }) => (
-            <CustomTabBarIcon 
+            <CustomTabBarIcon
               focused={focused}
-              iconName={focused ? 'book' : 'book-outline'}
+              iconName={focused ? "book" : "book-outline"}
               label="Рецепты"
             />
           ),
         }}
       />
-      <Tabs.Screen 
-        name="favorites" 
+
+      {/* 3. Сообщество (community) */}
+      <Tabs.Screen
+        name="community"
         options={{
           tabBarIcon: ({ focused }) => (
-            <CustomTabBarIcon 
+            <CustomTabBarIcon
               focused={focused}
-              iconName={focused ? 'bookmark' : 'bookmark-outline'}
-              label="Избранное"
+              iconName={focused ? "people" : "people-outline"}
+              label="Сообщество"
+            />
+          ),
+        }}
+      />
+
+      {/* 4. Профиль (profile) - ПЕРЕМЕЩЕН В КОНЕЦ И ИЗМЕНЕНА ИКОНКА */}
+      <Tabs.Screen
+        name="profile" // Убедитесь, что у вас есть файл app/(tabs)/profile.tsx
+        options={{
+          tabBarIcon: ({ focused }) => (
+            <CustomTabBarIcon
+              focused={focused}
+              // ⭐️ ИЗМЕНЕНА ИКОНКА: с bookmark на person
+              iconName={focused ? "person" : "person-outline"}
+              label="Профиль"
             />
           ),
         }}
@@ -90,25 +95,26 @@ export default function TabLayout() {
 }
 
 const styles = StyleSheet.create({
+  // ... (стили остаются без изменений)
   tabBar: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    alignItems: 'center',
-    backgroundColor: '#C2DAE2',
+    flexDirection: "row",
+    justifyContent: "space-around",
+    alignItems: "center",
+    backgroundColor: "#C2DAE2",
     borderTopWidth: 2,
-    borderTopColor: '#6A9AA9',
-    
+    borderTopColor: "#6A9AA9",
+
     height: 100,
     paddingBottom: 45,
     marginBottom: 0,
   },
   tabButton: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#9BDF11',
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#9BDF11",
     borderRadius: 12,
     shadowColor: "#000",
-    borderColor: '#C2DAE2',
+    borderColor: "#C2DAE2",
     height: 60,
     width: 90,
     borderWidth: 2,
@@ -122,7 +128,7 @@ const styles = StyleSheet.create({
     marginTop: -10,
   },
   activeTabButton: {
-    backgroundColor: '#7BBF01', 
+    backgroundColor: "#7BBF01",
     shadowColor: "#000",
     shadowOffset: {
       width: 0,
@@ -131,19 +137,19 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.3,
     shadowRadius: 4,
     elevation: 6,
-    borderColor: '#6A9AA9',
+    borderColor: "#6A9AA9",
     borderWidth: 2,
   },
   tabLabel: {
     fontSize: 12,
-    fontWeight: '500',
-    color: '#000',
-    textAlign: 'center',
-    fontFamily: 'Playfair Display Regular',
+    fontWeight: "500",
+    color: "#000",
+    textAlign: "center",
+    fontFamily: "Playfair Display Regular",
   },
   activeTabLabel: {
-    fontWeight: '600',
-    color: '#000',
-    fontFamily: 'Playfair Display Bold',
+    fontWeight: "600",
+    color: "#000",
+    fontFamily: "Playfair Display Bold",
   },
 });

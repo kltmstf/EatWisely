@@ -3,7 +3,6 @@ import { useRouter } from "expo-router";
 import React, { useState, useEffect } from "react";
 import {
     Image,
-    ImageBackground,
     ScrollView,
     StatusBar,
     StyleSheet,
@@ -25,9 +24,8 @@ import {
   setDoc
 } from "firebase/firestore";
 import { getApps, initializeApp } from "firebase/app";
-import ProfileMenu from "../components/ProfileMenu";
 import { Feather, MaterialIcons, FontAwesome, Ionicons } from "@expo/vector-icons";
-import { useAuthContext } from '@/app/contexts/AuthContext'; // Импортируем контекст
+import { useAuthContext } from '@/app/contexts/AuthContext';
 
 interface Recipe {
   id: string;
@@ -49,7 +47,6 @@ interface Recipe {
 
 export default function Recipes() {
   const router = useRouter();
-  const [profileMenuVisible, setProfileMenuVisible] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("Все");
   const [db, setDb] = useState<Firestore | null>(null);
@@ -57,7 +54,6 @@ export default function Recipes() {
   const [loading, setLoading] = useState(true);
   const [isUpdating, setIsUpdating] = useState(false);
 
-  // ИСПРАВЛЕНИЕ: Используем AuthContext вместо локального состояния
   const { user } = useAuthContext();
   const isAuthenticated = !!user;
   const userId = user?.uid || null;
@@ -65,7 +61,6 @@ export default function Recipes() {
 
   const categories = ["Все", "Завтраки", "Обед", "Ужин", "Перекусы"];
 
-  // Инициализация Firebase (только база данных)
   useEffect(() => {
     const initializeFirebase = async () => {
       try {
@@ -84,7 +79,6 @@ export default function Recipes() {
     initializeFirebase();
   }, []);
 
-  // Функция для получения цвета сложности
   const getDifficultyColor = (difficulty: string) => {
     switch (difficulty) {
       case "Легко":
@@ -98,7 +92,6 @@ export default function Recipes() {
     }
   };
 
-  // Функция для получения названия категории на русском
   const getCategoryName = (mealType: string) => {
     switch (mealType) {
       case 'breakfast':
@@ -114,7 +107,6 @@ export default function Recipes() {
     }
   };
 
-  // Загрузка рецептов из Firestore
   useEffect(() => {
     if (!db) return;
 
@@ -123,7 +115,6 @@ export default function Recipes() {
         setLoading(true);
         console.log("Загрузка рецептов из Firestore...");
 
-        // Загружаем все публичные рецепты
         const recipesQuery = query(
           collection(db, "recipes"),
           where("isPublic", "==", true)
@@ -132,7 +123,6 @@ export default function Recipes() {
         const recipesSnapshot = await getDocs(recipesQuery);
         const loadedRecipes: Recipe[] = [];
 
-        // Загружаем избранное пользователя
         let userFavorites: string[] = [];
         if (userId) {
           const favoritesQuery = query(
@@ -147,7 +137,6 @@ export default function Recipes() {
         for (const doc of recipesSnapshot.docs) {
           const data = doc.data();
           
-          // Определяем изображение по типу блюда
           let imageSource;
           switch (data.mealType) {
             case 'breakfast':
@@ -163,17 +152,14 @@ export default function Recipes() {
               imageSource = require('@/assets/images/snack-fruits.png');
           }
 
-          // Вычисляем калории
           const estimatedCalories = data.calories || 
             (data.mealType === 'breakfast' ? 350 :
              data.mealType === 'lunch' ? 450 :
              data.mealType === 'dinner' ? 550 : 120);
 
-          // Вычисляем время приготовления
           const estimatedTime = data.cookingTime?.lait ? 
             `${data.cookingTime.lait} мин` : "20 мин";
 
-          // Генерируем случайный рейтинг и сложность для демонстрации
           const randomRating = parseFloat((4 + Math.random()).toFixed(1));
           const difficulties = ["Легко", "Средне", "Сложно"];
           const randomDifficulty = difficulties[Math.floor(Math.random() * difficulties.length)];
@@ -231,14 +217,11 @@ export default function Recipes() {
 
       const isCurrentlyBookmarked = recipe.bookmarked;
       
-      // Обновляем локальное состояние
       setRecipes(prev => prev.map(r => 
         r.id === recipeId ? { ...r, bookmarked: !isCurrentlyBookmarked } : r
       ));
 
-      // Обновляем в Firestore
       if (isCurrentlyBookmarked) {
-        // Удаляем из избранного
         const favoriteQuery = query(
           collection(db, "user_favorites"),
           where("userId", "==", userId),
@@ -249,7 +232,6 @@ export default function Recipes() {
           await updateDoc(doc.ref, { active: false });
         });
       } else {
-        // Добавляем в избранное
         await setDoc(doc(db, "user_favorites", `${userId}_${recipeId}`), {
           userId: userId,
           recipeId: recipeId,
@@ -261,17 +243,12 @@ export default function Recipes() {
       console.log(`Рецепт ${recipeId} ${isCurrentlyBookmarked ? 'удален из' : 'добавлен в'} избранное`);
     } catch (error) {
       console.error("Ошибка обновления закладки:", error);
-      // Откатываем локальное состояние в случае ошибки
       setRecipes(prev => prev.map(r => 
         r.id === recipeId ? { ...r, bookmarked: !r.bookmarked } : r
       ));
     } finally {
       setIsUpdating(false);
     }
-  };
-
-  const handleProfileMenu = () => {
-    setProfileMenuVisible(!profileMenuVisible);
   };
 
   const navigateToRecipe = (recipe: Recipe) => {
@@ -289,220 +266,183 @@ export default function Recipes() {
 
   if (loading) {
     return (
-      <ImageBackground 
-        source={require('@/assets/images/background.png')}
-        style={styles.background}
-        resizeMode="cover"
-      >
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color="#6A9AA9" />
-          <Text style={styles.loadingText}>Загрузка рецептов...</Text>
-        </View>
-      </ImageBackground>
+      <View style={styles.loadingContainer}>
+        <ActivityIndicator size="large" color="#6A9AA9" />
+        <Text style={styles.loadingText}>Загрузка рецептов...</Text>
+      </View>
     );
   }
 
   return (
-    <ImageBackground 
-      source={require('@/assets/images/background.png')}
-      style={styles.background}
-      resizeMode="cover"
-    >
+    <View style={styles.container}>
       <StatusBar barStyle="dark-content" />
-      <View style={styles.container}>
-        {/* Верхнее меню с приветствием */}
-        <View style={styles.header}>
-          <View style={styles.headerTextContainer}>
-            <Text style={styles.greetingText}>Рецепты</Text>
-            <Text style={styles.dietText}>
-              {isAuthenticated 
-                ? `Найдите идеальное блюдо для себя, ${userName}`
-                : "Войдите для сохранения рецептов"}
-            </Text>
-          </View>
-          
-          <TouchableOpacity 
-            style={styles.profileButton}
-            onPress={handleProfileMenu}
+      
+      {/* Верхнее меню с текстом слева и фото/именем справа */}
+      <View style={styles.header}>
+        <View style={styles.headerTextContainer}>
+          <Text style={styles.greetingText}>Рецепты</Text>
+          <Text style={styles.dietText}>
+            Найдите идеальное блюдо для себя
+          </Text>
+        </View>
+        
+        <View style={styles.userInfo}>
+          <Image 
+            source={require('@/assets/images/people-icon.png')}
+            style={styles.profileImage}
+          />
+          <Text style={styles.userName}>{userName}</Text>
+        </View>
+      </View>
+
+      <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
+        {/* Поиск и фильтры */}
+        <View style={styles.searchSection}>
+          {/* Категории */}
+          <ScrollView 
+            horizontal 
+            showsHorizontalScrollIndicator={false}
+            style={styles.categoriesContainer}
           >
-            <Image 
-              source={require('@/assets/images/people-icon.png')}
-              style={styles.profileImage}
-            />
-            {/* ИСПРАВЛЕННАЯ ЛОГИКА ОТОБРАЖЕНИЯ ГОСТЯ */}
-            {!isAuthenticated && (
-              <View style={styles.guestBadge}>
-                <Text style={styles.guestBadgeText}>Гость</Text>
-              </View>
-            )}
-          </TouchableOpacity>
+            {categories.map((category) => (
+              <TouchableOpacity
+                key={category}
+                style={[
+                  styles.categoryButton,
+                  selectedCategory === category && styles.categoryButtonActive
+                ]}
+                onPress={() => setSelectedCategory(category)}
+              >
+                <Text style={[
+                  styles.categoryText,
+                  selectedCategory === category && styles.categoryTextActive
+                ]}>
+                  {category}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+
+          {/* Поле поиска */}
+          <View style={styles.searchRow}>
+            <View style={styles.searchInputContainer}>
+              <Feather
+                name="search"
+                size={16}
+                color="#666"
+                style={styles.searchIcon}
+              />
+              <TextInput
+                style={styles.searchInput}
+                placeholder="Поиск рецептов..."
+                placeholderTextColor="#666"
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+              />
+            </View>
+          </View>
+
+          <View style={styles.sectionDivider} />
         </View>
 
-        {/* Компонент меню профиля с передачей состояния аутентификации */}
-        <ProfileMenu
-          visible={profileMenuVisible}
-          onClose={() => setProfileMenuVisible(false)}
-          userName={userName}
-        />
+        {/* Рецепты */}
+        <View style={styles.recipesSection}>
+          <Text style={styles.recipesTitle}>
+            {filteredRecipes.length} рецептов найдено
+          </Text>
 
-        <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
-          {/* Поиск и фильтры */}
-          <View style={styles.searchSection}>
-            {/* Категории */}
-            <ScrollView 
-              horizontal 
-              showsHorizontalScrollIndicator={false}
-              style={styles.categoriesContainer}
-            >
-              {categories.map((category) => (
-                <TouchableOpacity
-                  key={category}
-                  style={[
-                    styles.categoryButton,
-                    selectedCategory === category && styles.categoryButtonActive
-                  ]}
-                  onPress={() => setSelectedCategory(category)}
-                >
-                  <Text style={[
-                    styles.categoryText,
-                    selectedCategory === category && styles.categoryTextActive
-                  ]}>
-                    {category}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-
-            {/* Поле поиска */}
-            <View style={styles.searchRow}>
-              <View style={styles.searchInputContainer}>
-                <Feather
-                  name="search"
-                  size={16}
-                  color="#666"
-                  style={styles.searchIcon}
-                />
-                <TextInput
-                  style={styles.searchInput}
-                  placeholder="Поиск рецептов..."
-                  placeholderTextColor="#666"
-                  value={searchQuery}
-                  onChangeText={setSearchQuery}
-                />
-              </View>
-            </View>
-
-            <View style={styles.sectionDivider} />
-          </View>
-
-          {/* Рецепты */}
-          <View style={styles.recipesSection}>
-            <Text style={styles.recipesTitle}>
-              {filteredRecipes.length} рецептов найдено
-            </Text>
-
-            {/* Сетка рецептов 2x2 */}
-            <View style={styles.recipesGrid}>
-              {filteredRecipes.map((recipe) => (
-                <View key={recipe.id} style={styles.recipeColumn}>
-                  <View style={styles.recipeCard}>
-                    <View style={styles.imageContainer}>
-                      <Image 
-                        source={recipe.image}
-                        style={styles.recipeImage}
-                        resizeMode="cover"
+          {/* Сетка рецептов 2x2 */}
+          <View style={styles.recipesGrid}>
+            {filteredRecipes.map((recipe) => (
+              <View key={recipe.id} style={styles.recipeColumn}>
+                <View style={styles.recipeCard}>
+                  <View style={styles.imageContainer}>
+                    <Image 
+                      source={recipe.image}
+                      style={styles.recipeImage}
+                      resizeMode="cover"
+                    />
+                    {/* Бейджи рейтинга и сложности */}
+                    <View style={styles.recipeBadges}>
+                      <View style={styles.ratingBadge}>
+                        <FontAwesome name="star" size={10} color="#FFD700" />
+                        <Text style={styles.ratingText}>{recipe.rating}</Text>
+                      </View>
+                      <View style={[
+                        styles.difficultyBadge,
+                        { backgroundColor: getDifficultyColor(recipe.difficulty || "Легко") }
+                      ]}>
+                        <Text style={styles.difficultyText}>{recipe.difficulty}</Text>
+                      </View>
+                    </View>
+                    {/* Кнопка закладки */}
+                    <TouchableOpacity 
+                      style={styles.bookmarkButton}
+                      onPress={() => toggleBookmark(recipe.id)}
+                      disabled={isUpdating}
+                    >
+                      <Ionicons 
+                        name={recipe.bookmarked ? "bookmark" : "bookmark-outline"}
+                        size={18}
+                        color="#6A9AA9"
                       />
-                      {/* Бейджи рейтинга и сложности */}
-                      <View style={styles.recipeBadges}>
-                        <View style={styles.ratingBadge}>
-                          <FontAwesome name="star" size={10} color="#FFD700" />
-                          <Text style={styles.ratingText}>{recipe.rating}</Text>
-                        </View>
-                        <View style={[
-                          styles.difficultyBadge,
-                          { backgroundColor: getDifficultyColor(recipe.difficulty || "Легко") }
-                        ]}>
-                          <Text style={styles.difficultyText}>{recipe.difficulty}</Text>
-                        </View>
-                      </View>
-                      {/* Кнопка закладки */}
-                      <TouchableOpacity 
-                        style={[
-                          styles.bookmarkButton,
-                          !isAuthenticated && styles.bookmarkButtonDisabled
-                        ]}
-                        onPress={() => toggleBookmark(recipe.id)}
-                        disabled={isUpdating || !isAuthenticated}
+                    </TouchableOpacity>
+                  </View>
+                  <View style={styles.recipeContent}>
+                    <View style={styles.recipeInfo}>
+                      <Text 
+                        style={styles.recipeName}
+                        numberOfLines={2}
+                        ellipsizeMode="tail"
                       >
-                        <Ionicons 
-                          name={recipe.bookmarked ? "bookmark" : "bookmark-outline"}
-                          size={18}
-                          color="#6A9AA9"
-                        />
-                      </TouchableOpacity>
-                    </View>
-                    <View style={styles.recipeContent}>
-                      <View style={styles.recipeInfo}>
-                        <Text 
-                          style={styles.recipeName}
-                          numberOfLines={2}
-                          ellipsizeMode="tail"
-                        >
-                          {recipe.title}
-                        </Text>
-                        {/* Категория */}
-                        <Text style={styles.recipeCategory}>
-                          {getCategoryName(recipe.mealType)}
-                        </Text>
-                        <View style={styles.recipeDetails}>
-                          <MaterialIcons name="local-fire-department" size={12} color="#FF6B6B" />
-                          <Text style={styles.recipeCalories}>{recipe.calories} ккал</Text>
-                          <MaterialIcons name="access-time" size={12} color="#6A9AA9" style={styles.timeIcon} />
-                          <Text style={styles.recipeTime}>{recipe.cookingTime}</Text>
-                        </View>
+                        {recipe.title}
+                      </Text>
+                      {/* Категория */}
+                      <Text style={styles.recipeCategory}>
+                        {getCategoryName(recipe.mealType)}
+                      </Text>
+                      <View style={styles.recipeDetails}>
+                        <Text style={styles.recipeCalories}>{recipe.calories} ккал</Text>
+                        <MaterialIcons name="access-time" size={12} color="#6A9AA9" style={styles.timeIcon} />
+                        <Text style={styles.recipeTime}>{recipe.cookingTime}</Text>
                       </View>
-                      <TouchableOpacity 
-                        style={styles.viewButton}
-                        onPress={() => navigateToRecipe(recipe)}
-                      >
-                        <Text style={styles.viewButtonText}>Посмотреть</Text>
-                      </TouchableOpacity>
                     </View>
+                    <TouchableOpacity 
+                      style={styles.viewButton}
+                      onPress={() => navigateToRecipe(recipe)}
+                    >
+                      <Text style={styles.viewButtonText}>Посмотреть</Text>
+                    </TouchableOpacity>
                   </View>
                 </View>
-              ))}
-            </View>
-
-            {filteredRecipes.length === 0 && !loading && (
-              <View style={styles.emptyState}>
-                <Text style={styles.emptyStateText}>Рецепты не найдены</Text>
-                <Text style={styles.emptyStateSubtext}>
-                  Попробуйте изменить параметры поиска
-                </Text>
               </View>
-            )}
+            ))}
           </View>
-        </ScrollView>
-      </View>
-    </ImageBackground>
+
+          {filteredRecipes.length === 0 && !loading && (
+            <View style={styles.emptyState}>
+              <Text style={styles.emptyStateText}>Рецепты не найдены</Text>
+              <Text style={styles.emptyStateSubtext}>
+                Попробуйте изменить параметры поиска
+              </Text>
+            </View>
+          )}
+        </View>
+      </ScrollView>
+    </View>
   );
 }
 
-// Стили остаются без изменений...
 const styles = StyleSheet.create({
-  background: {
-    flex: 1,
-    width: '100%',
-    height: '100%',
-  },
   container: {
     flex: 1,
+    backgroundColor: "#FFFFFF",
   },
   loadingContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.8)',
+    backgroundColor: '#FFFFFF',
   },
   loadingText: {
     marginTop: 10,
@@ -529,16 +469,17 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: "row",
     justifyContent: "space-between",
-    alignItems: "center",
+    alignItems: "flex-start",
     paddingHorizontal: 20,
     paddingTop: 50,
     paddingBottom: 15,
-    backgroundColor: "rgba(255, 255, 255, 0.95)",
+    backgroundColor: "#FFFFFF",
     borderBottomWidth: 2,
     borderBottomColor: "#6A9AA9",
   },
   headerTextContainer: {
     flex: 1,
+    marginRight: 15,
   },
   greetingText: {
     fontSize: 24,
@@ -550,37 +491,28 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: "#666",
     fontFamily: "Playfair Display Regular",
-    marginRight: 20,
   },
-  profileButton: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
-    overflow: "hidden",
-  },
-  guestBadge: {
-    position: "absolute",
-    top: -5,
-    right: -5,
-    backgroundColor: "#FF6B6B",
-    borderRadius: 10,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-  },
-  guestBadgeText: {
-    color: "#fff",
-    fontSize: 10,
-    fontFamily: "Playfair Display Bold",
+  userInfo: {
+    alignItems: "center",
+    minWidth: 60,
   },
   profileImage: {
-    width: "100%",
-    height: "100%",
+    width: 55,
+    height: 55,
+    borderRadius: 25,
+  },
+  userName: {
+    fontSize: 12,
+    color: "#666",
+    fontFamily: "Playfair Display Regular",
+    marginTop: 4,
+    textAlign: "center",
   },
   scrollView: {
     flex: 1,
   },
   searchSection: {
-    backgroundColor: "rgba(255, 255, 255, 0.95)",
+    backgroundColor: "#FFFFFF",
     padding: 15,
     marginBottom: 1,
   },
@@ -593,7 +525,7 @@ const styles = StyleSheet.create({
     flex: 1,
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#ffffffff",
+    backgroundColor: "#FFFFFF",
     borderRadius: 30,
     borderWidth: 2,
     borderColor: "#6A9AA9",
@@ -642,7 +574,7 @@ const styles = StyleSheet.create({
     marginTop: 12,
   },
   recipesSection: {
-    backgroundColor: "rgba(255, 255, 255, 0.95)",
+    backgroundColor: "#FFFFFF",
     padding: 15,
     paddingBottom: 20,
   },
@@ -735,9 +667,6 @@ const styles = StyleSheet.create({
     shadowRadius: 1.41,
     elevation: 2,
   },
-  bookmarkButtonDisabled: {
-    opacity: 0.5,
-  },
   recipeContent: {
     padding: 12,
     flex: 1,
@@ -794,7 +723,6 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     minHeight: 36,
     marginTop: 8,
-
   },
   viewButtonText: {
     color: "#000000ff",

@@ -1,8 +1,13 @@
 import { useRouter } from "expo-router";
-import React, { useEffect, useState } from "react";
+import React, {
+  useEffect,
+  useState,
+  useMemo,
+  useCallback,
+  useRef,
+} from "react";
 import {
   Image,
-  ImageBackground,
   ScrollView,
   StatusBar,
   StyleSheet,
@@ -11,309 +16,569 @@ import {
   View,
   ActivityIndicator,
 } from "react-native";
-import {
-  getAuth,
-  signInAnonymously,
-  signInWithCustomToken,
-  onAuthStateChanged,
-  Auth,
-} from "firebase/auth";
+import { getAuth, onAuthStateChanged, Auth } from "firebase/auth";
 import {
   getFirestore,
   doc,
   onSnapshot,
   setDoc,
   updateDoc,
-  Firestore,
   getDoc,
-  setLogLevel, // Добавлен import для установки уровня логирования
+  Firestore,
+  setLogLevel,
 } from "firebase/firestore";
-import { initializeApp, getApps, getApp } from "firebase/app"; // 💡 ИСПРАВЛЕНИЕ: Добавлены getApps и getApp
+import { getApp, getApps, initializeApp } from "firebase/app";
 
-// Предполагается, что ProfileMenu находится в ../components/ProfileMenu
-// В этой среде этот компонент должен быть определен в этом же файле,
-// но я оставлю ваш импорт, предполагая, что вы управляете им локально.
-import ProfileMenu from "../components/ProfileMenu";
+// 1. ИМПОРТ РЕАЛЬНОГО СЕРВИСА
+import { recipeService } from "../services/recipeService";
 
-// Установка уровня логирования для Firestore (полезно для отладки)
 setLogLevel("debug");
 
-// --- ТИПИЗАЦИЯ ДЛЯ ЧИТАЕМОСТИ ---
+// --- ТИПИЗАЦИЯ И КОНСТАНТЫ ---
 
 interface Meal {
-  category: string;
-  name: string;
+  id: string; // ID рецепта из Firebase
+  category: string; // mealType
+  name: string; // title
   calories: number;
+  proteins: number;
+  fats: number;
+  carbohydrates: number;
   weight: string;
   marked: boolean;
   bookmarked: boolean;
-  image: any;
+  image: any; // URL или локальный ресурс
+}
+
+// Минимальная структура рецепта, возвращаемая из сервиса
+interface RecipeData {
+  id: string;
+  title: string;
+  mealType: string;
+  calories: number;
+  proteins: number;
+  fats: number;
+  carbohydrates: number;
+  weight: string;
+  imageUrl?: string;
 }
 
 interface UserDataState {
-  name: string;
-  dailyCalories: number;
+  userName: string;
+  dailyCalories: number; // Хранит целое число (1394), округление до 100 происходит только для отображения
   consumedCalories: number;
 }
 
-// Шаблон данных о приемах пищи (используется для изображений и дефолтных значений)
-const initialMealsTemplate: Meal[] = [
-  {
-    category: "Завтрак",
-    name: "Овсяная каша с ягодами и медом на завтрак",
-    calories: 350,
-    weight: "320 гр.",
-    marked: false,
-    bookmarked: false,
-    // В реальной React Native/Expo среде нужно использовать локальный asset
-    // Здесь оставляем, как есть, предполагая, что пути корректны в вашем проекте
-    image: require("@/assets/images/breakfast-oats.png"),
-  },
-  {
-    category: "Обед",
-    name: "Куриный суп с лапшой и овощами",
-    calories: 250,
-    weight: "400 гр.",
-    marked: false,
-    bookmarked: false,
-    image: require("@/assets/images/lunch-soup.png"),
-  },
-  {
-    category: "Ужин",
-    name: "Рис с курицей и овощами",
-    calories: 550,
-    weight: "450 гр.",
-    marked: false,
-    bookmarked: false,
-    image: require("@/assets/images/dinner-rice.png"),
-  },
-  {
-    category: "Перекусы",
-    name: "Фрукты",
-    calories: 120,
-    weight: "80 гр.",
-    marked: false,
-    bookmarked: false,
-    image: require("@/assets/images/snack-fruits.png"),
-  },
-];
+interface KBRUState {
+  proteins: number;
+  fats: number;
+  carbohydrates: number;
+}
+
+// Целевое распределение калорий по приемам пищи
+const MEAL_DISTRIBUTION = {
+  Завтрак: 0.2,
+  Обед: 0.35,
+  Ужин: 0.35,
+  Перекусы: 0.1,
+};
+
+// Целевое распределение КБЖУ (например: 30% Белки, 30% Жиры, 40% Углеводы)
+const TARGET_KBRU_RATIOS = {
+  protein: 0.3,
+  fat: 0.3,
+  carb: 0.4,
+};
+
+// Заглушка для изображений, если в рецепте нет imageUrl
+const DEFAULT_MEAL_IMAGE = require("@/assets/images/logo.png");
+
+// --- АЛГОРИТМ ГЕНЕРАЦИИ РАЦИОНА ---
+
+/**
+ * Генерирует суточный рацион, используя реальные рецепты из базы.
+ * @param dailyCalories - Целевые калории пользователя (целое число, не округленное до 100).
+ * @param recipeDatabase - Массив RecipeData из Firebase.
+ * @returns Массив подобранных блюд.
+ */
+const generateDailyPlan = (
+  dailyCalories: number,
+  recipeDatabase: RecipeData[]
+): Meal[] => {
+  const plannedMeals: Meal[] = [];
+  const categories = Object.keys(MEAL_DISTRIBUTION);
+
+  categories.forEach((category) => {
+    // Используем Math.round(dailyCalories) для расчета целевых калорий на прием пищи
+    const targetCalories =
+      Math.round(dailyCalories) *
+      (MEAL_DISTRIBUTION[category as keyof typeof MEAL_DISTRIBUTION] || 0);
+
+    // Фильтруем рецепты по типу приема пищи
+    const mealsInCategory = recipeDatabase.filter(
+      (m) => m.mealType === category
+    );
+
+    if (mealsInCategory.length === 0) {
+      // Добавляем заглушку, если рецептов нет
+      plannedMeals.push({
+        id: "default-" + category,
+        category: category,
+        name: "Рецепты не найдены",
+        calories: 0,
+        proteins: 0,
+        fats: 0,
+        carbohydrates: 0,
+        weight: "0 гр.",
+        marked: false,
+        bookmarked: false,
+        image: DEFAULT_MEAL_IMAGE,
+      });
+      return;
+    }
+
+    // Алгоритм выбора: ищем блюдо, калорийность которого ближе всего к целевой
+    const bestMatch = mealsInCategory.reduce((best, current) => {
+      const currentDiff = Math.abs(current.calories - targetCalories);
+      const bestDiff = Math.abs(best.calories - targetCalories);
+      // Если разница одинакова, выбираем случайное, чтобы избежать повторяемости
+      if (currentDiff === bestDiff) {
+        return Math.random() > 0.5 ? current : best;
+      }
+      return currentDiff < bestDiff ? current : best;
+    }, mealsInCategory[0]);
+
+    if (bestMatch) {
+      plannedMeals.push({
+        id: bestMatch.id,
+        category: bestMatch.mealType, // Используем mealType как category
+        name: bestMatch.title, // Используем title как name
+        calories: Math.round(bestMatch.calories), // Округляем калории рецепта
+        proteins: Math.round(bestMatch.proteins), // Округляем БЖУ рецепта
+        fats: Math.round(bestMatch.fats),
+        carbohydrates: Math.round(bestMatch.carbohydrates),
+        weight: bestMatch.weight || "300 гр.",
+        marked: false,
+        bookmarked: false,
+        // Если есть imageUrl, используем его, иначе - заглушку
+        image: bestMatch.imageUrl
+          ? { uri: bestMatch.imageUrl }
+          : DEFAULT_MEAL_IMAGE,
+      });
+    }
+  });
+
+  return plannedMeals;
+};
+
+// --- КОМПОНЕНТ HOME ---
 
 export default function Home() {
   const router = useRouter();
+
   // --- СОСТОЯНИЕ FIREBASE ---
   const [db, setDb] = useState<Firestore | null>(null);
-  const [auth, setAuth] = useState<Auth | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
   const [appId] = useState(() =>
     typeof __app_id !== "undefined" ? __app_id : "default-app-id"
   );
 
+  // --- НОВЫЕ СОСТОЯНИЯ ---
+  const [recipeDatabase, setRecipeDatabase] = useState<RecipeData[]>([]); // База рецептов из Firebase
+
   // --- СОСТОЯНИЕ ПРИЛОЖЕНИЯ ---
-  const [meals, setMeals] = useState<Meal[]>(initialMealsTemplate);
+  const [meals, setMeals] = useState<Meal[]>([]);
+
+  // 🛑 ИСПРАВЛЕНИЕ: Ref для хранения актуального значения meals для useCallback (Шаг 8)
+  const mealsRef = useRef(meals);
+  useEffect(() => {
+    mealsRef.current = meals;
+  }, [meals]);
+  // 🛑 КОНЕЦ ИСПРАВЛЕНИЯ Ref
+
   const [userData, setUserData] = useState<UserDataState>({
-    name: "Пользователь",
+    userName: "Пользователь",
     dailyCalories: 2000,
     consumedCalories: 0,
   });
-  const [profileMenuVisible, setProfileMenuVisible] = useState(false);
-  const loading = !isAuthReady || !db;
+  const [recommendedKBRU, setRecommendedKBRU] = useState<KBRUState>({
+    proteins: 0,
+    fats: 0,
+    carbohydrates: 0,
+  });
+  // Добавлено состояние для целевого КБЖУ (для отображения в прогресс-баре)
+  const [targetKBRU, setTargetKBRU] = useState<KBRUState>({
+    proteins: 0,
+    fats: 0,
+    carbohydrates: 0,
+  });
 
-  // 1. Инициализация Firebase и Аутентификация
+  // Скорректировано условие загрузки: достаточно, что аутентификация и база инициализированы.
+  const loading = !isAuthReady || !db || recipeDatabase.length === 0;
+
+  // 1. Инициализация Firebase и Отслеживание Аутентификации (ДОБАВЛЕНО ЛОГИРОВАНИЕ)
   useEffect(() => {
     try {
       const firebaseConfig =
         typeof __firebase_config !== "undefined"
           ? JSON.parse(__firebase_config as string)
           : {};
-      // 💡 ИСПРАВЛЕНИЕ: Безопасная инициализация:
-      // Проверяем, инициализировано ли приложение. Если нет, инициализируем.
-      // Это решает ошибку "Firebase App named '[DEFAULT]' already exists".
       const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
 
       const authInstance = getAuth(app);
       const dbInstance = getFirestore(app);
 
-      setAuth(authInstance);
       setDb(dbInstance);
 
-      const unsubscribe = onAuthStateChanged(authInstance, async (user) => {
+      const unsubscribeAuth = onAuthStateChanged(authInstance, async (user) => {
         if (user) {
           setUserId(user.uid);
+          // 🚀 ЛОГ 1: УСПЕШНАЯ АУТЕНТИФИКАЦИЯ
+          console.log("✅ AUTH: User authenticated. UID:", user.uid);
         } else {
-          // Анонимный вход, если токен не предоставлен
-          const token =
-            typeof __initial_auth_token !== "undefined"
-              ? __initial_auth_token
-              : null;
-          if (token) {
-            await signInWithCustomToken(authInstance, token);
-          } else {
-            await signInAnonymously(authInstance);
-          }
+          setUserId(null);
+          userData.dailyCalories = 2000;
+          setUserData((prev) => ({
+            ...prev,
+            userName: "Пользователь",
+            dailyCalories: 2000,
+          }));
+          console.log("⚠️ AUTH: User is NOT authenticated (UID is null).");
         }
         setIsAuthReady(true);
       });
 
-      return () => unsubscribe();
+      return () => unsubscribeAuth();
     } catch (error) {
-      console.error("Ошибка инициализации Firebase:", error);
-      setIsAuthReady(true); // Завершить загрузку, даже если ошибка
+      console.error("❌ INIT: Ошибка инициализации Firebase:", error);
+      setIsAuthReady(true);
     }
-  }, []); // Пустой массив зависимостей гарантирует, что эффект сработает только один раз
+  }, []);
 
-  // 2. Прослушивание данных пользователя (Имя, Цели)
+  // 2. ЗАГРУЗКА РЕЦЕПТОВ ДЛЯ ПЛАНИРОВЩИКА (ДОБАВЛЕНО ЛОГИРОВАНИЕ)
   useEffect(() => {
-    if (!db || !userId) return;
+    // Загрузка происходит, как только userId становится доступен (после isAuthReady)
+    if (!userId) {
+      setRecipeDatabase([]);
+      return;
+    }
 
-    const userDocRef = doc(
-      db,
-      `artifacts/${appId}/users/${userId}/profile/data`
+    const loadRecipes = async () => {
+      try {
+        const recipes = await recipeService.getRecipesForPlanner();
+        setRecipeDatabase(recipes as RecipeData[]);
+        // 🚀 ЛОГ 2: КОЛИЧЕСТВО ЗАГРУЖЕННЫХ РЕЦЕПТОВ
+        console.log(`✅ RECIPES: Loaded ${recipes.length} recipes.`);
+      } catch (error) {
+        console.error(
+          "❌ RECIPES: Ошибка загрузки рецептов для планировщика:",
+          error
+        );
+        setRecipeDatabase([]);
+      }
+    };
+
+    loadRecipes();
+  }, [userId]);
+
+  // 3. Расчет плана и КБЖУ на основе ЦЕЛЕВЫХ КАЛОРИЙ и БАЗЫ РЕЦЕПТОВ (useMemo)
+  const generatedPlan = useMemo(() => {
+    if (recipeDatabase.length === 0) {
+      return {
+        plan: [],
+        totalKBRU: { proteins: 0, fats: 0, carbohydrates: 0 },
+      };
+    }
+
+    const plan = generateDailyPlan(userData.dailyCalories, recipeDatabase);
+
+    const totalKBRU = plan.reduce(
+      (acc, meal) => ({
+        proteins: acc.proteins + meal.proteins,
+        fats: acc.fats + meal.fats,
+        carbohydrates: acc.carbohydrates + meal.carbohydrates,
+      }),
+      { proteins: 0, fats: 0, carbohydrates: 0 }
     );
 
-    const unsubscribe = onSnapshot(
+    return { plan, totalKBRU };
+  }, [userData.dailyCalories, recipeDatabase]);
+
+  // 4. Установка КБЖУ и Плана в локальный стейт
+  useEffect(() => {
+    // 1. Расчет Целевого КБЖУ в граммах (для отображения)
+    const dailyCaloriesRoundedToNearestHundred =
+      Math.round(userData.dailyCalories / 100) * 100;
+
+    const targetProteins = Math.round(
+      (dailyCaloriesRoundedToNearestHundred * TARGET_KBRU_RATIOS.protein) / 4
+    );
+    const targetFats = Math.round(
+      (dailyCaloriesRoundedToNearestHundred * TARGET_KBRU_RATIOS.fat) / 9
+    );
+    const targetCarbs = Math.round(
+      (dailyCaloriesRoundedToNearestHundred * TARGET_KBRU_RATIOS.carb) / 4
+    );
+
+    setTargetKBRU({
+      proteins: targetProteins,
+      fats: targetFats,
+      carbohydrates: targetCarbs,
+    });
+
+    // 2. Установка фактического КБЖУ из сгенерированного плана
+    setRecommendedKBRU(generatedPlan.totalKBRU);
+    // 3. Установка сгенерированного плана
+    setMeals(generatedPlan.plan);
+  }, [userData.dailyCalories, generatedPlan]);
+
+  // 5. Прослушивание данных пользователя
+  useEffect(() => {
+    if (!db || !userId) {
+      return;
+    }
+
+    const userDocRef = doc(db, `users/${userId}`);
+
+    const unsubscribeProfile = onSnapshot(
       userDocRef,
       async (docSnap) => {
         if (docSnap.exists()) {
-          const data = docSnap.data() as {
-            name?: string;
-            dailyCalories?: number;
-          };
+          const data = docSnap.data() as any;
+
+          const firstName =
+            data.first_name || data.firstName || data.name || "";
+          const lastName = data.last_name || data.lastName || "";
+
+          let currentName = "Пользователь";
+          if (firstName || lastName) {
+            currentName = `${firstName} ${lastName}`.trim();
+          }
+
+          const currentCalories = Math.round(
+            data.dailyCalories || data.targetCalories || 2000
+          );
+
           setUserData((prev) => ({
             ...prev,
-            name: data.name || "Пользователь",
-            dailyCalories: data.dailyCalories || 2000,
+            userName: currentName,
+            dailyCalories: currentCalories,
           }));
         } else {
-          // Инициализация данных, если документ не существует
-          await setDoc(
-            userDocRef,
-            { name: "Пользователь", dailyCalories: 2000, initialized: true },
-            { merge: true }
-          ).catch((err) =>
-            console.error("Error setting default user profile:", err)
+          const defaultData = {
+            firstName: "Пользователь",
+            dailyCalories: 2000,
+            initialized: true,
+          };
+
+          await setDoc(userDocRef, defaultData, { merge: true }).catch((err) =>
+            console.error(
+              "❌ PROFILE: Error setting default user profile:",
+              err
+            )
           );
+          setUserData((prev) => ({
+            ...prev,
+            userName: defaultData.firstName,
+            dailyCalories: defaultData.dailyCalories,
+          }));
         }
       },
       (error) => {
-        console.error("Error listening to user profile:", error);
+        console.error("❌ PROFILE: Error listening to user profile:", error);
+        setUserData((prev) => ({
+          ...prev,
+          userName: "Ошибка",
+          dailyCalories: 2000,
+        }));
       }
     );
 
-    return () => unsubscribe();
-  }, [db, userId, appId]);
+    return () => unsubscribeProfile();
+  }, [db, userId]);
 
-  // 3. Прослушивание ежедневного журнала (Consumed Calories, Marked/Bookmarked status)
+  // 6. Прослушивание ежедневного журнала (ОБНОВЛЕНО: теперь берет ID из Firebase)
   useEffect(() => {
-    if (!db || !userId) return;
+    if (!db || !userId || generatedPlan.plan.length === 0) {
+      setUserData((prev) => ({ ...prev, consumedCalories: 0 }));
+      return;
+    }
 
     const dailyLogDocRef = doc(
       db,
-      `artifacts/${appId}/users/${userId}/daily_logs/today`
+      `artifacts/${appId}/users/${userId}/ration_plan_days/today`
     );
 
-    const unsubscribe = onSnapshot(
+    const unsubscribeLog = onSnapshot(
       dailyLogDocRef,
       async (docSnap) => {
-        if (docSnap.exists()) {
-          const data = docSnap.data() as {
-            consumedCalories?: number;
-            meals?: {
-              category: string;
-              marked: boolean;
-              bookmarked: boolean;
-            }[];
-          };
-          // Обновление потребленных калорий
-          setUserData((prev) => ({
-            ...prev,
-            consumedCalories: data.consumedCalories || 0,
-          }));
+        const firebaseMealsState = docSnap.exists()
+          ? docSnap.data()?.meals || []
+          : [];
+        let newConsumedCalories = 0;
+        const currentGeneratedPlan = generatedPlan.plan;
 
-          // Объединение состояния Firebase с локальным шаблоном (для сохранения изображений)
-          if (data.meals) {
-            setMeals((prevMeals) =>
-              prevMeals.map((templateMeal) => {
-                const firebaseState = data.meals!.find(
-                  (fm) => fm.category === templateMeal.category
-                );
-                return {
-                  ...templateMeal,
-                  marked: firebaseState?.marked ?? templateMeal.marked,
-                  bookmarked:
-                    firebaseState?.bookmarked ?? templateMeal.bookmarked,
-                };
-              })
-            );
-          }
-        } else {
-          // Инициализация журнала (это также создаст документ)
-          const initialLogData = {
-            consumedCalories: 0,
-            meals: initialMealsTemplate.map((m) => ({
-              category: m.category,
-              marked: false,
-              bookmarked: false,
-            })),
-          };
-          await setDoc(dailyLogDocRef, initialLogData).catch((err) =>
-            console.error("Error setting default daily log:", err)
+        const updatedMeals = currentGeneratedPlan.map((currentMeal) => {
+          const firebaseState = firebaseMealsState.find(
+            (fm: any) => fm.category === currentMeal.category
           );
-        }
+
+          const marked = firebaseState?.marked ?? false;
+
+          if (marked) {
+            newConsumedCalories += currentMeal.calories;
+          }
+
+          return {
+            ...currentMeal,
+            // 🛑 ОБНОВЛЕНИЕ: Берем ID рецепта из Firebase, если он там есть
+            id: firebaseState?.id || currentMeal.id,
+            marked: marked,
+            bookmarked: firebaseState?.bookmarked ?? false,
+          };
+        });
+
+        const roundedConsumedCalories = Math.round(newConsumedCalories);
+
+        setMeals(updatedMeals);
+        setUserData((prev) => ({
+          ...prev,
+          consumedCalories: roundedConsumedCalories,
+        }));
       },
       (error) => {
-        console.error("Error listening to daily log:", error);
+        console.error("❌ LOG LISTEN: Error listening to daily log:", error);
       }
     );
 
-    return () => unsubscribe();
-  }, [db, userId, appId]);
+    return () => unsubscribeLog();
+  }, [db, userId, appId, generatedPlan]);
 
-  // --- ФУНКЦИИ ОБНОВЛЕНИЯ FIREBASE ---
-
-  const updateMealStateInFirebase = async (
-    index: number,
-    field: "marked" | "bookmarked",
-    value: boolean
-  ) => {
-    if (!db || !userId) return;
+  // 7. НОВЫЙ useEffect: СОХРАНЕНИЕ СГЕНЕРИРОВАННОГО ПЛАНА В FIREBASE (ОДИН РАЗ В ДЕНЬ) (ОБНОВЛЕНО: добавлено ID)
+  useEffect(() => {
+    if (!db || !userId || generatedPlan.plan.length === 0) {
+      if (generatedPlan.plan.length === 0 && userId) {
+        console.log(
+          "⚠️ PLAN INIT: Plan generation skipped. No recipes available."
+        );
+      }
+      return;
+    }
 
     const dailyLogDocRef = doc(
       db,
-      `artifacts/${appId}/users/${userId}/daily_logs/today`
+      `artifacts/${appId}/users/${userId}/ration_plan_days/today`
     );
 
-    // Создаем новый массив meals для обновления
-    const updatedMealsArray = meals.map((meal, i) => {
-      const newMeal = {
-        category: meal.category,
-        marked: meal.marked,
-        bookmarked: meal.bookmarked,
-      };
-      if (i === index) {
-        newMeal[field] = value;
-      }
-      return newMeal;
-    });
-    // Пересчет потребленных калорий на основе нового состояния
-    const newConsumedCalories = updatedMealsArray
-      .filter((m) => m.marked)
-      .reduce((sum, m) => {
-        const template = initialMealsTemplate.find(
-          (t) => t.category === m.category
-        );
-        return sum + (template?.calories || 0);
-      }, 0);
+    const checkAndSavePlan = async () => {
+      try {
+        const docSnap = await getDoc(dailyLogDocRef);
 
-    try {
-      await updateDoc(dailyLogDocRef, {
-        meals: updatedMealsArray,
-        consumedCalories: newConsumedCalories,
+        console.log("🔍 PLAN INIT: Checking path:", dailyLogDocRef.path);
+
+        if (docSnap.exists()) {
+          console.log(
+            `🔍 PLAN INIT: Document exists. Initialized flag: ${
+              docSnap.data()?.initialized
+            }`
+          );
+        } else {
+          console.log(
+            "🔍 PLAN INIT: Document does NOT exist. Proceeding to save."
+          );
+        }
+
+        if (!docSnap.exists() || docSnap.data()?.initialized !== true) {
+          console.log("🔥 SAVE: Attempting to save generated plan (setDoc)...");
+
+          const initialLogData = {
+            consumedCalories: 0,
+            meals: generatedPlan.plan.map((m) => ({
+              // 🛑 ОБНОВЛЕНИЕ: ДОБАВЛЯЕМ ID РЕЦЕПТА!
+              id: m.id,
+              category: m.category,
+              marked: m.marked,
+              bookmarked: m.bookmarked,
+            })),
+            initialized: true,
+            createdAt: new Date().toISOString(),
+          };
+          await setDoc(dailyLogDocRef, initialLogData);
+          console.log(
+            "✅ SAVE: Generated plan successfully saved to Firestore."
+          );
+        } else {
+          console.log(
+            "💡 PLAN INIT: Plan already initialized for today. Skipping setDoc."
+          );
+        }
+      } catch (error) {
+        // Ошибка 403 (Permission Denied) будет поймана здесь!
+        console.error(
+          "❌ SAVE: FATAL ERROR checking or saving generated plan to Firebase:",
+          error
+        );
+      }
+    };
+    checkAndSavePlan();
+  }, [db, userId, appId, generatedPlan.plan.length]);
+
+  // 8. Обновление логики Firebase для динамического рациона (ОБНОВЛЕНО: useRef и удалена зависимость meals)
+  const updateMealStateInFirebase = useCallback(
+    async (index: number, field: "marked" | "bookmarked", value: boolean) => {
+      if (!db || !userId) return;
+
+      const dailyLogDocRef = doc(
+        db,
+        `artifacts/${appId}/users/${userId}/ration_plan_days/today`
+      );
+
+      // 🛑 ИСПОЛЬЗУЕМ Ref: Получаем актуальное состояние meals
+      const currentMeals = mealsRef.current;
+
+      // Локальный расчет нового состояния meals
+      const updatedMealsArrayForCalc = currentMeals.map((meal, i) => {
+        if (i === index) {
+          return { ...meal, [field]: value };
+        }
+        return meal;
       });
-    } catch (error) {
-      console.error("Error updating meal state in Firebase:", error);
-    }
-  };
+
+      const newConsumedCalories = updatedMealsArrayForCalc
+        .filter((m) => m.marked)
+        .reduce((sum, m) => sum + m.calories, 0);
+
+      const newConsumedCaloriesRounded = Math.round(newConsumedCalories);
+
+      const firebaseUpdateArray = updatedMealsArrayForCalc.map((m) => ({
+        // 🛑 ОБНОВЛЕНИЕ: ДОБАВЛЯЕМ ID РЕЦЕПТА!
+        id: m.id,
+        category: m.category,
+        marked: m.marked,
+        bookmarked: m.bookmarked,
+      }));
+
+      try {
+        console.log(
+          `🔄 UPDATE: Attempting to update log (${field}: ${value}). Calories: ${newConsumedCaloriesRounded}`
+        );
+        await updateDoc(dailyLogDocRef, {
+          meals: firebaseUpdateArray,
+          consumedCalories: newConsumedCaloriesRounded,
+        });
+        console.log("✅ UPDATE: Log successfully updated.");
+      } catch (error) {
+        // Ошибка 403 (Permission Denied) или "Document Does Not Exist" будет поймана здесь!
+        console.error(
+          "❌ UPDATE: Error updating meal state in Firebase:",
+          error
+        );
+      }
+      // 🛑 ИСПРАВЛЕНИЕ: Удалена зависимость meals, используется mealsRef
+    },
+    [db, userId, appId]
+  );
 
   const toggleMeal = (index: number) => {
     const newValue = !meals[index].marked;
@@ -325,11 +590,8 @@ export default function Home() {
     updateMealStateInFirebase(index, "bookmarked", newValue);
   };
 
-  // --- ФУНКЦИИ UI ---
-
   const navigateToMealPage = (mealIndex: number) => {
     const meal = meals[mealIndex];
-    console.log(`Переход на страницу: ${meal.category}`);
     router.push({
       pathname: "/meal",
       params: {
@@ -341,63 +603,76 @@ export default function Home() {
     });
   };
 
-  const handleProfileMenu = () => {
-    setProfileMenuVisible(!profileMenuVisible);
-  };
-
-  // --- ЛОАДЕР ---
   if (loading) {
     return (
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="large" color="#6A9AA9" />
-        <Text style={styles.loadingText}>Загрузка данных...</Text>
+        <Text style={styles.loadingText}>
+          Загрузка рецептов и генерация рациона...
+        </Text>
       </View>
     );
   }
 
+  // Цель для прогресс-бара
+  const dailyTargetForDisplay = Math.round(userData.dailyCalories / 100) * 100;
   const progressPercentage =
-    (userData.consumedCalories / userData.dailyCalories) * 100;
+    (userData.consumedCalories / dailyTargetForDisplay) * 100;
+
+  // Расчет оставшихся калорий
+  const remainingCalories = userData.dailyCalories - userData.consumedCalories;
 
   return (
     <View style={styles.rootContainer}>
       <StatusBar barStyle="dark-content" />
       <View style={styles.container}>
-        {/* Верхнее меню с приветствием */}
+        {/* HEADER */}
         <View style={styles.header}>
           <View style={styles.headerTextContainer}>
-            <Text style={styles.greetingText}>
-              Добрый день, {userData.name}!
+            <Text style={styles.greetingText}>Рацион</Text>
+            <Text style={styles.dietText}>
+              Ваш рацион на день,{" "}
+              {userData.userName.split(" ")[0] || "Пользователь"}!
             </Text>
-            <Text style={styles.dietText}>Ваш рацион на сегодня</Text>
           </View>
-          <TouchableOpacity
-            style={styles.profileButton}
-            onPress={handleProfileMenu}
-          >
+
+          <View style={styles.userInfo}>
             <Image
               source={require("@/assets/images/people-icon.png")}
               style={styles.profileImage}
             />
-          </TouchableOpacity>
+            {/* Отображаем полное имя */}
+            <Text style={styles.userName}>
+              {userData.userName || "Пользователь"}
+            </Text>
+          </View>
         </View>
-
-        {/* Компонент меню профиля */}
-        <ProfileMenu
-          visible={profileMenuVisible}
-          onClose={() => setProfileMenuVisible(false)}
-          userName={userData.name}
-        />
 
         <ScrollView
           style={styles.scrollView}
           showsVerticalScrollIndicator={false}
         >
-          {/* Прогресс калорий */}
+          {/* Прогресс калорий и КБЖУ */}
           <View style={styles.caloriesSection}>
             <Text style={styles.caloriesTitle}>
-              Вы употребили {userData.consumedCalories} из{" "}
-              {userData.dailyCalories} ккал
+              Цель на день:{" "}
+              {
+                // ОКРУГЛЕНИЕ ЦЕЛИ до ближайшей СОТНИ для отображения
+                dailyTargetForDisplay
+              }{" "}
+              ккал
             </Text>
+
+            {/* Секция с оставшимися калориями */}
+            <View style={styles.remainingCaloriesContainer}>
+              <Text style={styles.remainingCaloriesLabel}>Осталось:</Text>
+              <Text style={styles.remainingCaloriesValue}>
+                {/* Остаток округляется до ближайшей сотни для лучшей читаемости */}
+                {Math.round(remainingCalories / 100) * 100} ккал
+              </Text>
+            </View>
+
+            {/* Прогресс-бар */}
             <View style={styles.progressBar}>
               <View
                 style={[
@@ -406,10 +681,61 @@ export default function Home() {
                 ]}
               />
             </View>
+
+            {/* Отображение КБЖУ (РАЗДЕЛЕННЫЕ ПЛАН И ЦЕЛЬ) */}
+            <View style={styles.kbruContainer}>
+              {/* HEADER ROW */}
+              <View style={styles.kbruRow}>
+                <Text
+                  style={[styles.kbruHeader, { flex: 1, textAlign: "left" }]}
+                >
+                  Макронутриенты
+                </Text>
+                <Text style={styles.kbruHeader}>Белки (г)</Text>
+                <Text style={styles.kbruHeader}>Жиры (г)</Text>
+                <Text style={styles.kbruHeader}>Углеводы (г)</Text>
+              </View>
+
+              {/* PLAN ROW */}
+              <View style={styles.kbruRow}>
+                <Text
+                  style={[styles.kbruLabel, { flex: 1, textAlign: "left" }]}
+                >
+                  План (Рацион)
+                </Text>
+                <Text style={styles.kbruValue}>{recommendedKBRU.proteins}</Text>
+                <Text style={styles.kbruValue}>{recommendedKBRU.fats}</Text>
+                <Text style={styles.kbruValue}>
+                  {recommendedKBRU.carbohydrates}
+                </Text>
+              </View>
+
+              {/* TARGET ROW */}
+              <View style={[styles.kbruRow, styles.targetKBRURow]}>
+                <Text
+                  style={[
+                    styles.kbruLabel,
+                    { flex: 1, textAlign: "left", fontWeight: "bold" },
+                  ]}
+                >
+                  Цель (Ваша норма)
+                </Text>
+                <Text style={[styles.kbruValue, { fontWeight: "bold" }]}>
+                  {targetKBRU.proteins}
+                </Text>
+                <Text style={[styles.kbruValue, { fontWeight: "bold" }]}>
+                  {targetKBRU.fats}
+                </Text>
+                <Text style={[styles.kbruValue, { fontWeight: "bold" }]}>
+                  {targetKBRU.carbohydrates}
+                </Text>
+              </View>
+            </View>
+
             <View style={styles.sectionDivider} />
           </View>
 
-          {/* Приемы пищи в виде таблицы 2x2 */}
+          {/* Приемы пищи в виде таблицы 2x2 (ДИНАМИЧЕСКИЙ РАЦИОН) */}
           <View style={styles.mealsSection}>
             {[0, 2].map((startIndex, rowIndex) => (
               <View key={rowIndex} style={styles.mealRow}>
@@ -502,6 +828,7 @@ export default function Home() {
   );
 }
 
+// ... (Стили остаются без изменений) ...
 const styles = StyleSheet.create({
   loadingContainer: {
     flex: 1,
@@ -513,53 +840,56 @@ const styles = StyleSheet.create({
     marginTop: 10,
     fontSize: 16,
     color: "#6A9AA9",
+    fontFamily: "Playfair Display Regular",
   },
   rootContainer: {
     flex: 1,
-    backgroundColor: '#ffffff', // Белый фон
+    backgroundColor: "#ffffff",
   },
   container: {
     flex: 1,
-    paddingTop: 40, // Для учета StatusBar
   },
   header: {
     flexDirection: "row",
     justifyContent: "space-between",
-    alignItems: "center",
+    alignItems: "flex-start",
     paddingHorizontal: 20,
-    paddingTop: 0,
+    paddingTop: 50,
     paddingBottom: 15,
-    backgroundColor: "rgba(255, 255, 255, 0.95)",
+    backgroundColor: "#FFFFFF",
     borderBottomWidth: 2,
     borderBottomColor: "#6A9AA9",
   },
   headerTextContainer: {
     flex: 1,
+    marginRight: 15,
   },
   greetingText: {
-    fontSize: 22,
-    fontWeight: "normal",
-    color: "#000000ff",
+    fontSize: 24,
+    color: "#1a1a1a",
     marginBottom: 4,
     fontFamily: "Playfair Display Bold",
   },
   dietText: {
-    fontSize: 16,
-    color: "#6C757D",
-    fontWeight: "500",
+    fontSize: 14,
+    color: "#666",
     fontFamily: "Playfair Display Regular",
   },
-  profileButton: {
-    width: 55,
-    height: 55,
-    borderRadius: 20,
-    overflow: "hidden",
-    marginLeft: 16,
+  userInfo: {
+    alignItems: "center",
+    minWidth: 60,
   },
   profileImage: {
-    width: "100%",
-    height: "100%",
-    borderRadius: 20,
+    width: 55,
+    height: 55,
+    borderRadius: 25,
+  },
+  userName: {
+    fontSize: 12,
+    color: "#666",
+    fontFamily: "Playfair Display Regular",
+    marginTop: 4,
+    textAlign: "center",
   },
   scrollView: {
     flex: 1,
@@ -576,6 +906,23 @@ const styles = StyleSheet.create({
     fontWeight: "500",
     fontFamily: "Playfair Display Regular",
   },
+  remainingCaloriesContainer: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-end",
+    marginBottom: 10,
+  },
+  remainingCaloriesLabel: {
+    fontSize: 14,
+    color: "#666",
+    fontFamily: "Playfair Display Regular",
+  },
+  remainingCaloriesValue: {
+    fontSize: 18,
+    fontWeight: "bold",
+    color: "#9BDF11",
+    fontFamily: "Playfair Display Bold",
+  },
   progressBar: {
     height: 12,
     backgroundColor: "#C2DAE2",
@@ -587,6 +934,52 @@ const styles = StyleSheet.create({
     height: "100%",
     backgroundColor: "#9BDF11",
     borderRadius: 6,
+  },
+  kbruContainer: {
+    paddingHorizontal: 5,
+    borderWidth: 1,
+    borderColor: "#C2DAE2",
+    borderRadius: 8,
+    backgroundColor: "#F7F7F7",
+    marginBottom: 20,
+  },
+  kbruRow: {
+    flexDirection: "row",
+    justifyContent: "space-around",
+    alignItems: "center",
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: "#E0E0E0",
+  },
+  targetKBRURow: {
+    borderBottomWidth: 0,
+    backgroundColor: "#DDEEF4", // Небольшой акцент для Цели
+    borderRadius: 8,
+    marginHorizontal: -1, // Смещаем, чтобы перекрыть родительский бордюр
+    paddingHorizontal: 6,
+  },
+  kbruHeader: {
+    fontSize: 12,
+    color: "#6A9AA9",
+    fontFamily: "Playfair Display Regular",
+    fontWeight: "bold",
+    textAlign: "center",
+    width: "23%",
+  },
+  kbruLabel: {
+    fontSize: 14,
+    color: "#212529",
+    fontFamily: "Playfair Display Regular",
+    fontWeight: "500",
+    width: "23%",
+  },
+  kbruValue: {
+    fontSize: 14,
+    fontWeight: "bold",
+    color: "#212529",
+    fontFamily: "Playfair Display Bold",
+    textAlign: "center",
+    width: "23%",
   },
   sectionDivider: {
     height: 2,
