@@ -1,4 +1,3 @@
-// services/authService.ts
 import {
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
@@ -24,6 +23,7 @@ interface FirestoreProfile {
   email: string;
   firstName: string;
   lastName?: string;
+  name: string; // <--- НОВОЕ ПОЛЕ: Полное имя
   // --- ПОЛЯ ПРОФИЛЯ ---
   description: string;
   age: string;
@@ -82,12 +82,18 @@ class AuthService {
       const user: User = userCredential.user;
       console.log("✅ User created in Auth:", user.uid);
 
+      // 1. Рассчитываем полное имя
+      const fullName = `${userData.firstName} ${
+        userData.lastName || ""
+      }`.trim();
+
       // 2. Создаем объект, который соответствует структуре Firestore.
       const userProfile = {
         id: user.uid,
         email: email,
         firstName: userData.firstName,
         lastName: userData.lastName || "",
+        name: fullName, // <--- СОХРАНЯЕМ ПОЛНОЕ ИМЯ В БД
         // Устанавливаем разумные значения по умолчанию
         description: "",
         age: "",
@@ -116,13 +122,10 @@ class AuthService {
       await setDoc(doc(this.db, "users", user.uid), userProfile);
       console.log("✅ User profile created in Firestore (NEW SCHEMA)");
 
-      if (userData.firstName) {
-        await updateProfile(user, {
-          displayName: `${userData.firstName} ${
-            userData.lastName || ""
-          }`.trim(),
-        });
-      }
+      // Обновляем displayName в Firebase Auth
+      await updateProfile(user, {
+        displayName: fullName,
+      });
 
       console.log("🎉 Sign up completed successfully");
     } catch (error: any) {
@@ -194,6 +197,7 @@ class AuthService {
           email: data.email,
           firstName: data.firstName,
           lastName: data.lastName || "",
+          name: data.name || data.firstName, // <--- ЧИТАЕМ ПОЛНОЕ ИМЯ
 
           description: data.description || "",
           age: data.age || "",

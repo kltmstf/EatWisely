@@ -1,6 +1,8 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useRouter } from "expo-router";
-import React, { useState, useCallback, useRef, useMemo } from "react";
+// ⭐️ Импортируем authService вместо заглушки useAuthInfo и userService (для auth info)
+import { authService } from "../app/services/authService"; 
+import React, { useState, useCallback, useRef, useMemo, useEffect } from "react";
 import {
   Alert,
   SafeAreaView,
@@ -12,63 +14,107 @@ import {
   View,
   Keyboard,
   Platform,
+  ActivityIndicator,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
 // ⭐️ НОВЫЙ ИМПОРТ: Импортируем наш сервис для работы с пользователями и БД
+// Предполагаем, что этот сервис будет отвечать за сохранение данных профиля (saveProfileToFirestore)
 import { userService } from "../app/services/userService";
 
 // --- ТИПЫ ДАННЫХ ---
-export type ProfileData = {
+
+// 💡 НОВЫЙ ТИП: Соответствует данным, которые компонент ProfileSetup собирает
+// Поля gender, goal, activity, nutritionType теперь будут использоваться для 
+// расчета КБЖУ, которые сохранит userService.
+export type LocalProfileData = {
   name: string;
-  description: string;
   email: string; // Email пользователя
-  customNutritionType: string;
+  description: string;
   age: string;
   height: string;
   gender: string;
   weight: string;
   goal: string;
   activity: string;
-  nutritionType: string;
+  // Мы используем nutritionType в UI, но в БД он сохраняется как dietType. 
+  // userService должен это преобразовать или принять 'nutritionType'.
+  nutritionType: string; 
+  customNutritionType: string;
   allergies: string;
   dislikes: string; // Соответствует excludedIngredients в БД
   isPrivate: boolean; // Соответствует isProfilePrivate в БД
-  // НОВОЕ ПОЛЕ: Максимальное время готовки (в минутах)
   cookingTimeLimit: string;
-  // НОВОЕ ПОЛЕ: Статус заполнения профиля
   isProfileFilled: boolean;
 };
 
 // Тип для выбранных опций, которые требуют немедленного обновления UI
 type SelectedOptions = Pick<
-  ProfileData,
+  LocalProfileData,
   "gender" | "goal" | "activity" | "nutritionType" | "cookingTimeLimit"
 >;
 
 const PROFILE_STORAGE_KEY = "user_profile_data";
 
-// 💡 Заглушка для получения данных аутентификации.
-// В реальном приложении это должен быть контекст или хук useAuth.
+// ✅ ОБНОВЛЕННЫЙ ХУК: Для получения реальных данных аутентификации из authService
 const useAuthInfo = () => {
-  // TODO: Замените на реальный код, получающий имя и email из Firebase Auth
-  const userDisplayName = "Ваше Имя";
-  const userEmail = "auth.user@example.com";
-  return { name: userDisplayName, email: userEmail };
+  const [authData, setAuthData] = useState<{ name: string; email: string } | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchAuthData = () => {
+      // ⭐️ ИСПОЛЬЗУЕМ authService
+      const user = authService.getCurrentUser();
+
+      if (user) {
+        // Устанавливаем данные из объекта Firebase User
+        setAuthData({
+          // Берем displayName из Auth, если он есть, иначе берем email или пустую строку
+          name: user.displayName || user.email?.split('@')[0] || "Пользователь",
+          email: user.email || "email_not_found@example.com",
+        });
+      } else {
+        // Если пользователя нет, это может быть ошибка или переход до логина
+        setAuthData({ name: "", email: "" });
+      }
+      setIsLoading(false);
+    };
+
+    // Слушатель Firebase Auth state (обеспечивает получение данных после логина)
+    const unsubscribe = authService.onAuthStateChange(user => {
+        if (user) {
+            fetchAuthData();
+        } else {
+            setAuthData({ name: "", email: "" });
+            setIsLoading(false);
+        }
+    });
+    
+    // Также пробуем загрузить сразу
+    fetchAuthData();
+    
+    return () => unsubscribe();
+  }, []);
+
+  return {
+    name: authData?.name || "",
+    email: authData?.email || "",
+    isLoading: isLoading,
+  };
 };
 
 export default function ProfileSetup() {
   const router = useRouter();
   const [currentStep, setCurrentStep] = useState(0);
 
-  // Получаем данные аутентификации пользователя для полей name и email
-  const { name: authName, email: authEmail } = useAuthInfo();
+  // Получаем реальные данные аутентификации пользователя
+  const { name: authName, email: authEmail, isLoading: isAuthLoading } = useAuthInfo();
 
   // useRef для основных данных
-  const profileDataRef = useRef<ProfileData>({
-    // ✅ ИСПРАВЛЕНО: Добавлены name, email и customNutritionType для соответствия типу ProfileData
-    name: authName, // Заполняется из Auth
-    email: authEmail, // Заполняется из Auth
+  const profileDataRef = useRef<LocalProfileData>({
+    // ✅ ИНИЦИАЛИЗИРУЕМ ДАННЫМИ ИЗ AUTH (пока пустые, будут заполнены в useEffect)
+    name: "",
+    email: "",
     customNutritionType: "",
     // ------------------------------------------------------------------------
     description: "",
@@ -82,11 +128,23 @@ export default function ProfileSetup() {
     allergies: "",
     dislikes: "",
     isPrivate: false,
-    // НОВОЕ: Значение по умолчанию "60" минут
     cookingTimeLimit: "60",
-    // НОВОЕ: Изначально профиль не заполнен
     isProfileFilled: false,
   });
+
+  // ⭐️ ДОБАВЛЕНИЕ useEffect для синхронизации authName/authEmail
+  useEffect(() => {
+    if (!isAuthLoading) {
+        // Устанавливаем имя и email из Auth в Ref, только если они пустые
+        if (profileDataRef.current.name === "") {
+            profileDataRef.current.name = authName;
+        }
+        if (profileDataRef.current.email === "") {
+            profileDataRef.current.email = authEmail;
+        }
+    }
+  }, [isAuthLoading, authName, authEmail]);
+
 
   // useRef для пользовательского ввода "Другое"
   const customNutritionRef = useRef("");
@@ -109,9 +167,7 @@ export default function ProfileSetup() {
   const nutritionTypes = ["Обычное", "Вегетарианское", "Веганское", "Другое"];
   const genders = ["Муж", "Жен"];
 
-  // ⭐️ НОВЫЙ МАССИВ: Диапазоны времени готовки
   const cookingTimes = ["15 минут", "30 минут", "45 минут", "60+ минут"];
-  // Значения для сохранения в БД (соответствуют порядку в cookingTimes)
   const cookingTimeValues = ["15", "30", "45", "60+"];
 
   const steps = [
@@ -130,42 +186,41 @@ export default function ProfileSetup() {
 
   /**
    * Сохраняет данные профиля в AsyncStorage и устанавливает статус заполнения.
-   * @param isFilled - true, если пользователь нажал "Завершить", false, если "Пропустить".
+   * @param isFilled - true, если пользователь нажал "Завершить".
    */
   const saveProfileData = async (isFilled: boolean) => {
     try {
-      const currentSelectedType = selectedOptions.nutritionType; // Используем selectedOptions для актуального типа
+      const currentSelectedType = selectedOptions.nutritionType;
       const customValue = customNutritionRef.current;
 
-      // ⭐️ ВАЖНО: Устанавливаем name и email в ref перед сохранением (если они были получены после инициализации)
-      // В данном случае, они уже установлены из useAuthInfo при инициализации.
-      // Финальная корректировка Ref перед сохранением
+      // 1. Финальная корректировка Ref перед сохранением
       if (currentSelectedType === "Другое" && customValue.trim()) {
-        profileDataRef.current.nutritionType = `Другое: ${customValue.trim()}`;
-      } else if (currentSelectedType === "Другое" && !customValue.trim()) {
+        profileDataRef.current.customNutritionType = customValue.trim();
         profileDataRef.current.nutritionType = "Другое";
+      } else if (currentSelectedType === "Другое" && !customValue.trim()) {
+        profileDataRef.current.customNutritionType = "";
+        profileDataRef.current.nutritionType = "Другое";
+      } else {
+        profileDataRef.current.customNutritionType = "";
+        profileDataRef.current.nutritionType = currentSelectedType;
       }
-      // Сохраняем пользовательское значение в отдельное поле для возможности редактирования
-      profileDataRef.current.customNutritionType = customValue.trim();
-
-      // НОВОЕ: Устанавливаем статус заполнения профиля
+      
       profileDataRef.current.isProfileFilled = isFilled;
 
-      // 1. ЛОКАЛЬНОЕ СОХРАНЕНИЕ
+      // 2. ЛОКАЛЬНОЕ СОХРАНЕНИЕ
       await AsyncStorage.setItem(
         PROFILE_STORAGE_KEY,
         JSON.stringify(profileDataRef.current)
       );
 
-      // 2. ⭐️ СОХРАНЕНИЕ В FIREBASE (ВКЛЮЧАЯ РАСЧЕТ КБЖУ)
-      // profileDataRef.current имеет тип LocalProfileData, который ожидает userService
+      // 3. ⭐️ СОХРАНЕНИЕ В FIREBASE через userService
+      // userService.saveProfileToFirestore должен принять LocalProfileData 
+      // и правильно сопоставить поля с FirestoreProfile (например, nutritionType -> dietType)
       await userService.saveProfileToFirestore(profileDataRef.current);
-      // Если здесь возникнет ошибка, она будет перехвачена блоком catch
 
       return true;
     } catch (error) {
       console.error("Error saving profile data:", error);
-      // Сообщаем об ошибке сохранения, особенно если это ошибка Firestore
       Alert.alert(
         "Ошибка сохранения",
         "Не удалось сохранить данные профиля в облаке."
@@ -174,10 +229,9 @@ export default function ProfileSetup() {
     }
   };
 
-  /** * Обновляет данные в useRef и при необходимости обновляет состояние для перерисовки UI.
-   * */
+  /** * Обновляет данные в useRef и при необходимости обновляет состояние для перерисовки UI. */
   const updateProfileData = useCallback(
-    <K extends keyof ProfileData>(field: K, value: ProfileData[K]) => {
+    <K extends keyof LocalProfileData>(field: K, value: LocalProfileData[K]) => {
       profileDataRef.current[field] = value;
 
       // Обновляем состояние, если поле входит в SelectedOptions
@@ -187,17 +241,13 @@ export default function ProfileSetup() {
           [field]: value as SelectedOptions[keyof SelectedOptions],
         }));
 
-        // Логика для типа питания: управление customNutritionRef
+        // Логика для типа питания: управление customNutritionRef и общим nutritionType
         if (field === "nutritionType") {
           if (value !== "Другое") {
-            // Если выбран стандартный тип, очищаем Ref и main nutritionType
             customNutritionRef.current = "";
-            profileDataRef.current.nutritionType = value as string;
-            // Очищаем и поле в Ref
             profileDataRef.current.customNutritionType = "";
-          } else {
-            profileDataRef.current.nutritionType = "Другое";
           }
+          // profileDataRef.current.nutritionType уже обновлен выше
         }
       }
     },
@@ -207,7 +257,6 @@ export default function ProfileSetup() {
   const handleNext = async () => {
     Keyboard.dismiss();
 
-    // 🌟 Валидация: проверяем, что Возраст, Рост, Вес заполнены на Шаге 2 (currentStep === 1)
     if (currentStep === 1) {
       const { age, height, weight } = profileDataRef.current;
       if (!age.trim() || !height.trim() || !weight.trim()) {
@@ -219,26 +268,21 @@ export default function ProfileSetup() {
       }
     }
 
-    // Финальная синхронизация Ref перед переходом/завершением (для "Другое")
-    if (
-      currentStep === steps.length - 1 &&
-      selectedOptions.nutritionType === "Другое"
-    ) {
-      const customValue = customNutritionRef.current;
-      // Если пользователь выбрал "Другое", но ничего не ввел, оставляем просто "Другое"
-      if (customValue.trim()) {
-        profileDataRef.current.nutritionType = `Другое: ${customValue.trim()}`;
-        profileDataRef.current.customNutritionType = customValue.trim();
-      } else {
-        profileDataRef.current.nutritionType = "Другое";
-        profileDataRef.current.customNutritionType = "";
-      }
+    // Финальная синхронизация Ref перед переходом/завершением (для "Другое" на последнем шаге)
+    if (currentStep === steps.length - 1) {
+        const customValue = customNutritionRef.current;
+        // Обновляем Ref перед сохранением
+        if (selectedOptions.nutritionType === "Другое" && customValue.trim()) {
+            profileDataRef.current.customNutritionType = customValue.trim();
+        } else if (selectedOptions.nutritionType === "Другое") {
+             profileDataRef.current.customNutritionType = "";
+        }
     }
+
 
     if (currentStep < steps.length - 1) {
       setCurrentStep(currentStep + 1);
     } else {
-      // На последнем шаге профиль считается заполненным
       const success = await saveProfileData(true);
       if (success) {
         await AsyncStorage.setItem("profile_setup_complete", "true");
@@ -256,16 +300,6 @@ export default function ProfileSetup() {
     }
   };
 
-  const handleSkip = async () => {
-    Keyboard.dismiss();
-    // При пропуске профиль считается НЕ заполненным, но данные сохраняются
-    const success = await saveProfileData(false);
-    if (success) {
-      await AsyncStorage.setItem("profile_setup_complete", "true");
-      router.replace("/home");
-    }
-  };
-
   const progress = useMemo(
     () => ((currentStep + 1) / steps.length) * 100,
     [currentStep, steps.length]
@@ -274,23 +308,34 @@ export default function ProfileSetup() {
   // Мемоизированные компоненты шагов
   const Step1 = useCallback(() => {
     const data = profileDataRef.current;
+    
+    // ⭐️ ИСПОЛЬЗУЕМ ЗНАЧЕНИЯ ИЗ AUTH/REF
+    const currentName = data.name || authName;
+    const currentEmail = data.email || authEmail;
+
     return (
       <View style={styles.stepContent}>
-        <View style={styles.photoContainer}>
-          <View style={styles.placeholderPhoto}>
-            <Ionicons name="person" size={60} color="#6A9AA9" />
+        {isAuthLoading ? (
+            <ActivityIndicator size="large" color="#6A9AA9" style={{ marginBottom: 32 }} />
+        ) : (
+          <View style={styles.photoContainer}>
+            <View style={styles.placeholderPhoto}>
+              <Ionicons name="person" size={60} color="#6A9AA9" />
+            </View>
+            <TouchableOpacity style={styles.editPhotoButton}>
+              <Ionicons name="pencil" size={16} color="#FFF" />
+            </TouchableOpacity>
           </View>
-          <TouchableOpacity style={styles.editPhotoButton}>
-            <Ionicons name="pencil" size={16} color="#FFF" />
-          </TouchableOpacity>
-        </View>
-        {/* Поля Имя и Email - Только для чтения или скрыты */}
+        )}
+        
+        {/* Поля Имя и Email - Только для чтения */}
         <View style={styles.inputGroup}>
           <Text style={styles.label}>Имя</Text>
           <TextInput
             style={[styles.input, styles.readOnlyInput]}
-            value={data.name || "Не указано (из Auth)"}
-            editable={false} // Нельзя редактировать на этом экране
+            // ✅ ИСПОЛЬЗУЕМ ЗНАЧЕНИЕ ИЗ AUTH
+            value={currentName || "Не указано"}
+            editable={false} 
             placeholderTextColor="#999"
           />
         </View>
@@ -298,8 +343,9 @@ export default function ProfileSetup() {
           <Text style={styles.label}>Email</Text>
           <TextInput
             style={[styles.input, styles.readOnlyInput]}
-            value={data.email || "Не указано (из Auth)"}
-            editable={false} // Нельзя редактировать на этом экране
+            // ✅ ИСПОЛЬЗУЕМ ЗНАЧЕНИЕ ИЗ AUTH
+            value={currentEmail || "Не указано"}
+            editable={false} 
             placeholderTextColor="#999"
           />
         </View>
@@ -319,7 +365,7 @@ export default function ProfileSetup() {
         </View>
       </View>
     );
-  }, [updateProfileData]);
+  }, [updateProfileData, authName, authEmail, isAuthLoading]);
 
   const Step2 = useCallback(() => {
     const data = profileDataRef.current;
@@ -465,7 +511,6 @@ export default function ProfileSetup() {
       return nutritionType === type;
     };
 
-    // ⭐️ НОВАЯ ЛОГИКА АКТИВНОСТИ КНОПОК ВРЕМЕНИ
     const isTimeButtonActive = (value: string) => {
       return cookingTimeLimit === value;
     };
@@ -506,9 +551,7 @@ export default function ProfileSetup() {
             <TextInput
               key="customNutritionInputKey"
               style={styles.input}
-              // Используем defaultValue из Ref для инициализации
               defaultValue={customNutritionRef.current}
-              // Обновляем Ref, что НЕ вызывает рендеринг
               onChangeText={(text) => (customNutritionRef.current = text)}
               placeholder="Например, Палео, Безглютеновое..."
               placeholderTextColor="#999"
@@ -516,7 +559,7 @@ export default function ProfileSetup() {
           </View>
         )}
 
-        {/* ⭐️ ОБНОВЛЕННЫЙ РАЗДЕЛ: Максимальное время готовки (КНОПКИ) */}
+        {/* Максимальное время готовки */}
         <View style={styles.inputGroup}>
           <Text style={styles.label}>Максимальное время готовки</Text>
           <View style={styles.cookingTimeOptions}>
@@ -524,8 +567,8 @@ export default function ProfileSetup() {
               <TouchableOpacity
                 key={time}
                 style={[
-                  styles.cookingTimeButton, // Используем собственный стиль для гибкого отображения
-                  styles.optionButton, // Базовый стиль для внешнего вида
+                  styles.cookingTimeButton,
+                  styles.optionButton,
                   isTimeButtonActive(cookingTimeValues[index]) &&
                     styles.optionButtonActive,
                 ]}
@@ -556,7 +599,7 @@ export default function ProfileSetup() {
             style={styles.input}
             defaultValue={data.allergies}
             onChangeText={(text) => updateProfileData("allergies", text)}
-            placeholder="орехи, цитрусы, молоко или оставьте пустым, если аллергии отсутствуют"
+            placeholder="оставьте пустым, если аллергии отсутствуют"
             placeholderTextColor="#999"
           />
         </View>
@@ -567,7 +610,7 @@ export default function ProfileSetup() {
             style={styles.input}
             defaultValue={data.dislikes}
             onChangeText={(text) => updateProfileData("dislikes", text)}
-            placeholder="грибы, брокколи, рыба или оставьте пустым, если нет явных исключений"
+            placeholder="оставьте пустым, если нет явных исключений"
             placeholderTextColor="#999"
           />
         </View>
@@ -578,7 +621,7 @@ export default function ProfileSetup() {
     nutritionTypes,
     selectedOptions.nutritionType,
     selectedOptions.cookingTimeLimit,
-  ]); // ДОБАВИЛИ selectedOptions.cookingTimeLimit в зависимости
+  ]);
 
   const renderCurrentStep = () => {
     switch (currentStep) {
@@ -618,9 +661,13 @@ export default function ProfileSetup() {
             </Text>
           </View>
 
-          {/* Кнопка "Пропустить" - текст изменен */}
-          <TouchableOpacity style={styles.skipButton} onPress={handleSkip}>
-            <Text style={styles.skipText}>Я заполню позже</Text>
+          {/* ❌ ЗАГЛУШКА ДЛЯ СИММЕТРИИ (заменяет кнопку "Пропустить") */}
+          <TouchableOpacity
+            style={[styles.backButton, { opacity: 0 }]}
+            disabled={true}
+          >
+            {/* Пустая иконка, чтобы занять место */}
+            <Ionicons name="arrow-back" size={24} color="#000" />
           </TouchableOpacity>
         </View>
       </SafeAreaView>
@@ -643,24 +690,30 @@ export default function ProfileSetup() {
 
       {/* Кнопка продолжения */}
       <View style={styles.footer}>
-        <TouchableOpacity style={styles.nextButton} onPress={handleNext}>
-          <Text style={styles.nextButtonText}>
-            {currentStep === steps.length - 1 ? "Завершить" : "Далее"}
-          </Text>
-          <Ionicons
-            name={
-              currentStep === steps.length - 1 ? "checkmark" : "arrow-forward"
-            }
-            size={20}
-            color="#000"
-          />
+        <TouchableOpacity style={styles.nextButton} onPress={handleNext} disabled={isAuthLoading}>
+          {isAuthLoading ? (
+             <ActivityIndicator size="small" color="#000" />
+          ) : (
+            <>
+                <Text style={styles.nextButtonText}>
+                {currentStep === steps.length - 1 ? "Завершить" : "Далее"}
+                </Text>
+                <Ionicons
+                    name={
+                    currentStep === steps.length - 1 ? "checkmark" : "arrow-forward"
+                    }
+                    size={20}
+                    color="#000"
+                />
+            </>
+          )}
         </TouchableOpacity>
       </View>
     </View>
   );
 }
 
-// --- СТИЛИ (добавлен только один новый, чтобы кнопки времени были в ряд) ---
+// --- СТИЛИ ---
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -703,15 +756,7 @@ const styles = StyleSheet.create({
     marginTop: 4,
     fontFamily: "Playfair Display Regular",
   },
-  skipButton: {
-    padding: 5,
-  },
-  skipText: {
-    fontSize: 14,
-    color: "#4A7A89",
-    fontFamily: "Playfair Display Regular",
-    fontWeight: "600",
-  },
+
   scrollView: {
     flex: 1,
   },
@@ -791,9 +836,9 @@ const styles = StyleSheet.create({
     fontFamily: "Playfair Display Regular",
   },
   readOnlyInput: {
-    backgroundColor: "#F3F4F6", // Более тусклый фон
-    borderColor: "#D1D5DB", // Более тусклый бордер
-    color: "#6B7280", // Более тусклый текст
+    backgroundColor: "#F3F4F6", 
+    borderColor: "#D1D5DB", 
+    color: "#6B7280", 
   },
   textArea: {
     height: 120,
@@ -879,18 +924,16 @@ const styles = StyleSheet.create({
     marginRight: 8,
   },
 
-  // для расположения кнопок времени в ряд
   cookingTimeOptions: {
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 12,
     justifyContent: "space-between",
   },
-  // для распределения кнопок времени по ширине
   cookingTimeButton: {
-    flex: 1, // Позволяет кнопкам равномерно распределиться
-    minWidth: "45%", // Убедимся, что помещаются 2 кнопки в ряд на маленьких экранах
-    maxWidth: "48%", // Дает небольшой зазор
-    paddingVertical: 12, // Делаем кнопку чуть менее высокой, чем основные опции
+    flex: 1,
+    minWidth: "45%",
+    maxWidth: "48%",
+    paddingVertical: 12,
   },
 });

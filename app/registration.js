@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useAuthContext } from '@/app/contexts/AuthContext';
+import { Ionicons } from '@expo/vector-icons';
 
 export default function Registration() {
   const router = useRouter();
@@ -81,12 +82,10 @@ export default function Registration() {
         firstName: firstName.trim(),
         lastName: lastName.trim()
       });
-      Alert.alert('Успешно', 'Регистрация прошла успешно!', [
-        {
-          text: 'Продолжить',
-          onPress: () => router.push('/profile-setup')
-        }
-      ]);
+      // 🚫 ИЗМЕНЕНИЕ: Убран Alert об успешной регистрации.
+      // Выполняется прямое перенаправление на страницу установки профиля.
+      router.push('/profile-setup');
+
     } catch (error) {
       console.error('Registration error:', error);
       // Ошибка будет отображена через useEffect
@@ -175,9 +174,8 @@ export default function Registration() {
                 onPress={() => setShowPassword(!showPassword)}
                 style={styles.eyeButton}
               >
-                <Text style={styles.eyeText}>
-                  {showPassword ? '🙈' : '👁️'}
-                </Text>
+                <Ionicons name={showPassword ? "eye-outline" : "eye-off-outline"}
+                  size={20} color="black" />
               </TouchableOpacity>
             </View>
             <Text style={styles.passwordHint}>
@@ -201,9 +199,8 @@ export default function Registration() {
                 onPress={() => setShowConfirmPassword(!showConfirmPassword)}
                 style={styles.eyeButton}
               >
-                <Text style={styles.eyeText}>
-                  {showConfirmPassword ? '🙈' : '👁️'}
-                </Text>
+                <Ionicons name={showConfirmPassword ? "eye-outline" : "eye-off-outline"}
+                  size={20} color="black" />
               </TouchableOpacity>
             </View>
           </View>

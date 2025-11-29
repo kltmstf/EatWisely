@@ -185,7 +185,8 @@ export default function Login() {
                 style={styles.eyeButton}
                 disabled={isLoading || authLoading}
               >
-                <Ionicons name={showPassword ? "eye-outline" : "eye-off-outline"} size={20} color="black" />
+                <Ionicons name={showPassword ? "eye-outline" : "eye-off-outline"} 
+                size={20} color="black" />
               </TouchableOpacity>
             </View>
           </View>
