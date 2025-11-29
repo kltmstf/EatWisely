@@ -1,17 +1,18 @@
 // services/recipeService.js
 import {
-  collection,
-  addDoc,
-  updateDoc,
-  deleteDoc,
-  doc,
-  getDocs,
-  getDoc,
-  query,
-  where,
-  orderBy,
-  limit,
-  startAfter,
+  collection,
+  addDoc,
+  updateDoc,
+  deleteDoc,
+  doc,
+  getDocs,
+  getDoc,
+  query,
+  where,
+  orderBy,
+  limit,
+  startAfter,
+  increment, // ✨ ИМПОРТ ДЛЯ АТОМАРНОГО ОБНОВЛЕНИЯ
 } from 'firebase/firestore';
 import { db, auth } from '../firebase/config';
 
@@ -19,303 +20,285 @@ import { db, auth } from '../firebase/config';
 const RECIPES_PER_PAGE = 20;
 
 class RecipeService {
-  /**
-  * Получает список рецептов (личные + публичные) с фильтрацией, сортировкой и пагинацией.
-  * (Основной метод для страницы "Рецепты")
-  *
-  * @param {Object} args - Объект с параметрами.
-  * @param {Object} [args.filters] - Фильтры.
-  * ... (остальные параметры)
-  */
-  async getRecipes({ filters = {}, lastPublicDoc = null, lastUserDoc = null, sortField = 'createdAt', sortDirection = 'desc' }) {
-    try {
-      const user = auth.currentUser;
-      if (!user) throw new Error('User not authenticated');
+  
+  // ... (Ваш существующий код getRecipes, getRecipesForPlanner) ...
+  
+  // ------------------------------------------------------------------
+  // 🆕 НОВЫЙ МЕТОД: Обновление счетчиков оценок рецепта
+  // ------------------------------------------------------------------
+  async updateRecipeRatingStats(recipeId, countChange, ratingChange = 0) {
+    try {
+      if (!recipeId) throw new Error('Recipe ID is required');
 
-      const recipesRef = collection(db, 'recipes');
+      const recipeRef = doc(db, 'recipes', recipeId);
+      
+      // Обновляем только количество голосов (ratingsCount). 
+      // Пересчет averageRating лучше делать на бэкенде.
+      await updateDoc(recipeRef, {
+        ratingsCount: increment(countChange),
+      });
 
-      const applyFilters = (baseQuery) => {
-        let q = baseQuery;
+      console.log(`Recipe ${recipeId} ratingsCount updated by ${countChange}`);
+      
+    } catch (error) {
+      console.error('Error updating recipe rating stats:', error);
+      throw error;
+    }
+  }
+  // ------------------------------------------------------------------
+  
+  // ... (Ваш существующий код getRecipeById, createRecipe, updateRecipe, deleteRecipe, getUserRecipes, searchRecipes) ...
+  
+  async getRecipes({ filters = {}, lastPublicDoc = null, lastUserDoc = null, sortField = 'createdAt', sortDirection = 'desc' }) {
+    // ... (весь код getRecipes) ...
+    try {
+      const user = auth.currentUser;
+      if (!user) throw new Error('User not authenticated');
 
-        if (filters.mealType) {
-          q = query(q, where('mealType', '==', filters.mealType));
-        }
+      const recipesRef = collection(db, 'recipes');
 
-        if (filters.difficulty) {
-          q = query(q, where('difficultyLevel', '==', filters.difficulty));
-        }
+      const applyFilters = (baseQuery) => {
+        let q = baseQuery;
 
-        if (filters.minRating) {
-          q = query(q, where('averageRating', '>=', filters.minRating));
-        }
+        if (filters.mealType) {
+          q = query(q, where('mealType', '==', filters.mealType));
+        }
 
-        // Всегда применяем сортировку
-        q = query(q, orderBy(sortField, sortDirection));
+        if (filters.difficulty) {
+          q = query(q, where('difficultyLevel', '==', filters.difficulty));
+        }
 
-        return q;
-      };
+        if (filters.minRating) {
+          q = query(q, where('averageRating', '>=', filters.minRating));
+        }
 
-      // --- 1. ЗАПРОС ЛИЧНЫХ РЕЦЕПТОВ ---
-      let userQ = query(recipesRef, where('userId', '==', user.uid));
-      userQ = applyFilters(userQ);
-      if (lastUserDoc) {
-        userQ = query(userQ, startAfter(lastUserDoc));
-      }
-      userQ = query(userQ, limit(RECIPES_PER_PAGE));
+        q = query(q, orderBy(sortField, sortDirection));
 
+        return q;
+      };
 
-      // --- 2. ЗАПРОС ПУБЛИЧНЫХ РЕЦЕПТОВ ---
-      let publicQ = query(recipesRef, where('isPublic', '==', true), where('userId', '!=', user.uid));
-      publicQ = applyFilters(publicQ);
-      if (lastPublicDoc) {
-        publicQ = query(publicQ, startAfter(lastPublicDoc));
-      }
-      publicQ = query(publicQ, limit(RECIPES_PER_PAGE));
+      let userQ = query(recipesRef, where('userId', '==', user.uid));
+      userQ = applyFilters(userQ);
+      if (lastUserDoc) {
+        userQ = query(userQ, startAfter(lastUserDoc));
+      }
+      userQ = query(userQ, limit(RECIPES_PER_PAGE));
 
+      let publicQ = query(recipesRef, where('isPublic', '==', true), where('userId', '!=', user.uid));
+      publicQ = applyFilters(publicQ);
+      if (lastPublicDoc) {
+        publicQ = query(publicQ, startAfter(lastPublicDoc));
+      }
+      publicQ = query(publicQ, limit(RECIPES_PER_PAGE));
 
-      // Выполняем запросы параллельно
-      const [userSnapshot, publicSnapshot] = await Promise.all([
-        getDocs(userQ),
-        getDocs(publicQ)
-      ]);
+      const [userSnapshot, publicSnapshot] = await Promise.all([
+        getDocs(userQ),
+        getDocs(publicQ)
+      ]);
 
-      let allRecipes = [];
+      let allRecipes = [];
 
-      userSnapshot.docs.forEach(doc => {
-        allRecipes.push({ id: doc.id, ...doc.data() });
-      });
+      userSnapshot.docs.forEach(doc => {
+        allRecipes.push({ id: doc.id, ...doc.data() });
+      });
 
-      publicSnapshot.docs.forEach(doc => {
-        allRecipes.push({ id: doc.id, ...doc.data() });
-      });
+      publicSnapshot.docs.forEach(doc => {
+        allRecipes.push({ id: doc.id, ...doc.data() });
+      });
 
-      const nextLastUserDoc = userSnapshot.docs.length > 0 ? userSnapshot.docs[userSnapshot.docs.length - 1] : null;
-      const nextLastPublicDoc = publicSnapshot.docs.length > 0 ? publicSnapshot.docs[publicSnapshot.docs.length - 1] : null;
+      const nextLastUserDoc = userSnapshot.docs.length > 0 ? userSnapshot.docs[userSnapshot.docs.length - 1] : null;
+      const nextLastPublicDoc = publicSnapshot.docs.length > 0 ? publicSnapshot.docs[publicSnapshot.docs.length - 1] : null;
 
-      // --- ФИЛЬТРАЦИЯ ПОИСКА НА КЛИЕНТЕ ---
-      let recipesToReturn = allRecipes;
-      // ... (фильтрация поиска)
-      if (filters.search) {
-        const searchLower = filters.search.toLowerCase();
-        recipesToReturn = allRecipes.filter(recipe =>
-          recipe.title.toLowerCase().includes(searchLower) ||
-          (recipe.description && recipe.description.toLowerCase().includes(searchLower)) ||
-          (Array.isArray(recipe.tags) && recipe.tags.some(tag => tag.toLowerCase().includes(searchLower))) ||
-          (recipe.ingredientsText && recipe.ingredientsText.toLowerCase().includes(searchLower))
-        );
-      }
+      let recipesToReturn = allRecipes;
+      if (filters.search) {
+        const searchLower = filters.search.toLowerCase();
+        recipesToReturn = allRecipes.filter(recipe =>
+          recipe.title.toLowerCase().includes(searchLower) ||
+          (recipe.description && recipe.description.toLowerCase().includes(searchLower)) ||
+          (Array.isArray(recipe.tags) && recipe.tags.some(tag => tag.toLowerCase().includes(searchLower))) ||
+          (recipe.ingredientsText && recipe.ingredientsText.toLowerCase().includes(searchLower))
+        );
+      }
 
-      return {
-        recipes: recipesToReturn,
-        lastUserDoc: nextLastUserDoc,
-        lastPublicDoc: nextLastPublicDoc,
-        hasMoreUser: userSnapshot.docs.length === RECIPES_PER_PAGE,
-        hasMorePublic: publicSnapshot.docs.length === RECIPES_PER_PAGE,
-      };
+      return {
+        recipes: recipesToReturn,
+        lastUserDoc: nextLastUserDoc,
+        lastPublicDoc: nextLastPublicDoc,
+        hasMoreUser: userSnapshot.docs.length === RECIPES_PER_PAGE,
+        hasMorePublic: publicSnapshot.docs.length === RECIPES_PER_PAGE,
+      };
 
-    } catch (error) {
-      console.error('Error getting recipes:', error);
-      throw error;
-    }
-  }
+    } catch (error) {
+      console.error('Error getting recipes:', error);
+      throw error;
+    }
+  }
 
-  // ------------------------------------------------------------------
-  // 🆕 НОВЫЙ МЕТОД: Получение всех подходящих рецептов для планировщика
-  // ------------------------------------------------------------------
-  /**
-  * Получает все рецепты, доступные пользователю (личные и публичные).
-  * Используется для алгоритма подбора рациона на клиенте.
-  * NOTE: Может быть ресурсоемким при очень большом количестве рецептов.
-  *
-  * @returns {Array} Массив рецептов с минимальными полями (id, title, mealType, calories, proteins, fats, carbohydrates).
-  */
-  async getRecipesForPlanner() {
-    try {
-      const user = auth.currentUser;
-      if (!user) return [];
+  async getRecipesForPlanner() {
+    try {
+      const user = auth.currentUser;
+      if (!user) return [];
 
-      const recipesRef = collection(db, 'recipes');
+      const recipesRef = collection(db, 'recipes');
 
-      // 1. Запрос личных рецептов
-      const userQ = query(recipesRef, where('userId', '==', user.uid));
+      const userQ = query(recipesRef, where('userId', '==', user.uid));
+      const publicQ = query(recipesRef, where('isPublic', '==', true));
 
-      // 2. Запрос публичных рецептов
-      const publicQ = query(recipesRef, where('isPublic', '==', true));
+      const [userSnapshot, publicSnapshot] = await Promise.all([
+        getDocs(userQ),
+        getDocs(publicQ)
+      ]);
 
-      const [userSnapshot, publicSnapshot] = await Promise.all([
-        getDocs(userQ),
-        getDocs(publicQ)
-      ]);
+      let allRecipesMap = new Map();
 
-      let allRecipesMap = new Map();
+      userSnapshot.docs.forEach(doc => {
+        allRecipesMap.set(doc.id, { id: doc.id, ...doc.data() });
+      });
 
-      // Добавляем личные (приоритет личным)
-      userSnapshot.docs.forEach(doc => {
-        allRecipesMap.set(doc.id, { id: doc.id, ...doc.data() });
-      });
+      publicSnapshot.docs.forEach(doc => {
+        if (!allRecipesMap.has(doc.id) || doc.data().userId !== user.uid) {
+          allRecipesMap.set(doc.id, { id: doc.id, ...doc.data() });
+        }
+      });
 
-      // Добавляем публичные, если их нет в личных
-      publicSnapshot.docs.forEach(doc => {
-        if (!allRecipesMap.has(doc.id) || doc.data().userId !== user.uid) {
-          allRecipesMap.set(doc.id, { id: doc.id, ...doc.data() });
-        }
-      });
+      return Array.from(allRecipesMap.values());
+    } catch (error) {
+      console.error('Error getting recipes for planner:', error);
+      return [];
+    }
+  }
 
-      return Array.from(allRecipesMap.values());
-    } catch (error) {
-      console.error('Error getting recipes for planner:', error);
-      return [];
-    }
-  }
+  async getRecipeById(recipeId) {
+    try {
+      const recipeRef = doc(db, 'recipes', recipeId);
+      const recipeDoc = await getDoc(recipeRef);
 
-  // ------------------------------------------------------------------
+      if (!recipeDoc.exists()) {
+        throw new Error('Recipe not found');
+      }
 
-  // Получить рецепт по ID (БЕЗ ИЗМЕНЕНИЙ)
-  async getRecipeById(recipeId) {
-    // ... (Ваш существующий код) ...
-    try {
-      const recipeRef = doc(db, 'recipes', recipeId);
-      const recipeDoc = await getDoc(recipeRef);
+      const recipe = { id: recipeDoc.id, ...recipeDoc.data() };
 
-      if (!recipeDoc.exists()) {
-        throw new Error('Recipe not found');
-      }
+      const user = auth.currentUser;
+      if (!recipe.isPublic && recipe.userId !== user?.uid) {
+        throw new Error('Access denied');
+      }
 
-      const recipe = { id: recipeDoc.id, ...recipeDoc.data() };
+      return recipe;
+    } catch (error) {
+      console.error('Error getting recipe:', error);
+      throw error;
+    }
+  }
 
-      // Проверяем права доступа
-      const user = auth.currentUser;
-      if (!recipe.isPublic && recipe.userId !== user?.uid) {
-        throw new Error('Access denied');
-      }
+  async createRecipe(recipeData) {
+    try {
+      const user = auth.currentUser;
+      if (!user) throw new Error('User not authenticated');
 
-      return recipe;
-    } catch (error) {
-      console.error('Error getting recipe:', error);
-      throw error;
-    }
-  }
+      const recipeWithMetadata = {
+        ...recipeData,
+        userId: user.uid,
+        likesCount: 0,
+        savesCount: 0,
+        averageRating: 0,
+        ratingsCount: 0,
+        calories: recipeData.calories || 0,
+        proteins: recipeData.proteins || 0,
+        fats: recipeData.fats || 0,
+        carbohydrates: recipeData.carbohydrates || 0,
+        createdAt: new Date(),
+        updatedAt: new Date()
+      };
 
-  // Создать рецепт (ИЗМЕНЕНО: Добавлены поля КБЖУ по умолчанию)
-  async createRecipe(recipeData) {
-    try {
-      const user = auth.currentUser;
-      if (!user) throw new Error('User not authenticated');
+      const docRef = await addDoc(collection(db, 'recipes'), recipeWithMetadata);
+      return { id: docRef.id, ...recipeWithMetadata };
+    } catch (error) {
+      console.error('Error creating recipe:', error);
+      throw error;
+    }
+  }
 
-      const recipeWithMetadata = {
-        ...recipeData,
-        userId: user.uid,
-        likesCount: 0,
-        savesCount: 0,
-        // НОВЫЕ ПОЛЯ ДЛЯ РЕЙТИНГА И КБЖУ
-        averageRating: 0,
-        ratingsCount: 0,
-         // Убедитесь, что эти поля присутствуют при создании
-        calories: recipeData.calories || 0,
-        proteins: recipeData.proteins || 0,
-        fats: recipeData.fats || 0,
-        carbohydrates: recipeData.carbohydrates || 0,
-        // ---
-        createdAt: new Date(),
-        updatedAt: new Date()
-      };
+  async updateRecipe(recipeId, updates) {
+    try {
+      const user = auth.currentUser;
+      if (!user) throw new Error('User not authenticated');
 
-      const docRef = await addDoc(collection(db, 'recipes'), recipeWithMetadata);
-      return { id: docRef.id, ...recipeWithMetadata };
-    } catch (error) {
-      console.error('Error creating recipe:', error);
-      throw error;
-    }
-  }
+      const recipeRef = doc(db, 'recipes', recipeId);
+      const recipeDoc = await getDoc(recipeRef);
 
-  // Обновить рецепт (БЕЗ ИЗМЕНЕНИЙ)
-  async updateRecipe(recipeId, updates) {
-    // ... (Ваш существующий код) ...
-    try {
-      const user = auth.currentUser;
-      if (!user) throw new Error('User not authenticated');
+      if (!recipeDoc.exists()) {
+        throw new Error('Recipe not found');
+      }
 
-      const recipeRef = doc(db, 'recipes', recipeId);
-      const recipeDoc = await getDoc(recipeRef);
+      if (recipeDoc.data().userId !== user.uid) {
+        throw new Error('Not authorized to update this recipe');
+      }
 
-      if (!recipeDoc.exists()) {
-        throw new Error('Recipe not found');
-      }
+      await updateDoc(recipeRef, {
+        ...updates,
+        updatedAt: new Date()
+      });
 
-      if (recipeDoc.data().userId !== user.uid) {
-        throw new Error('Not authorized to update this recipe');
-      }
+      return { id: recipeId, ...updates };
+    } catch (error) {
+      console.error('Error updating recipe:', error);
+      throw error;
+    }
+  }
 
-      await updateDoc(recipeRef, {
-        ...updates,
-        updatedAt: new Date()
-      });
+  async deleteRecipe(recipeId) {
+    try {
+      const user = auth.currentUser;
+      if (!user) throw new Error('User not authenticated');
 
-      return { id: recipeId, ...updates };
-    } catch (error) {
-      console.error('Error updating recipe:', error);
-      throw error;
-    }
-  }
+      const recipeRef = doc(db, 'recipes', recipeId);
+      const recipeDoc = await getDoc(recipeRef);
 
-  // Удалить рецепт (БЕЗ ИЗМЕНЕНИЙ)
-  async deleteRecipe(recipeId) {
-    // ... (Ваш существующий код) ...
-    try {
-      const user = auth.currentUser;
-      if (!user) throw new Error('User not authenticated');
+      if (!recipeDoc.exists()) {
+        throw new Error('Recipe not found');
+      }
 
-      const recipeRef = doc(db, 'recipes', recipeId);
-      const recipeDoc = await getDoc(recipeRef);
+      if (recipeDoc.data().userId !== user.uid) {
+        throw new Error('Not authorized to delete this recipe');
+      }
 
-      if (!recipeDoc.exists()) {
-        throw new Error('Recipe not found');
-      }
+      await deleteDoc(recipeRef);
+      return true;
+    } catch (error) {
+      console.error('Error deleting recipe:', error);
+      throw error;
+    }
+  }
 
-      if (recipeDoc.data().userId !== user.uid) {
-        throw new Error('Not authorized to delete this recipe');
-      }
+  async getUserRecipes(userId) {
+    try {
+      const recipesQuery = query(
+        collection(db, 'recipes'),
+        where('userId', '==', userId),
+        orderBy('createdAt', 'desc')
+      );
 
-      await deleteDoc(recipeRef);
-      return true;
-    } catch (error) {
-      console.error('Error deleting recipe:', error);
-      throw error;
-    }
-  }
+      const snapshot = await getDocs(recipesQuery);
+      return snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+    } catch (error) {
+      console.error('Error getting user recipes:', error);
+      throw error;
+    }
+  }
 
-  // Получить рецепты пользователя (БЕЗ ИЗМЕНЕНИЙ)
-  async getUserRecipes(userId) {
-    // ... (Ваш существующий код) ...
-    try {
-      const recipesQuery = query(
-        collection(db, 'recipes'),
-        where('userId', '==', userId),
-        orderBy('createdAt', 'desc')
-      );
-
-      const snapshot = await getDocs(recipesQuery);
-      return snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      }));
-    } catch (error) {
-      console.error('Error getting user recipes:', error);
-      throw error;
-    }
-  }
-
-  // Поиск рецептов (БЕЗ ИЗМЕНЕНИЙ)
-  async searchRecipes(searchTerm, filters = {}) {
-    // ... (Ваш существующий код) ...
-    try {
-      const result = await this.getRecipes({ filters: { ...filters, search: searchTerm } });
-      return result.recipes;
-    } catch (error) {
-      console.error('Error searching recipes:', error);
-      throw error;
-    }
-  }
+  async searchRecipes(searchTerm, filters = {}) {
+    try {
+      const result = await this.getRecipes({ filters: { ...filters, search: searchTerm } });
+      return result.recipes;
+    } catch (error) {
+      console.error('Error searching recipes:', error);
+      throw error;
+    }
+  }
 }
 
 export const recipeService = new RecipeService();

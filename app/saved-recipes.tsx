@@ -17,7 +17,7 @@ import {
   ActivityIndicator,
   Alert,
 } from "react-native";
-// Убедитесь, что пути импорта верные для вашего проекта
+
 import { useFavorites } from "@/app/hooks/useFavorites";
 import { favoriteService } from "@/app/services/favoriteService";
 

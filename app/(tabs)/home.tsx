@@ -190,7 +190,7 @@ export default function Home() {
   // --- СОСТОЯНИЕ ПРИЛОЖЕНИЯ ---
   const [meals, setMeals] = useState<Meal[]>([]);
 
-  // 🛑 ИСПРАВЛЕНИЕ: Ref для хранения актуального значения meals для useCallback (Шаг 8)
+  
   const mealsRef = useRef(meals);
   useEffect(() => {
     mealsRef.current = meals;
@@ -595,6 +595,7 @@ export default function Home() {
     router.push({
       pathname: "/meal",
       params: {
+        mealId: meal.id,
         mealName: meal.name,
         category: meal.category,
         mealIndex: mealIndex.toString(),

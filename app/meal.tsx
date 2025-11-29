@@ -1,3 +1,4 @@
+// components/Meal.js
 import { useLocalSearchParams, useRouter } from "expo-router";
 import React, { useState, useEffect, useCallback } from "react";
 import {
@@ -11,6 +12,7 @@ import {
   ActivityIndicator,
 } from "react-native";
 import { Ionicons, Feather, MaterialCommunityIcons } from "@expo/vector-icons";
+// ✨ ИЗМЕНЕНИЕ: Убираем лишние импорты Firestore, оставляем doc, getDoc, setDoc
 import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 import {
   getAuth,
@@ -20,8 +22,10 @@ import {
 } from "firebase/auth";
 import { getApps, getApp, initializeApp } from "firebase/app";
 
-// --- ТИПЫ ДАННЫХ ---
+// ✨ НОВЫЙ ИМПОРТ: Импортируем созданный сервис
+import recipeService from '../app/services/recipeService';
 
+// --- ТИПЫ ДАННЫХ (Обязательно включить totalRatings) ---
 interface FullRecipeData {
   id: string;
   title: string;
@@ -35,13 +39,12 @@ interface FullRecipeData {
   servings: string;
   difficulty: string;
   averageRating: number;
+  totalRatings: number; // Счетчик оценок
   ingredients: string[];
   instructions: string[];
   imageUrl?: string;
 }
 
-// Заглушка для случая, когда ID не загружен
-// Оставляем только для демонстрации, если ID не передан вообще
 const fallbackMealData = (
   mealName: string,
   mealType: string
@@ -58,6 +61,7 @@ const fallbackMealData = (
   servings: "1 чел.",
   difficulty: "Легкая",
   averageRating: 4.5,
+  totalRatings: 53, 
   ingredients: [
     "300 мл. молока",
     "1 банан",
@@ -73,6 +77,7 @@ const fallbackMealData = (
   imageUrl: undefined,
 });
 
+
 export default function Meal() {
   const router = useRouter();
   const params = useLocalSearchParams();
@@ -84,7 +89,7 @@ export default function Meal() {
     initialBookmarked = "false",
     mealId = "",
   } = params;
-  console.log("Meal ID из параметров:", mealId);
+
   // --- СОСТОЯНИЕ FIREBASE И АУТЕНТИФИКАЦИИ ---
   const [db, setDb] = useState<any>(null);
   const [auth, setAuth] = useState<any>(null);
@@ -96,13 +101,12 @@ export default function Meal() {
   const [isBookmarked, setIsBookmarked] = useState(
     initialBookmarked === "true"
   );
-  // ИСПРАВЛЕНИЕ: Инициализируем null. Не используем автоматическую заглушку.
   const [recipeDetails, setRecipeDetails] = useState<FullRecipeData | null>(
     null
   );
   const [loading, setLoading] = useState(true);
 
-  // --- 1. ИНИЦИАЛИЗАЦИЯ FIREBASE И АУТЕНТИФИКАЦИЯ ---
+  // --- 1. ИНИЦИАЛИЗАЦИЯ FIREBASE И АУТЕНТИФИКАЦИЯ (без изменений) ---
   useEffect(() => {
     const initFirebase = async () => {
       try {
@@ -141,17 +145,13 @@ export default function Meal() {
     initFirebase();
   }, []);
 
-  // ИСПРАВЛЕНИЕ: currentMealData теперь null, если recipeDetails не загружен
   const currentMealData: FullRecipeData | null = recipeDetails;
-
   const ratingDocPath = `artifacts/${
     typeof __app_id !== "undefined" ? __app_id : "default-app-id"
-  }/users/${userId}/mealRatings/${currentMealData?.id || "fallback-id"}`; // используем ?.
+  }/users/${userId}/mealRatings/${currentMealData?.id || "fallback-id"}`;
 
-  // --- 2. ЛОГИКА ЗАГРУЗКИ ОЦЕНКИ (FIRESTORE) ---
-
+  // --- 2. ЛОГИКА ЗАГРУЗКИ ОЦЕНКИ (FIRESTORE) (loadRating без изменений) ---
   const loadRating = useCallback(async () => {
-    // Используем currentMealData?.id для проверки
     if (!isAuthReady || !db || !userId || !currentMealData?.id) return;
 
     try {
@@ -169,42 +169,95 @@ export default function Meal() {
     }
   }, [isAuthReady, db, userId, ratingDocPath, currentMealData?.id]);
 
+  
+  // ✨ ИЗМЕНЕНИЕ: saveRating теперь вызывает recipeService.updateRecipeRatingStats
   const saveRating = useCallback(
     async (rating: boolean) => {
-      // Используем currentMealData?.id для проверки
       if (!isAuthReady || !db || !userId || !currentMealData?.id) return;
+
+      const ratingDocRef = doc(db, ratingDocPath);
+      const docSnap = await getDoc(ratingDocRef);
+      const previousLikedState = docSnap.exists() ? docSnap.data().liked : null;
+      
+      // Если оценка не меняется, выходим.
+      if (previousLikedState === rating) {
+          return;
+      }
+      
+      const isFirstVote = previousLikedState === null;
+
       try {
-        const docRef = doc(db, ratingDocPath);
+        // 1. Сохраняем оценку пользователя
         await setDoc(
-          docRef,
+          ratingDocRef,
           { liked: rating, timestamp: new Date() },
           { merge: true }
         );
+        setLiked(rating); // Обновляем локальное состояние UI
+
+        // 2. Обновляем глобальные счетчики рецепта через сервис
+        if (isFirstVote) {
+            // При первом голосовании увеличиваем счетчик на 1
+            await recipeService.updateRecipeRatingStats(currentMealData.id, 1); 
+            
+            // Опционально: Обновляем локальное состояние для мгновенного UI-эффекта
+            setRecipeDetails((prevDetails) => {
+                if (!prevDetails) return null;
+                return {
+                    ...prevDetails,
+                    totalRatings: prevDetails.totalRatings + 1,
+                    // averageRating: ... (здесь нужен пересчет)
+                };
+            });
+        }
+        
       } catch (error) {
-        console.error("Ошибка при сохранении оценки в Firestore:", error);
+        console.error("Ошибка при сохранении оценки:", error);
       }
     },
     [isAuthReady, db, userId, ratingDocPath, currentMealData?.id]
   );
 
+  // ✨ ИЗМЕНЕНИЕ: handleResetRating теперь уменьшает счетчик, если оценка была ранее поставлена
   const handleResetRating = async () => {
-    // Используем currentMealData?.id для проверки
     if (!isAuthReady || !db || !userId || !currentMealData?.id) return;
+
+    const hadRating = liked !== null; // Проверяем, была ли оценка
 
     try {
       const docRef = doc(db, ratingDocPath);
+      
+      // Сброс оценки пользователя (liked = null)
       await setDoc(
         docRef,
         { liked: null, timestamp: new Date() },
         { merge: true }
       );
       setLiked(null);
+
+      // Если оценка существовала, уменьшаем общий счетчик
+      if (hadRating) {
+        // Уменьшаем счетчик на 1, так как голос удален
+        await recipeService.updateRecipeRatingStats(currentMealData.id, -1);
+        
+        // Опционально: Обновляем локальное состояние для мгновенного UI-эффекта
+        setRecipeDetails((prevDetails) => {
+            if (!prevDetails) return null;
+            return {
+                ...prevDetails,
+                totalRatings: Math.max(0, prevDetails.totalRatings - 1),
+                // averageRating: ... (здесь нужен пересчет)
+            };
+        });
+      }
+      
     } catch (error) {
       console.error("Ошибка при сбросе оценки в Firestore:", error);
     }
   };
 
-  // --- 3. ЛОГИКА ЗАГРУЗКИ ДЕТАЛЕЙ РЕЦЕПТА (FIRESTORE) ---
+
+  // --- 3. ЛОГИКА ЗАГРУЗКИ ДЕТАЛЕЙ РЕЦЕПТА (FIRESTORE) (без изменений) ---
 
   const loadRecipeDetails = useCallback(async () => {
     if (!isAuthReady || !db || !mealId) {
@@ -220,21 +273,15 @@ export default function Meal() {
       if (docSnap.exists()) {
         const data = docSnap.data() as any;
 
-        // === ПРЕОБРАЗОВАНИЕ ИНГРЕДИЕНТОВ И ШАГОВ ===
-
-        // 1. Преобразование Ингредиентов (Array of Map -> Array of String)
         const formattedIngredients = Array.isArray(data.ingredients)
           ? data.ingredients.map(
               (item: any) => `${item.amount} ${item.unit}. ${item.name}`
             )
           : ["Ингредиенты не загружены"];
 
-        // 2. Преобразование Инструкций (Array of Map -> Array of String)
         const formattedInstructions = Array.isArray(data.steps)
           ? data.steps.map((step: any) => step.text)
           : ["Инструкции не загружены"];
-
-        // =========================================
 
         setRecipeDetails({
           id: mealId as string,
@@ -250,40 +297,36 @@ export default function Meal() {
           servings: data.servings || "1 порция",
           difficulty: data.difficultyLevel || "Средняя",
           averageRating: data.averageRating || 0,
+          totalRatings: data.ratingsCount || 0, // ✨ ЧИТАЕМ ratingsCount ИЗ БАЗЫ
           ingredients: formattedIngredients,
           instructions: formattedInstructions,
         } as FullRecipeData);
       } else {
         console.warn(`Рецепт с ID ${mealId} не найден.`);
-        // ИСПРАВЛЕНИЕ: Если не найден, устанавливаем null,
-        // чтобы попасть в блок ошибки/не найдено ниже
         setRecipeDetails(null);
       }
     } catch (error) {
       console.error("Ошибка загрузки деталей рецепта:", error);
-      // ИСПРАВЛЕНИЕ: В случае ошибки загрузки, устанавливаем null
       setRecipeDetails(null);
     } finally {
       setLoading(false);
     }
   }, [isAuthReady, db, mealId, mealName, mealTypeParam]);
 
-  // Запуск загрузки рецепта и оценки
+  // Запуск загрузки рецепта и оценки (без изменений)
   useEffect(() => {
     if (isAuthReady && db && userId && mealId) {
       loadRecipeDetails();
       loadRating();
     } else if (isAuthReady && !mealId) {
-      setLoading(false); // Если нет ID, не загружаем и выходим из загрузки
-      // ИСПРАВЛЕНИЕ: Если ID нет, устанавливаем заглушку, чтобы избежать ошибки при обращении к свойствам,
-      // но в UI это все равно приведет к блоку ошибки ниже
+      setLoading(false);
       setRecipeDetails(
         fallbackMealData(mealName as string, mealTypeParam as string)
       );
     }
   }, [isAuthReady, db, userId, mealId, loadRecipeDetails, loadRating]);
 
-  // --- ФУНКЦИИ УПРАВЛЕНИЯ СОСТОЯНИЕМ (остаются прежними) ---
+  // --- ФУНКЦИИ УПРАВЛЕНИЯ СОСТОЯНИЕМ (handleLike, handleDislike) ---
 
   const handleNavigationBack = useCallback(
     (
@@ -303,12 +346,12 @@ export default function Meal() {
   );
 
   const handleLike = async () => {
-    setLiked(true);
+    // setLiked(true); // setLiked перемещено в saveRating, чтобы гарантировать его вызов после await
     await saveRating(true);
   };
 
   const handleDislike = async () => {
-    setLiked(false);
+    // setLiked(false); // setLiked перемещено в saveRating, чтобы гарантировать его вызов после await
     await saveRating(false);
   };
 
@@ -331,7 +374,6 @@ export default function Meal() {
   };
 
   const getMealImage = () => {
-    // В случае, если currentMealData не загружен, используем mealTypeParam
     const type = currentMealData?.mealType || mealTypeParam;
 
     switch (type) {
@@ -348,8 +390,7 @@ export default function Meal() {
     }
   };
 
-  // --- ОБРАБОТКА ЗАГРУЗКИ И ОШИБКИ (ИСПРАВЛЕНО) ---
-
+  // --- ОБРАБОТКА ЗАГРУЗКИ И ОШИБКИ (без изменений) ---
   if (loading || !isAuthReady) {
     return (
       <View style={styles.loadingContainer}>
@@ -362,8 +403,6 @@ export default function Meal() {
     );
   }
 
-  // ИСПРАВЛЕНИЕ: Если загрузка завершена, но данных нет (null),
-  // показываем сообщение об ошибке/отсутствии.
   if (!mealId || !currentMealData) {
     return (
       <View style={styles.loadingContainer}>
@@ -459,15 +498,14 @@ export default function Meal() {
         {/* Основная информация */}
         <View style={styles.content}>
           {/* Средний рейтинг (ОТОБРАЖЕНИЕ) */}
-          {currentMealData.averageRating > 0 && (
+          {(currentMealData.averageRating > 0 || currentMealData.totalRatings > 0) && (
             <View style={styles.ratingRow}>
               <Ionicons name="star" size={20} color="#FFC107" />
               <Text style={styles.ratingText}>
                 {currentMealData.averageRating.toFixed(1)}
               </Text>
               <Text style={styles.ratingLabel}>
-                {/* Примечание: likesCount не загружается явно, используем заглушку */}
-                (53 оценок)
+                ({currentMealData.totalRatings} оценок)
               </Text>
             </View>
           )}
@@ -917,17 +955,19 @@ const styles = StyleSheet.create({
     fontFamily: "Playfair Display Regular",
     textAlign: "center",
     lineHeight: 20,
-    marginBottom: 12,
   },
   resetButton: {
-    backgroundColor: "#6A9AA9",
+    marginTop: 10,
     paddingHorizontal: 16,
     paddingVertical: 8,
     borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#6A9AA9",
+    backgroundColor: "transparent",
   },
   resetButtonText: {
     fontSize: 12,
-    color: "white",
+    color: "#6A9AA9",
     fontFamily: "Playfair Display Regular",
   },
   likeSection: {
