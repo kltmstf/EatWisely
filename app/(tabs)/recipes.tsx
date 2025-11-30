@@ -2,15 +2,16 @@
 import { useRouter } from "expo-router";
 import React, { useState, useEffect } from "react";
 import {
-    Image,
-    ScrollView,
-    StatusBar,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
-    ActivityIndicator
+  Image,
+  ScrollView,
+  StatusBar,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+  ActivityIndicator,
+  Dimensions,
 } from "react-native";
 import {
   getFirestore,
@@ -21,30 +22,53 @@ import {
   Firestore,
   doc,
   updateDoc,
-  setDoc
+  setDoc,
 } from "firebase/firestore";
 import { getApps, initializeApp } from "firebase/app";
-import { Feather, MaterialIcons, FontAwesome, Ionicons } from "@expo/vector-icons";
-import { useAuthContext } from '@/app/contexts/AuthContext';
+import {
+  Feather,
+  MaterialIcons,
+  FontAwesome,
+  Ionicons,
+} from "@expo/vector-icons";
+import { useAuthContext } from "@/app/contexts/AuthContext";
 
+// --- Утилиты ---
+const { width } = Dimensions.get("window");
+const CARD_WIDTH = (width - 48) / 2; // (Ширина экрана - 30*2 padding - 8 gap)/2
+
+// --- Интерфейс данных (оставлен без изменений) ---
 interface Recipe {
   id: string;
   title: string;
   description: string;
   mealType: string;
   calories?: number;
-  cookingTime?: string;
+  cookingTime?: number;
   ingredientsText: string;
   isPublic: boolean;
   likedCount: number;
   saveCount: number;
   userId: string;
-  image: any;
+  imageUrl?: string;
   bookmarked: boolean;
   rating?: number;
-  difficulty?: string;
+  difficultyLevel?: string;
 }
 
+// --- Функция для правильного склонения слова "минута" (НОВАЯ) ---
+const formatMinutes = (minutes: number): string => {
+  const absMinutes = Math.abs(minutes);
+  const lastDigit = absMinutes % 10;
+  const lastTwoDigits = absMinutes % 100;
+
+  if (lastTwoDigits >= 11 && lastTwoDigits <= 14) return `${absMinutes} минут`;
+  if (lastDigit === 1) return `${absMinutes} минута`;
+  if (lastDigit >= 2 && lastDigit <= 4) return `${absMinutes} минуты`;
+  return `${absMinutes} минут`;
+};
+
+// --- Основной компонент ---
 export default function Recipes() {
   const router = useRouter();
   const [searchQuery, setSearchQuery] = useState("");
@@ -55,20 +79,23 @@ export default function Recipes() {
   const [isUpdating, setIsUpdating] = useState(false);
 
   const { user } = useAuthContext();
-  const isAuthenticated = !!user;
   const userId = user?.uid || null;
   const userName = user?.displayName || user?.email || "Пользователь";
 
-  const categories = ["Все", "Завтраки", "Обед", "Ужин", "Перекусы"];
+  const categories = ["Все", "Завтрак", "Обед", "Ужин", "Перекусы"];
 
+  // --- 1. Инициализация Firebase ---
   useEffect(() => {
     const initializeFirebase = async () => {
       try {
-        const firebaseConfig = typeof __firebase_config !== "undefined"
-          ? JSON.parse(__firebase_config as string)
-          : {};
+        const firebaseConfig =
+          typeof __firebase_config !== "undefined"
+            ? JSON.parse(__firebase_config as string)
+            : {};
 
-        const app = !getApps().length ? initializeApp(firebaseConfig) : getApps()[0];
+        const app = !getApps().length
+          ? initializeApp(firebaseConfig)
+          : getApps()[0];
         const dbInstance = getFirestore(app);
         setDb(dbInstance);
       } catch (error) {
@@ -79,8 +106,9 @@ export default function Recipes() {
     initializeFirebase();
   }, []);
 
-  const getDifficultyColor = (difficulty: string) => {
-    switch (difficulty) {
+  // --- 2. Вспомогательные функции ---
+  const getDifficultyColor = (difficulty: string | undefined) => {
+    switch (difficulty?.trim()) {
       case "Легко":
         return "#4CAF50";
       case "Средне":
@@ -93,97 +121,80 @@ export default function Recipes() {
   };
 
   const getCategoryName = (mealType: string) => {
-    switch (mealType) {
-      case 'breakfast':
-        return 'Завтраки';
-      case 'lunch':
-        return 'Обед';
-      case 'dinner':
-        return 'Ужин';
-      case 'snack':
-        return 'Перекусы';
+    const normalizedMealType = mealType.trim().toLowerCase();
+
+    switch (normalizedMealType) {
+      case "breakfast":
+      case "завтрак":
+        return "Завтрак";
+      case "lunch":
+      case "обед":
+        return "Обед";
+      case "dinner":
+      case "ужин":
+        return "Ужин";
+      case "snack":
+      case "перекусы":
+        return "Перекусы";
       default:
-        return 'Другое';
+        return "Другое";
     }
   };
 
+  // --- 3. Логика загрузки рецептов ---
   useEffect(() => {
     if (!db) return;
 
     const loadRecipes = async () => {
       try {
         setLoading(true);
-        console.log("Загрузка рецептов из Firestore...");
 
         const recipesQuery = query(
           collection(db, "recipes"),
           where("isPublic", "==", true)
         );
 
-        const recipesSnapshot = await getDocs(recipesQuery);
-        const loadedRecipes: Recipe[] = [];
+        const [recipesSnapshot, favoritesSnapshot] = await Promise.all([
+          getDocs(recipesQuery),
+          userId
+            ? getDocs(
+                query(
+                  collection(db, "user_favorites"),
+                  where("userId", "==", userId),
+                  where("active", "==", true)
+                )
+              )
+            : { docs: [] },
+        ]);
 
-        let userFavorites: string[] = [];
-        if (userId) {
-          const favoritesQuery = query(
-            collection(db, "user_favorites"),
-            where("userId", "==", userId),
-            where("active", "==", true)
-          );
-          const favoritesSnapshot = await getDocs(favoritesQuery);
-          userFavorites = favoritesSnapshot.docs.map(doc => doc.data().recipeId);
-        }
+        const userFavorites = favoritesSnapshot.docs.map(
+          (doc) => doc.data().recipeId
+        );
 
-        for (const doc of recipesSnapshot.docs) {
+        const loadedRecipes: Recipe[] = recipesSnapshot.docs.map((doc) => {
           const data = doc.data();
-          
-          let imageSource;
-          switch (data.mealType) {
-            case 'breakfast':
-              imageSource = require('@/assets/images/breakfast-oats.png');
-              break;
-            case 'lunch':
-              imageSource = require('@/assets/images/lunch-soup.png');
-              break;
-            case 'dinner':
-              imageSource = require('@/assets/images/dinner-rice.png');
-              break;
-            default:
-              imageSource = require('@/assets/images/snack-fruits.png');
-          }
+          const recipeId = doc.id;
+          const rawImageUrl = data.image || data.imageUrl || null;
 
-          const estimatedCalories = data.calories || 
-            (data.mealType === 'breakfast' ? 350 :
-             data.mealType === 'lunch' ? 450 :
-             data.mealType === 'dinner' ? 550 : 120);
+          return {
+            id: recipeId,
+            title: String(data.title || "Без названия"),
+            description: String(data.description || ""),
+            mealType: String(data.mealType || "other"),
+            calories: Number(data.calories) || 0,
+            cookingTime: Number(data.cookingTime) || 20,
+            ingredientsText: String(data.ingredientsText || ""),
+            isPublic: Boolean(data.isPublic || false),
+            likedCount: Number(data.likedCount) || 0,
+            saveCount: Number(data.saveCount) || 0,
+            userId: String(data.userId || ""),
+            imageUrl: String(rawImageUrl || ""),
+            bookmarked: userFavorites.includes(recipeId),
+            rating: Number(data.rating) || 0,
+            difficultyLevel: String(data.difficultyLevel || "Легко"),
+          };
+        });
 
-          const estimatedTime = data.cookingTime?.lait ? 
-            `${data.cookingTime.lait} мин` : "20 мин";
-
-          const randomRating = parseFloat((4 + Math.random()).toFixed(1));
-          const difficulties = ["Легко", "Средне", "Сложно"];
-          const randomDifficulty = difficulties[Math.floor(Math.random() * difficulties.length)];
-
-          loadedRecipes.push({
-            id: doc.id,
-            title: data.title || "Без названия",
-            description: data.description || "",
-            mealType: data.mealType || "other",
-            calories: estimatedCalories,
-            cookingTime: estimatedTime,
-            ingredientsText: data.ingredientsText || "",
-            isPublic: data.isPublic || false,
-            likedCount: data.likedCount || 0,
-            saveCount: data.saveCount || 0,
-            userId: data.userId || "",
-            image: imageSource,
-            bookmarked: userFavorites.includes(doc.id),
-            rating: randomRating,
-            difficulty: randomDifficulty
-          });
-        }
-
-        console.log(`Загружено ${loadedRecipes.length} рецептов`);
         setRecipes(loadedRecipes);
       } catch (error) {
         console.error("Ошибка загрузки рецептов:", error);
@@ -195,33 +206,42 @@ export default function Recipes() {
     loadRecipes();
   }, [db, userId]);
 
-  const filteredRecipes = recipes.filter(recipe => {
-    const matchesSearch = recipe.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                         recipe.description.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesCategory = selectedCategory === "Все" || 
-      (selectedCategory === "Завтраки" && recipe.mealType === "breakfast") ||
-      (selectedCategory === "Обед" && recipe.mealType === "lunch") ||
-      (selectedCategory === "Ужин" && recipe.mealType === "dinner") ||
-      (selectedCategory === "Перекусы" && (recipe.mealType === "snack" || !["breakfast", "lunch", "dinner"].includes(recipe.mealType)));
-    
+  // --- 4. Логика фильтрации ---
+  const filteredRecipes = recipes.filter((recipe) => {
+    const matchesSearch =
+      recipe.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      recipe.description.toLowerCase().includes(searchQuery.toLowerCase());
+
+    const normalizedMealType = recipe.mealType.trim().toLowerCase();
+
+    const matchesCategory =
+      selectedCategory === "Все" ||
+      getCategoryName(normalizedMealType) === selectedCategory;
+
     return matchesSearch && matchesCategory;
   });
 
+  // --- 5. Логика переключения закладки (оставлена для удобства) ---
   const toggleBookmark = async (recipeId: string) => {
     if (!db || !userId || isUpdating) return;
 
     setIsUpdating(true);
     try {
-      const recipe = recipes.find(r => r.id === recipeId);
+      const recipe = recipes.find((r) => r.id === recipeId);
       if (!recipe) return;
 
       const isCurrentlyBookmarked = recipe.bookmarked;
-      
-      setRecipes(prev => prev.map(r => 
-        r.id === recipeId ? { ...r, bookmarked: !isCurrentlyBookmarked } : r
-      ));
 
+      // Оптимистическое обновление UI
+      setRecipes((prev) =>
+        prev.map((r) =>
+          r.id === recipeId ? { ...r, bookmarked: !isCurrentlyBookmarked } : r
+        )
+      );
+
+      // Обновление Firestore
       if (isCurrentlyBookmarked) {
+        // Удаление закладки (установка active: false)
         const favoriteQuery = query(
           collection(db, "user_favorites"),
           where("userId", "==", userId),
@@ -232,37 +252,45 @@ export default function Recipes() {
           await updateDoc(doc.ref, { active: false });
         });
       } else {
-        await setDoc(doc(db, "user_favorites", `${userId}_${recipeId}`), {
-          userId: userId,
-          recipeId: recipeId,
-          createdAt: new Date(),
-          active: true
-        }, { merge: true });
+        // Добавление закладки
+        await setDoc(
+          doc(db, "user_favorites", `${userId}_${recipeId}`),
+          {
+            userId: userId,
+            recipeId: recipeId,
+            createdAt: new Date(),
+            active: true,
+          },
+          { merge: true }
+        );
       }
-
-      console.log(`Рецепт ${recipeId} ${isCurrentlyBookmarked ? 'удален из' : 'добавлен в'} избранное`);
     } catch (error) {
       console.error("Ошибка обновления закладки:", error);
-      setRecipes(prev => prev.map(r => 
-        r.id === recipeId ? { ...r, bookmarked: !r.bookmarked } : r
-      ));
+      // Откат UI в случае ошибки
+      setRecipes((prev) =>
+        prev.map((r) =>
+          r.id === recipeId ? { ...r, bookmarked: !r.bookmarked } : r
+        )
+      );
     } finally {
       setIsUpdating(false);
     }
   };
 
+  // --- 6. КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: Упрощенная навигация ---
   const navigateToRecipe = (recipe: Recipe) => {
-    console.log(`Переход к рецепту: ${recipe.title}`);
     router.push({
       pathname: "/meal",
       params: {
-        mealName: recipe.title,
-        category: recipe.mealType,
-        initialBookmarked: recipe.bookmarked.toString(),
-        recipeId: recipe.id
-      }
+        mealId: recipe.id,   
+        mealName: recipe.title, 
+        mealType: recipe.mealType, 
+
+        initialBookmarked: 'false',
+      },
     });
   };
+  // ---------------------------------------------------
 
   if (loading) {
     return (
@@ -276,31 +304,34 @@ export default function Recipes() {
   return (
     <View style={styles.container}>
       <StatusBar barStyle="dark-content" />
-      
-      {/* Верхнее меню с текстом слева и фото/именем справа */}
+
+      {/* Верхнее меню */}
       <View style={styles.header}>
         <View style={styles.headerTextContainer}>
           <Text style={styles.greetingText}>Рецепты</Text>
-          <Text style={styles.dietText}>
-            Найдите идеальное блюдо для себя
-          </Text>
+          <Text style={styles.dietText}>Найдите идеальное блюдо для себя</Text>
         </View>
-        
+
         <View style={styles.userInfo}>
-          <Image 
-            source={require('@/assets/images/people-icon.png')}
+          <Image
+            source={require("@/assets/images/people-icon.png")}
             style={styles.profileImage}
           />
-          <Text style={styles.userName}>{userName}</Text>
+          <Text style={styles.userName} numberOfLines={1}>
+            {userName}
+          </Text>
         </View>
       </View>
 
-      <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        style={styles.scrollView}
+        showsVerticalScrollIndicator={false}
+      >
         {/* Поиск и фильтры */}
         <View style={styles.searchSection}>
           {/* Категории */}
-          <ScrollView 
-            horizontal 
+          <ScrollView
+            horizontal
             showsHorizontalScrollIndicator={false}
             style={styles.categoriesContainer}
           >
@@ -309,14 +340,16 @@ export default function Recipes() {
                 key={category}
                 style={[
                   styles.categoryButton,
-                  selectedCategory === category && styles.categoryButtonActive
+                  selectedCategory === category && styles.categoryButtonActive,
                 ]}
                 onPress={() => setSelectedCategory(category)}
               >
-                <Text style={[
-                  styles.categoryText,
-                  selectedCategory === category && styles.categoryTextActive
-                ]}>
+                <Text
+                  style={[
+                    styles.categoryText,
+                    selectedCategory === category && styles.categoryTextActive,
+                  ]}
+                >
                   {category}
                 </Text>
               </TouchableOpacity>
@@ -355,34 +388,56 @@ export default function Recipes() {
           <View style={styles.recipesGrid}>
             {filteredRecipes.map((recipe) => (
               <View key={recipe.id} style={styles.recipeColumn}>
-                <View style={styles.recipeCard}>
+                <TouchableOpacity
+                  style={styles.recipeCard}
+                  onPress={() => navigateToRecipe(recipe)}
+                >
                   <View style={styles.imageContainer}>
-                    <Image 
-                      source={recipe.image}
+                    {/* --- Отображение сетевого изображения --- */}
+                    <Image
+                      source={
+                        recipe.imageUrl && recipe.imageUrl.length > 5
+                          ? { uri: recipe.imageUrl }
+                          : require("@/assets/images/default-recipe.png")
+                      }
                       style={styles.recipeImage}
                       resizeMode="cover"
                     />
                     {/* Бейджи рейтинга и сложности */}
                     <View style={styles.recipeBadges}>
-                      <View style={styles.ratingBadge}>
-                        <FontAwesome name="star" size={10} color="#FFD700" />
-                        <Text style={styles.ratingText}>{recipe.rating}</Text>
-                      </View>
-                      <View style={[
-                        styles.difficultyBadge,
-                        { backgroundColor: getDifficultyColor(recipe.difficulty || "Легко") }
-                      ]}>
-                        <Text style={styles.difficultyText}>{recipe.difficulty}</Text>
+                      {recipe.rating && recipe.rating > 0 ? (
+                        <View style={styles.ratingBadge}>
+                          <FontAwesome name="star" size={10} color="#FFD700" />
+                          <Text style={styles.ratingText}>
+                            {recipe.rating.toFixed(1)}
+                          </Text>
+                        </View>
+                      ) : null}
+                      <View
+                        style={[
+                          styles.difficultyBadge,
+                          {
+                            backgroundColor: getDifficultyColor(
+                              recipe.difficultyLevel
+                            ),
+                          },
+                        ]}
+                      >
+                        <Text style={styles.difficultyText}>
+                          {recipe.difficultyLevel}
+                        </Text>
                       </View>
                     </View>
                     {/* Кнопка закладки */}
-                    <TouchableOpacity 
+                    <TouchableOpacity
                       style={styles.bookmarkButton}
                       onPress={() => toggleBookmark(recipe.id)}
                       disabled={isUpdating}
                     >
-                      <Ionicons 
-                        name={recipe.bookmarked ? "bookmark" : "bookmark-outline"}
+                      <Ionicons
+                        name={
+                          recipe.bookmarked ? "bookmark" : "bookmark-outline"
+                        }
                         size={18}
                         color="#6A9AA9"
                       />
@@ -390,7 +445,7 @@ export default function Recipes() {
                   </View>
                   <View style={styles.recipeContent}>
                     <View style={styles.recipeInfo}>
-                      <Text 
+                      <Text
                         style={styles.recipeName}
                         numberOfLines={2}
                         ellipsizeMode="tail"
@@ -402,19 +457,31 @@ export default function Recipes() {
                         {getCategoryName(recipe.mealType)}
                       </Text>
                       <View style={styles.recipeDetails}>
-                        <Text style={styles.recipeCalories}>{recipe.calories} ккал</Text>
-                        <MaterialIcons name="access-time" size={12} color="#6A9AA9" style={styles.timeIcon} />
-                        <Text style={styles.recipeTime}>{recipe.cookingTime}</Text>
+                        {/* Калории */}
+                        {recipe.calories && recipe.calories > 0 ? (
+                          <Text style={styles.recipeCalories}>
+                            {recipe.calories} ккал
+                          </Text>
+                        ) : null}
+                        <MaterialIcons
+                          name="access-time"
+                          size={12}
+                          color="#6A9AA9"
+                          style={styles.timeIcon}
+                        />
+                        <Text style={styles.recipeTime}>
+                          {formatMinutes(recipe.cookingTime || 0)}
+                        </Text>
                       </View>
                     </View>
-                    <TouchableOpacity 
+                    <TouchableOpacity
                       style={styles.viewButton}
                       onPress={() => navigateToRecipe(recipe)}
                     >
                       <Text style={styles.viewButtonText}>Посмотреть</Text>
                     </TouchableOpacity>
                   </View>
-                </View>
+                </TouchableOpacity>
               </View>
             ))}
           </View>
@@ -440,31 +507,31 @@ const styles = StyleSheet.create({
   },
   loadingContainer: {
     flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#FFFFFF',
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "#FFFFFF",
   },
   loadingText: {
     marginTop: 10,
     fontSize: 16,
-    color: '#6A9AA9',
-    fontFamily: 'Playfair Display Regular',
+    color: "#6A9AA9",
+    fontFamily: "Playfair Display Regular",
   },
   emptyState: {
-    alignItems: 'center',
+    alignItems: "center",
     padding: 40,
   },
   emptyStateText: {
     fontSize: 18,
-    color: '#6C757D',
-    fontFamily: 'Playfair Display Regular',
+    color: "#6C757D",
+    fontFamily: "Playfair Display Regular",
     marginBottom: 8,
   },
   emptyStateSubtext: {
     fontSize: 14,
-    color: '#6C757D',
-    fontFamily: 'Playfair Display Regular',
-    textAlign: 'center',
+    color: "#6C757D",
+    fontFamily: "Playfair Display Regular",
+    textAlign: "center",
   },
   header: {
     flexDirection: "row",
@@ -586,12 +653,12 @@ const styles = StyleSheet.create({
     fontFamily: "Playfair Display Regular",
   },
   recipesGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'space-between',
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "space-between",
   },
   recipeColumn: {
-    width: '48%',
+    width: CARD_WIDTH,
     marginBottom: 16,
   },
   recipeCard: {
@@ -609,32 +676,32 @@ const styles = StyleSheet.create({
     height: 280,
   },
   imageContainer: {
-    position: 'relative',
+    position: "relative",
   },
   recipeImage: {
-    width: '100%',
+    width: "100%",
     height: 120,
   },
   recipeBadges: {
-    position: 'absolute',
+    position: "absolute",
     top: 8,
     left: 8,
-    flexDirection: 'column',
+    flexDirection: "column",
     gap: 4,
   },
   ratingBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.9)',
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(255, 255, 255, 0.9)",
     paddingHorizontal: 6,
     paddingVertical: 3,
     borderRadius: 10,
   },
   ratingText: {
     fontSize: 10,
-    fontWeight: 'bold',
-    color: '#000000',
-    fontFamily: 'Playfair Display Regular',
+    fontWeight: "bold",
+    color: "#000000",
+    fontFamily: "Playfair Display Regular",
     marginLeft: 2,
   },
   difficultyBadge: {
@@ -644,20 +711,20 @@ const styles = StyleSheet.create({
   },
   difficultyText: {
     fontSize: 9,
-    fontWeight: 'bold',
-    color: '#FFFFFF',
-    fontFamily: 'Playfair Display Regular',
+    fontWeight: "bold",
+    color: "#FFFFFF",
+    fontFamily: "Playfair Display Regular",
   },
   bookmarkButton: {
-    position: 'absolute',
+    position: "absolute",
     top: 8,
     right: 8,
     width: 32,
     height: 32,
     borderRadius: 16,
-    backgroundColor: 'rgba(255, 255, 255, 0.9)',
-    alignItems: 'center',
-    justifyContent: 'center',
+    backgroundColor: "rgba(255, 255, 255, 0.9)",
+    alignItems: "center",
+    justifyContent: "center",
     shadowColor: "#000",
     shadowOffset: {
       width: 0,
@@ -670,7 +737,7 @@ const styles = StyleSheet.create({
   recipeContent: {
     padding: 12,
     flex: 1,
-    justifyContent: 'space-between',
+    justifyContent: "space-between",
   },
   recipeInfo: {
     flex: 1,
@@ -689,29 +756,27 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: "#6A9AA9",
     fontFamily: "Playfair Display Regular",
-    fontStyle: 'italic',
+    fontStyle: "italic",
     marginBottom: 6,
   },
   recipeDetails: {
     flexDirection: "row",
     alignItems: "center",
-    flexWrap: 'wrap',
+    flexWrap: "wrap",
   },
   recipeCalories: {
     fontSize: 12,
     color: "#000000",
     fontWeight: "normal",
     fontFamily: "Playfair Display Bold",
-    marginLeft: 2,
     marginRight: 8,
   },
   timeIcon: {
-    marginLeft: 4,
+    marginRight: 4,
   },
   recipeTime: {
     fontSize: 12,
     color: "#6C757D",
-    marginLeft: 2,
     fontFamily: "Playfair Display Regular",
   },
   viewButton: {

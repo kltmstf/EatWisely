@@ -1,8 +1,8 @@
 // hooks/useFavorites.js
 import { useState, useEffect, useCallback, createContext, useContext } from 'react';
 import { favoriteService } from '../services/favoriteService';
-// Исправьте путь в зависимости от вашей структуры
-import { useAuth } from '../contexts/AuthContext'; // или '@/app/contexts/AuthContext'
+// 👇 Убедитесь, что путь к useAuth верен относительно этого файла
+import { useAuth } from '../hooks/useAuth'; 
 
 const FavoritesContext = createContext(null);
 
@@ -12,14 +12,16 @@ export const FavoritesProvider = ({ children }) => {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
     
-    // Временно убираем useAuth до исправления
-    // const { user } = useAuth();
+    // 👇 Получаем статус пользователя и статус загрузки аутентификации
+    const { user, loading: authLoading } = useAuth();
     
+    // Функция для загрузки избранного
     const loadFavorites = useCallback(async () => {
-        // Временное решение - проверяем аутентификацию через favoriteService
         setLoading(true);
         setError(null);
         try {
+            // Этот вызов должен быть защищен в useEffect, 
+            // но мы ловим ошибку на случай, если кто-то вызовет loadFavorites вручную
             const allFavorites = await favoriteService.getUserFavorites();
 
             const recipes = allFavorites
@@ -35,21 +37,51 @@ export const FavoritesProvider = ({ children }) => {
 
         } catch (err) {
             console.error("Ошибка при загрузке избранного:", err);
-            // Игнорируем ошибки аутентификации
-            if (!err.message.includes('authenticated') && !err.message.includes('index')) {
-                setError(err.message);
+            // 👇 ИСПРАВЛЕНИЕ: Игнорируем ошибку, если пользователь не аутентифицирован
+            if (err.message.includes('authenticated') || err.message.includes('index')) {
+                setFavoriteRecipeIds([]);
+                setFavoriteRationIds([]);
+                setError(null);
+                console.log("👤 Загрузка избранного пропущена (не залогинен).");
+                return;
             }
+            // Устанавливаем ошибку для других, не связанных с аутентификацией проблем
+            setError(err.message);
         } finally {
             setLoading(false);
         }
-    }, []); // Убираем зависимость от user
+    }, []); 
 
+    // 👇 ИСПРАВЛЕНИЕ: Запускаем loadFavorites условно
     useEffect(() => {
-        loadFavorites();
-    }, [loadFavorites]);
+        // 1. Если загрузка аутентификации еще идет, ждем
+        if (authLoading) {
+            setLoading(true);
+            return;
+        }
 
-    // Остальной код без изменений...
+        // 2. Если пользователь вошел в систему, загружаем
+        if (user) {
+            loadFavorites();
+        } else {
+            // 3. Если пользователь не вошел в систему, сбрасываем и завершаем загрузку
+            setFavoriteRecipeIds([]);
+            setFavoriteRationIds([]);
+            setLoading(false);
+            setError(null);
+        }
+
+    }, [user, authLoading, loadFavorites]); // Реагируем на изменение user и authLoading
+
+    // Остальной код toggleFavorite и isFavorite остается прежним
     const toggleFavorite = useCallback(async (itemId, favoriteType) => {
+        // ... (логика toggleFavorite)
+        if (!user) {
+            // Дополнительная проверка на user, если вызов идет из UI
+            alert("Для добавления в избранное необходимо войти в систему.");
+            return;
+        }
+
         try {
             const isCurrentlyFavorite = favoriteType === 'recipe'
                 ? favoriteRecipeIds.includes(itemId)
@@ -72,7 +104,7 @@ export const FavoritesProvider = ({ children }) => {
             setError(err.message);
             throw err;
         }
-    }, [favoriteRecipeIds, favoriteRationIds]);
+    }, [favoriteRecipeIds, favoriteRationIds, user]); // Добавлена зависимость user
 
     const isFavorite = useCallback((itemId, favoriteType) => {
         if (favoriteType === 'recipe') {
