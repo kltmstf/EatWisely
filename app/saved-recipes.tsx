@@ -1,3 +1,4 @@
+// app/saved-recipes.tsx
 import {
   Ionicons,
   Feather,
@@ -16,13 +17,13 @@ import {
   TextInput,
   ActivityIndicator,
   Alert,
+  Dimensions,
 } from "react-native";
 
 import { useFavorites } from "@/app/hooks/useFavorites";
 import { favoriteService } from "@/app/services/favoriteService";
 
 // --- ТИПЫ ДАННЫХ ---
-
 type RecipeDetail = {
   id: string;
   name: string;
@@ -34,39 +35,61 @@ type RecipeDetail = {
   difficulty: string;
 };
 
-// Тип данных, приходящих из сервиса
-type FavoriteItem = {
-  id: string;
-  userId: string;
-  favoriteType: "recipe" | "ration";
-  createdAt: any;
-  recipeId?: string;
-  rationPlanId?: string;
-  item: RecipeDetail; // Предполагаем, что сервис возвращает вложенный объект item
-};
-
-// Интерфейс контекста хука (для типизации useFavorites)
-interface FavoritesContextType {
-  favoriteRecipeIds: string[];
-  favoriteRationIds: string[];
-  loading: boolean;
-  isFavorite: (id: string, type: "recipe" | "ration") => boolean;
-  toggleFavorite: (id: string, type: "recipe" | "ration") => Promise<void>;
-  loadFavorites: () => Promise<void>;
-}
+// Размеры для карточек
+const { width } = Dimensions.get("window");
+const CARD_WIDTH = (width - 48) / 2;
 
 const categories = ["Все", "Завтраки", "Обед", "Ужин", "Перекусы", "Салаты"];
+
+// Функция для правильного склонения слова "минута"
+const formatMinutes = (minutes: number): string => {
+  const absMinutes = Math.abs(minutes);
+  const lastDigit = absMinutes % 10;
+  const lastTwoDigits = absMinutes % 100;
+
+  if (lastTwoDigits >= 11 && lastTwoDigits <= 14) return `${absMinutes} минут`;
+  if (lastDigit === 1) return `${absMinutes} минута`;
+  if (lastDigit >= 2 && lastDigit <= 4) return `${absMinutes} минуты`;
+  return `${absMinutes} минут`;
+};
+
+// Функция для получения названия категории по mealType
+const getCategoryName = (mealType: string) => {
+  if (!mealType) return "Другое";
+  
+  const normalizedMealType = String(mealType).trim().toLowerCase();
+  
+  switch (normalizedMealType) {
+    case "breakfast":
+    case "завтрак":
+    case "breakfast":
+      return "Завтрак";
+    case "lunch":
+    case "обед":
+    case "ocheq":
+    case "dceq":
+    case "ocеq":
+      return "Обед";
+    case "dinner":
+    case "ужин":
+      return "Ужин";
+    case "snack":
+    case "перекусы":
+      return "Перекусы";
+    default:
+      return "Другое";
+  }
+};
 
 export default function SavedRecipesScreen() {
   const router = useRouter();
 
-  // Приводим результат хука к интерфейсу, чтобы TS понимал структуру
-  const {
-    isFavorite,
-    toggleFavorite,
-    loading: favoritesLoading,
-    favoriteRecipeIds,
-  } = useFavorites() as FavoritesContextType;
+  // Используем хук без строгой типизации
+  const favoritesContext = useFavorites() as any;
+  const isFavorite = favoritesContext?.isFavorite || (() => false);
+  const toggleFavorite = favoritesContext?.toggleFavorite || (async () => {});
+  const favoritesLoading = favoritesContext?.loading || false;
+  const favoriteRecipeIds = favoritesContext?.favoriteRecipeIds || [];
 
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("Все");
@@ -78,33 +101,92 @@ export default function SavedRecipesScreen() {
     let isMounted = true;
 
     const loadRecipeDetails = async () => {
-      // Если хук еще инициализируется, ждем
       if (favoritesLoading) return;
 
       setDataLoading(true);
       try {
-        // Принудительно указываем тип возвращаемого значения сервиса
-        // Используем 'as unknown' как промежуточный шаг, если типы сильно не совпадают
-        const allFavorites =
-          (await favoriteService.getUserFavorites()) as unknown as FavoriteItem[];
+        const allFavorites = await favoriteService.getUserFavorites();
 
         if (isMounted) {
-          // Фильтруем и преобразуем данные
+          // Фильтруем и преобразуем данные с правильным маппингом полей
           const favoriteRecipes: RecipeDetail[] = allFavorites
-            .filter((fav) => fav.favoriteType === "recipe" && fav.item)
-            .map((fav) => ({
-              id: fav.item.id,
-              name: fav.item.name || "Без названия",
-              category: fav.item.category || "Другое",
-              calories: fav.item.calories || 0,
-              cookingTime: fav.item.cookingTime || "0 мин",
-              // Проверка на наличие изображения
-              image: fav.item.image
-                ? { uri: fav.item.image }
-                : require("@/assets/images/dinner-rice.png"),
-              rating: fav.item.rating || 0,
-              difficulty: fav.item.difficulty || "Легко",
-            }));
+            .filter((fav: any) => fav.favoriteType === 'recipe' && fav.item)
+            .map((fav: any) => {
+              const recipeData = fav.item;
+              
+              // Получаем значения из разных возможных мест хранения данных
+              const title = recipeData.title || recipeData.name || recipeData.fields?.title || "Рецепт без названия";
+              
+              // Категория - получаем из mealType или fields
+              const rawCategory = recipeData.mealType || recipeData.fields?.mealType || "other";
+              const category = getCategoryName(rawCategory);
+              
+              // Калории
+              let calories = 0;
+              if (recipeData.fields?.calories !== undefined) calories = recipeData.fields.calories;
+              else if (recipeData.calories !== undefined) calories = recipeData.calories;
+              else if (recipeData.fields?.fscts !== undefined) calories = recipeData.fields.fscts;
+              
+              // Время приготовления
+              let cookingTime = "20 минут";
+              const rawTime = recipeData.fields?.cookingTime || recipeData.cookingTime || recipeData.time;
+              
+              if (rawTime) {
+                if (typeof rawTime === 'number') {
+                  cookingTime = formatMinutes(rawTime);
+                } else {
+                  cookingTime = String(rawTime);
+                  if (cookingTime && !cookingTime.includes("мин") && !cookingTime.includes("минут")) {
+                    const timeMatch = cookingTime.match(/\d+/);
+                    if (timeMatch) {
+                      cookingTime = formatMinutes(parseInt(timeMatch[0], 10));
+                    } else {
+                      cookingTime = `${cookingTime} минут`;
+                    }
+                  }
+                }
+              }
+              
+              // Рейтинг
+              const rating = recipeData.rating || recipeData.fields?.rating || recipeData.ratingCount || 0;
+              
+              // Сложность приготовления
+              let difficulty = "Легко";
+              const rawDifficulty = recipeData.difficulty || recipeData.fields?.difficulty || recipeData.complexity || recipeData.difficultyLevel;
+              
+              if (rawDifficulty) {
+                const normalizedDifficulty = String(rawDifficulty).trim();
+                if (normalizedDifficulty.toLowerCase().includes("легк") || normalizedDifficulty === "Easy") {
+                  difficulty = "Легко";
+                } else if (normalizedDifficulty.toLowerCase().includes("средн") || normalizedDifficulty === "Medium") {
+                  difficulty = "Средне";
+                } else if (normalizedDifficulty.toLowerCase().includes("сложн") || normalizedDifficulty === "Hard") {
+                  difficulty = "Сложно";
+                } else {
+                  difficulty = normalizedDifficulty;
+                }
+              }
+              
+              // Изображение
+              let imageUri = null;
+              if (recipeData.fields?.image) imageUri = recipeData.fields.image;
+              else if (recipeData.image) imageUri = recipeData.image;
+              else if (recipeData.imageUrl) imageUri = recipeData.imageUrl;
+              else if (recipeData.fields?.langdir1) imageUri = recipeData.fields.langdir1;
+
+              return {
+                id: recipeData.id || `recipe-${Date.now()}`,
+                name: title,
+                category: category,
+                calories: calories,
+                cookingTime: cookingTime,
+                image: imageUri 
+                  ? { uri: imageUri }
+                  : require("@/assets/images/dinner-rice.png"),
+                rating: rating,
+                difficulty: difficulty
+              };
+            });
 
           setRecipesData(favoriteRecipes);
         }
@@ -122,7 +204,7 @@ export default function SavedRecipesScreen() {
     return () => {
       isMounted = false;
     };
-  }, [favoritesLoading, favoriteRecipeIds]); // Перезагружаем при изменении списка ID
+  }, [favoritesLoading, favoriteRecipeIds]);
 
   // --- ФИЛЬТРАЦИЯ ---
   const filteredRecipes = useMemo(() => {
@@ -139,9 +221,9 @@ export default function SavedRecipesScreen() {
   // --- УДАЛЕНИЕ ИЗ ИЗБРАННОГО ---
   const toggleBookmarkHandler = async (recipeId: string) => {
     try {
-      // Вызываем метод сервиса
-      await toggleFavorite(recipeId, "recipe");
-      // Оптимистичное обновление: сразу удаляем из локального стейта
+      // Удаляем через сервис напрямую
+      await favoriteService.removeFromFavorites(recipeId, 'recipe');
+      // Оптимистичное обновление
       setRecipesData((prev) => prev.filter((item) => item.id !== recipeId));
     } catch (error) {
       console.error("Ошибка при удалении:", error);
@@ -161,16 +243,13 @@ export default function SavedRecipesScreen() {
   };
 
   const getDifficultyColor = (difficulty: string) => {
-    switch (difficulty) {
-      case "Легко":
-        return "#4CAF50";
-      case "Средне":
-        return "#FF9800";
-      case "Сложно":
-        return "#F44336";
-      default:
-        return "#6A9AA9";
-    }
+    if (!difficulty) return "#6A9AA9";
+    
+    const lowerDifficulty = difficulty.toLowerCase();
+    if (lowerDifficulty.includes("легк")) return "#4CAF50";
+    if (lowerDifficulty.includes("средн")) return "#FF9800";
+    if (lowerDifficulty.includes("сложн")) return "#F44336";
+    return "#6A9AA9";
   };
 
   const clearFilters = () => {
@@ -184,8 +263,7 @@ export default function SavedRecipesScreen() {
     <View style={styles.container}>
       <Stack.Screen
         options={{
-          headerTitle: "Сохраненные рецепты",
-          headerBackTitle: "Назад",
+          headerShown: false,
         }}
       />
 
@@ -203,31 +281,16 @@ export default function SavedRecipesScreen() {
       <ScrollView
         style={styles.scrollContainer}
         showsVerticalScrollIndicator={false}
+        contentContainerStyle={styles.scrollContent}
       >
-        {/* Поиск и категории */}
-        <View style={styles.searchSection}>
-          <View style={styles.searchRow}>
-            <View style={styles.searchInputContainer}>
-              <Feather
-                name="search"
-                size={16}
-                color="#666"
-                style={styles.searchIcon}
-              />
-              <TextInput
-                style={styles.searchInput}
-                placeholder="Поиск рецептов..."
-                placeholderTextColor="#666"
-                value={searchQuery}
-                onChangeText={setSearchQuery}
-              />
-            </View>
-          </View>
-
+        {/* Фильтры и поиск */}
+        <View style={styles.filtersSection}>
+          {/* Категории над поиском */}
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
             style={styles.categoriesContainer}
+            contentContainerStyle={styles.categoriesContent}
           >
             {categories.map((category) => (
               <TouchableOpacity
@@ -249,6 +312,25 @@ export default function SavedRecipesScreen() {
               </TouchableOpacity>
             ))}
           </ScrollView>
+
+          {/* Строка поиска под фильтрами */}
+          <View style={styles.searchRow}>
+            <View style={styles.searchInputContainer}>
+              <Feather
+                name="search"
+                size={16}
+                color="#666"
+                style={styles.searchIcon}
+              />
+              <TextInput
+                style={styles.searchInput}
+                placeholder="Поиск рецептов..."
+                placeholderTextColor="#666"
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+              />
+            </View>
+          </View>
           <View style={styles.sectionDivider} />
         </View>
 
@@ -261,6 +343,11 @@ export default function SavedRecipesScreen() {
             </View>
           ) : (
             <>
+              {/* Заголовок по центру с меньшим шрифтом */}
+              <Text style={styles.recipesTitle}>
+                {filteredRecipes.length} рецептов найдено
+              </Text>
+
               {filteredRecipes.length === 0 ? (
                 <View style={styles.emptyState}>
                   <Ionicons name="bookmark-outline" size={64} color="#C2DAE2" />
@@ -282,25 +369,21 @@ export default function SavedRecipesScreen() {
                   )}
                 </View>
               ) : (
-                <>
-                  <Text style={styles.recipesTitle}>
-                    {filteredRecipes.length} рецептов найдено
-                  </Text>
-
-                  <View style={styles.recipesGrid}>
-                    {filteredRecipes.map((recipe) => (
-                      <View key={recipe.id} style={styles.recipeColumn}>
-                        <TouchableOpacity
-                          style={styles.recipeCard}
-                          onPress={() => navigateToRecipe(recipe)}
-                        >
-                          <View style={styles.imageContainer}>
-                            <Image
-                              source={recipe.image}
-                              style={styles.recipeImage}
-                              resizeMode="cover"
-                            />
-                            <View style={styles.recipeBadges}>
+                <View style={styles.recipesGrid}>
+                  {filteredRecipes.map((recipe) => (
+                    <View key={recipe.id} style={styles.recipeColumn}>
+                      <TouchableOpacity
+                        style={styles.recipeCard}
+                        onPress={() => navigateToRecipe(recipe)}
+                      >
+                        <View style={styles.imageContainer}>
+                          <Image
+                            source={recipe.image}
+                            style={styles.recipeImage}
+                            resizeMode="cover"
+                          />
+                          <View style={styles.recipeBadges}>
+                            {recipe.rating && recipe.rating > 0 ? (
                               <View style={styles.ratingBadge}>
                                 <FontAwesome
                                   name="star"
@@ -308,78 +391,83 @@ export default function SavedRecipesScreen() {
                                   color="#FFD700"
                                 />
                                 <Text style={styles.ratingText}>
-                                  {recipe.rating}
+                                  {recipe.rating.toFixed(1)}
                                 </Text>
                               </View>
-                              <View
-                                style={[
-                                  styles.difficultyBadge,
-                                  {
-                                    backgroundColor: getDifficultyColor(
-                                      recipe.difficulty
-                                    ),
-                                  },
-                                ]}
-                              >
-                                <Text style={styles.difficultyText}>
-                                  {recipe.difficulty}
-                                </Text>
-                              </View>
-                            </View>
-
-                            {/* Кнопка закладки (Удаление) */}
-                            <TouchableOpacity
-                              style={styles.bookmarkButton}
-                              onPress={(e) => {
-                                e.stopPropagation();
-                                toggleBookmarkHandler(recipe.id);
-                              }}
+                            ) : null}
+                            <View
+                              style={[
+                                styles.difficultyBadge,
+                                {
+                                  backgroundColor: getDifficultyColor(
+                                    recipe.difficulty
+                                  ),
+                                },
+                              ]}
                             >
-                              <Ionicons
-                                name="bookmark" // Всегда закрашенная, так как это страница "Сохраненные"
-                                size={18}
-                                color="#6A9AA9"
-                              />
-                            </TouchableOpacity>
+                              <Text style={styles.difficultyText}>
+                                {recipe.difficulty}
+                              </Text>
+                            </View>
                           </View>
-                          <View style={styles.recipeContent}>
-                            <View style={styles.recipeInfo}>
-                              <Text
-                                style={styles.recipeName}
-                                numberOfLines={2}
-                                ellipsizeMode="tail"
-                              >
-                                {recipe.name}
-                              </Text>
-                              <Text style={styles.recipeCategory}>
-                                {recipe.category}
-                              </Text>
-                              <View style={styles.recipeDetails}>
+
+                          {/* Кнопка закладки (Удаление) */}
+                          <TouchableOpacity
+                            style={styles.bookmarkButton}
+                            onPress={(e) => {
+                              e.stopPropagation();
+                              toggleBookmarkHandler(recipe.id);
+                            }}
+                          >
+                            <Ionicons
+                              name="bookmark"
+                              size={18}
+                              color="#6A9AA9"
+                            />
+                          </TouchableOpacity>
+                        </View>
+                        <View style={styles.recipeContent}>
+                          <View style={styles.recipeInfo}>
+                            <Text
+                              style={styles.recipeName}
+                              numberOfLines={2}
+                              ellipsizeMode="tail"
+                            >
+                              {recipe.name}
+                            </Text>
+                            <Text style={styles.recipeCategory}>
+                              {recipe.category}
+                            </Text>
+                            <View style={styles.recipeDetails}>
+                              {recipe.calories && recipe.calories > 0 ? (
                                 <Text style={styles.recipeCalories}>
                                   {recipe.calories} ккал
                                 </Text>
-                                <MaterialIcons
-                                  name="access-time"
-                                  size={12}
-                                  color="#6A9AA9"
-                                  style={styles.timeIcon}
-                                />
-                                <Text style={styles.recipeTime}>
-                                  {recipe.cookingTime}
-                                </Text>
-                              </View>
-                            </View>
-                            <View style={styles.viewButton}>
-                              <Text style={styles.viewButtonText}>
-                                Приготовить
+                              ) : null}
+                              <Ionicons
+                                name="time-outline"
+                                size={12}
+                                color="#6A9AA9"
+                                style={styles.timeIcon}
+                              />
+                              <Text style={styles.recipeTime}>
+                                {recipe.cookingTime}
                               </Text>
                             </View>
                           </View>
-                        </TouchableOpacity>
-                      </View>
-                    ))}
-                  </View>
-                </>
+                          <TouchableOpacity
+                            style={styles.viewButton}
+                            onPress={() => navigateToRecipe(recipe)}
+                          >
+                            <Text style={styles.viewButtonText}>
+                              Приготовить
+                            </Text>
+                          </TouchableOpacity>
+                        </View>
+                      </TouchableOpacity>
+                    </View>
+                  ))}
+                </View>
               )}
             </>
           )}
@@ -409,48 +497,29 @@ const styles = StyleSheet.create({
     padding: 8,
   },
   headerTitle: {
-    fontSize: 24,
+    fontSize: 20, // Уменьшенный шрифт
     color: "#1a1a1a",
     fontFamily: "Playfair Display Bold",
     textAlign: "center",
+    flex: 1,
   },
   scrollContainer: {
     flex: 1,
   },
-  searchSection: {
+  scrollContent: {
+    paddingBottom: 30,
+  },
+  filtersSection: {
     backgroundColor: "#FFFFFF",
-    padding: 15,
-    marginBottom: 1,
-  },
-  searchRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    marginBottom: 12,
-  },
-  searchInputContainer: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#FFFFFF",
-    borderRadius: 30,
-    borderWidth: 2,
-    borderColor: "#6A9AA9",
-    paddingHorizontal: 15,
-    paddingVertical: 6,
-  },
-  searchIcon: {
-    marginRight: 8,
-  },
-  searchInput: {
-    flex: 1,
-    fontSize: 14,
-    color: "#000",
-    paddingVertical: 4,
-    fontFamily: "Playfair Display Regular",
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 8,
   },
   categoriesContainer: {
     marginBottom: 12,
+  },
+  categoriesContent: {
+    paddingHorizontal: 4,
   },
   categoryButton: {
     backgroundColor: "white",
@@ -474,16 +543,50 @@ const styles = StyleSheet.create({
   categoryTextActive: {
     color: "#000000",
   },
+  searchRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  searchInputContainer: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#FFFFFF",
+    borderRadius: 30,
+    borderWidth: 2,
+    borderColor: "#6A9AA9",
+    paddingHorizontal: 15,
+    paddingVertical: 6,
+  },
+  searchIcon: {
+    marginRight: 8,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 14,
+    color: "#000",
+    paddingVertical: 4,
+    fontFamily: "Playfair Display Regular",
+  },
   sectionDivider: {
     height: 2,
     backgroundColor: "#6A9AA9",
-    marginHorizontal: -15,
+    marginHorizontal: -16,
     marginTop: 12,
   },
   recipesSection: {
     backgroundColor: "#FFFFFF",
-    padding: 15,
-    paddingBottom: 20,
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 30,
+  },
+  recipesTitle: {
+    fontSize: 18, // Уменьшенный шрифт
+    color: "#212529",
+    fontFamily: "Playfair Display Bold",
+    textAlign: "center", // По центру
+    marginBottom: 20,
   },
   emptyState: {
     alignItems: "center",
@@ -515,20 +618,13 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     fontFamily: "Playfair Display Regular",
   },
-  recipesTitle: {
-    fontSize: 16,
-    color: "#000000ff",
-    marginBottom: 12,
-    fontWeight: "500",
-    fontFamily: "Playfair Display Regular",
-  },
   recipesGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
     justifyContent: "space-between",
   },
   recipeColumn: {
-    width: "48%",
+    width: CARD_WIDTH,
     marginBottom: 16,
   },
   recipeCard: {
@@ -639,16 +735,14 @@ const styles = StyleSheet.create({
     color: "#000000",
     fontWeight: "normal",
     fontFamily: "Playfair Display Bold",
-    marginLeft: 2,
     marginRight: 8,
   },
   timeIcon: {
-    marginLeft: 4,
+    marginRight: 4,
   },
   recipeTime: {
     fontSize: 12,
     color: "#6C757D",
-    marginLeft: 2,
     fontFamily: "Playfair Display Regular",
   },
   viewButton: {

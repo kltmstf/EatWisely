@@ -12,7 +12,7 @@ import {
   orderBy,
   limit,
   startAfter,
-  increment, // ✨ ИМПОРТ ДЛЯ АТОМАРНОГО ОБНОВЛЕНИЯ
+  increment,
 } from 'firebase/firestore';
 import { db, auth } from '../firebase/config';
 
@@ -21,19 +21,14 @@ const RECIPES_PER_PAGE = 20;
 
 class RecipeService {
   
-  // ... (Ваш существующий код getRecipes, getRecipesForPlanner) ...
   
-  // ------------------------------------------------------------------
-  // 🆕 НОВЫЙ МЕТОД: Обновление счетчиков оценок рецепта
-  // ------------------------------------------------------------------
   async updateRecipeRatingStats(recipeId, countChange, ratingChange = 0) {
     try {
       if (!recipeId) throw new Error('Recipe ID is required');
 
       const recipeRef = doc(db, 'recipes', recipeId);
       
-      // Обновляем только количество голосов (ratingsCount). 
-      // Пересчет averageRating лучше делать на бэкенде.
+      
       await updateDoc(recipeRef, {
         ratingsCount: increment(countChange),
       });
@@ -45,12 +40,10 @@ class RecipeService {
       throw error;
     }
   }
-  // ------------------------------------------------------------------
   
-  // ... (Ваш существующий код getRecipeById, createRecipe, updateRecipe, deleteRecipe, getUserRecipes, searchRecipes) ...
   
   async getRecipes({ filters = {}, lastPublicDoc = null, lastUserDoc = null, sortField = 'createdAt', sortDirection = 'desc' }) {
-    // ... (весь код getRecipes) ...
+
     try {
       const user = auth.currentUser;
       if (!user) throw new Error('User not authenticated');

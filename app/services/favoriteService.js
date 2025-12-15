@@ -8,201 +8,424 @@ import {
   getDoc,
   query,
   where,
-  orderBy
+  orderBy,
+  updateDoc
 } from 'firebase/firestore';
 import { db, auth } from '../firebase/config';
 
 class FavoriteService {
-  // Добавить в избранное
-  async addToFavorites(itemId, favoriteType) {
-    try {
-      const user = auth.currentUser;
-      if (!user) throw new Error('User not authenticated');
-
-      if (!['recipe', 'ration'].includes(favoriteType)) {
-        throw new Error('Invalid favorite type');
-      }
-
-      // Проверяем, не добавлено ли уже в избранное
-      const existingFavorite = await this.getFavorite(itemId, favoriteType);
-      if (existingFavorite) {
-        throw new Error('Already in favorites');
-      }
-
-      const favoriteData = {
-        userId: user.uid,
-        favoriteType: favoriteType,
-        createdAt: new Date()
-      };
-
-      // Устанавливаем правильную ссылку в зависимости от типа
-      if (favoriteType === 'recipe') {
-        favoriteData.recipeId = itemId;
-        
-        // Проверяем существование рецепта
-        const recipeDoc = await getDoc(doc(db, 'recipes', itemId));
-        if (!recipeDoc.exists()) {
-          throw new Error('Recipe not found');
-        }
-      } else {
-        favoriteData.rationPlanId = itemId;
-        
-        // Проверяем существование рациона
-        const rationDoc = await getDoc(doc(db, 'ration_plans', itemId));
-        if (!rationDoc.exists()) {
-          throw new Error('Ration plan not found');
-        }
-      }
-
-      const docRef = await addDoc(collection(db, 'user_favorites'), favoriteData);
-      return { id: docRef.id, ...favoriteData };
-    } catch (error) {
-      console.error('Error adding to favorites:', error);
-      throw error;
-    }
+  // Получить ID текущего пользователя
+  getCurrentUserId() {
+    return auth.currentUser ? auth.currentUser.uid : null;
   }
 
-  // Удалить из избранного
-  async removeFromFavorites(itemId, favoriteType) {
-    try {
-      const user = auth.currentUser;
-      if (!user) throw new Error('User not authenticated');
-
-      const favorite = await this.getFavorite(itemId, favoriteType);
-      if (!favorite) {
-        throw new Error('Not found in favorites');
-      }
-
-      await deleteDoc(doc(db, 'user_favorites', favorite.id));
-      return true;
-    } catch (error) {
-      console.error('Error removing from favorites:', error);
-      throw error;
-    }
+  // Проверить авторизацию
+  isAuthenticated() {
+    return !!auth.currentUser;
   }
 
-  // Получить конкретное избранное
-  async getFavorite(itemId, favoriteType) {
-    try {
-      const user = auth.currentUser;
-      if (!user) throw new Error('User not authenticated');
-
-      let favoritesQuery;
-
-      if (favoriteType === 'recipe') {
-        favoritesQuery = query(
-          collection(db, 'user_favorites'),
-          where('userId', '==', user.uid),
-          where('favoriteType', '==', 'recipe'),
-          where('recipeId', '==', itemId)
-        );
-      } else {
-        favoritesQuery = query(
-          collection(db, 'user_favorites'),
-          where('userId', '==', user.uid),
-          where('favoriteType', '==', 'ration'),
-          where('rationPlanId', '==', itemId)
-        );
-      }
-
-      const snapshot = await getDocs(favoritesQuery);
-      if (snapshot.empty) return null;
-
-      const doc = snapshot.docs[0];
-      return { id: doc.id, ...doc.data() };
-    } catch (error) {
-      console.error('Error getting favorite:', error);
-      return null;
-    }
+  // Проверить валидность ID
+  isValidId(id) {
+    return id && 
+           typeof id === 'string' && 
+           id.trim() !== '' && 
+           id !== 'undefined' && 
+           id !== 'null' &&
+           id.length >= 5;
   }
 
   // Получить все избранное пользователя
-  async getUserFavorites() {
+  async getUserFavorites(userId = null) {
     try {
-      const user = auth.currentUser;
-      if (!user) throw new Error('User not authenticated');
+      const currentUserId = userId || this.getCurrentUserId();
+      if (!currentUserId) {
+        console.log("❌ Нет userId для загрузки избранного");
+        return [];
+      }
+
+      console.log("🔄 Загрузка избранного для пользователя:", currentUserId);
 
       const favoritesQuery = query(
         collection(db, 'user_favorites'),
-        where('userId', '==', user.uid),
+        where('userId', '==', currentUserId),
         orderBy('createdAt', 'desc')
       );
 
+      console.log("📝 Выполняем запрос к Firestore...");
       const snapshot = await getDocs(favoritesQuery);
+      console.log("✅ Запрос выполнен, документов:", snapshot.docs.length);
+
       const favorites = snapshot.docs.map(doc => ({
         id: doc.id,
         ...doc.data()
       }));
 
-      // Загружаем дополнительные данные для каждого избранного
-      const enrichedFavorites = await Promise.all(
-        favorites.map(async (favorite) => {
-          if (favorite.favoriteType === 'recipe' && favorite.recipeId) {
-            try {
-              const recipeDoc = await getDoc(doc(db, 'recipes', favorite.recipeId));
-              if (recipeDoc.exists()) {
-                favorite.item = { id: recipeDoc.id, ...recipeDoc.data() };
-              }
-            } catch (error) {
-              console.warn(`Recipe ${favorite.recipeId} not found`);
-            }
-          } else if (favorite.favoriteType === 'ration' && favorite.rationPlanId) {
-            try {
-              const rationDoc = await getDoc(doc(db, 'ration_plans', favorite.rationPlanId));
-              if (rationDoc.exists()) {
-                favorite.item = { id: rationDoc.id, ...rationDoc.data() };
-              }
-            } catch (error) {
-              console.warn(`Ration plan ${favorite.rationPlanId} not found`);
-            }
+      console.log("📊 Найдено избранных:", favorites.length);
+
+      // Определяем favoriteType для каждого элемента
+      favorites.forEach((fav, index) => {
+        if (!fav.favoriteType || fav.favoriteType === 'undefined') {
+          if (fav.recipeId) {
+            fav.favoriteType = 'recipe';
+          } else if (fav.rationPlanId) {
+            fav.favoriteType = 'ration';
           }
-          return favorite;
+        }
+      });
+
+      // Фильтруем активные записи
+      const activeFavorites = favorites.filter(fav => 
+        fav.active === undefined || fav.active === true
+      );
+
+      console.log("✅ Активных избранных:", activeFavorites.length);
+
+      // Фильтруем только записи с определенным типом и ВАЛИДНЫМИ ID
+      const favoritesWithType = activeFavorites.filter(fav => {
+        if (!fav.favoriteType) return false;
+        
+        if (fav.favoriteType === 'recipe' && fav.recipeId) {
+          return this.isValidId(fav.recipeId);
+        } else if (fav.favoriteType === 'ration' && fav.rationPlanId) {
+          return this.isValidId(fav.rationPlanId);
+        }
+        
+        return false;
+      });
+      
+      console.log("🔍 Избранных с валидным типом и ID:", favoritesWithType.length);
+
+      // Загружаем дополнительные данные с безопасной обработкой
+      console.log("🔄 Загрузка дополнительных данных...");
+      const enrichedFavorites = await Promise.all(
+        favoritesWithType.map(async (favorite) => {
+          try {
+            if (favorite.favoriteType === 'recipe' && this.isValidId(favorite.recipeId)) {
+              console.log(`  🔍 Поиск рецепта с ID: ${favorite.recipeId}`);
+              
+              try {
+                const recipeDoc = await getDoc(doc(db, 'recipes', favorite.recipeId));
+                
+                if (recipeDoc.exists()) {
+                  const recipeData = recipeDoc.data();
+                  console.log(`  ✅ Рецепт найден: ${recipeData.title || recipeData.name || 'Без названия'}`);
+                  
+                  favorite.item = { 
+                    id: recipeDoc.id, 
+                    ...recipeData 
+                  };
+                } else {
+                  console.log(`  ❌ Рецепт ${favorite.recipeId} не найден`);
+                  return null; // Пропускаем этот элемент
+                }
+              } catch (docError) {
+                console.error(`  💥 Ошибка загрузки рецепта ${favorite.recipeId}:`, docError.message);
+                return null;
+              }
+              
+            } else if (favorite.favoriteType === 'ration' && this.isValidId(favorite.rationPlanId)) {
+              console.log(`  🔍 Поиск плана с ID: ${favorite.rationPlanId}`);
+              
+              try {
+                const rationDoc = await getDoc(doc(db, 'ration_plans', favorite.rationPlanId));
+                
+                if (rationDoc.exists()) {
+                  const rationData = rationDoc.data();
+                  console.log(`  ✅ План найден: ${rationData.name || 'Без названия'}`);
+                  
+                  favorite.item = { 
+                    id: rationDoc.id, 
+                    ...rationData 
+                  };
+                } else {
+                  console.log(`  ❌ План ${favorite.rationPlanId} не найден`);
+                  return null;
+                }
+              } catch (docError) {
+                console.error(`  💥 Ошибка загрузки плана ${favorite.rationPlanId}:`, docError.message);
+                return null;
+              }
+            }
+          } catch (error) {
+            console.error(`  💥 Общая ошибка загрузки данных:`, error.message);
+            return null;
+          }
+          
+          return favorite.item ? favorite : null;
         })
       );
 
-      return enrichedFavorites;
+      // Фильтруем только валидные записи (не null)
+      const validFavorites = enrichedFavorites.filter(fav => fav !== null);
+      console.log("🎯 Валидных избранных с данными:", validFavorites.length);
+
+      return validFavorites;
     } catch (error) {
-      console.error('Error getting user favorites:', error);
+      console.error('💥 Ошибка при получении избранного:', error);
+      console.error('Код ошибки:', error.code);
+      console.error('Сообщение:', error.message);
+      
+      // Обработка ошибок индексов
+      if (error.code === 'failed-precondition') {
+        console.log("⚠️ Требуется создание индекса в Firestore.");
+        return [];
+      }
+      
+      // Ошибка "не авторизован"
+      if (error.message && error.message.includes('not authenticated')) {
+        console.log("🔒 Пользователь не авторизован");
+        return [];
+      }
+      
+      // Возвращаем пустой массив вместо ошибки
+      return [];
+    }
+  }
+
+  // Добавить в избранное
+  async addToFavorites(itemId, favoriteType, userId = null) {
+    try {
+      const currentUserId = userId || this.getCurrentUserId();
+      if (!currentUserId) {
+        throw new Error('Пользователь не аутентифицирован');
+      }
+
+      if (!this.isValidId(itemId)) {
+        throw new Error('Некорректный ID элемента');
+      }
+
+      console.log(`➕ Добавление в избранное: ${favoriteType} ${itemId}`);
+
+      // Проверяем, не добавлено ли уже
+      const existing = await this.isInFavorites(itemId, favoriteType, currentUserId);
+      if (existing) {
+        console.log("⚠️ Уже в избранном, активируем запись");
+        
+        // Находим и активируем существующую запись
+        let favoritesQuery;
+        if (favoriteType === 'recipe') {
+          favoritesQuery = query(
+            collection(db, 'user_favorites'),
+            where('userId', '==', currentUserId),
+            where('recipeId', '==', itemId)
+          );
+        } else {
+          favoritesQuery = query(
+            collection(db, 'user_favorites'),
+            where('userId', '==', currentUserId),
+            where('rationPlanId', '==', itemId)
+          );
+        }
+        
+        const snapshot = await getDocs(favoritesQuery);
+        if (!snapshot.empty) {
+          const docToUpdate = snapshot.docs[0];
+          await updateDoc(docToUpdate.ref, { 
+            active: true,
+            favoriteType: favoriteType 
+          });
+          return { id: docToUpdate.id, ...docToUpdate.data() };
+        }
+      }
+
+      const favoriteData = {
+        userId: currentUserId,
+        favoriteType: favoriteType,
+        createdAt: new Date(),
+        active: true
+      };
+
+      if (favoriteType === 'recipe') {
+        favoriteData.recipeId = itemId;
+      } else {
+        favoriteData.rationPlanId = itemId;
+      }
+
+      console.log(`  📤 Сохранение в Firestore...`);
+      const docRef = await addDoc(collection(db, 'user_favorites'), favoriteData);
+      console.log(`  ✅ Добавлено в избранное с ID: ${docRef.id}`);
+      
+      return { id: docRef.id, ...favoriteData };
+    } catch (error) {
+      console.error('💥 Ошибка добавления в избранное:', error);
       throw error;
     }
   }
 
-  // Проверить, находится ли элемент в избранном
-  async isItemInFavorites(itemId, favoriteType) {
+  // Удалить из избранного
+  async removeFromFavorites(itemId, favoriteType, userId = null) {
     try {
-      const favorite = await this.getFavorite(itemId, favoriteType);
-      return !!favorite;
+      const currentUserId = userId || this.getCurrentUserId();
+      if (!currentUserId) {
+        throw new Error('Пользователь не аутентифицирован');
+      }
+
+      if (!this.isValidId(itemId)) {
+        throw new Error('Некорректный ID элемента');
+      }
+
+      console.log(`➖ Удаление из избранного: ${favoriteType} ${itemId}`);
+
+      let favoritesQuery;
+      if (favoriteType === 'recipe') {
+        favoritesQuery = query(
+          collection(db, 'user_favorites'),
+          where('userId', '==', currentUserId),
+          where('recipeId', '==', itemId)
+        );
+      } else {
+        favoritesQuery = query(
+          collection(db, 'user_favorites'),
+          where('userId', '==', currentUserId),
+          where('rationPlanId', '==', itemId)
+        );
+      }
+
+      const snapshot = await getDocs(favoritesQuery);
+      console.log(`  📊 Найдено документов: ${snapshot.docs.length}`);
+      
+      if (snapshot.empty) {
+        throw new Error('Не найдено в избранном');
+      }
+
+      // Деактивируем записи вместо удаления (мягкое удаление)
+      const updatePromises = snapshot.docs.map(doc => {
+        console.log(`  🗑️ Деактивация ${doc.id}...`);
+        return updateDoc(doc.ref, { active: false });
+      });
+      
+      await Promise.all(updatePromises);
+      console.log(`  ✅ Деактивировано ${snapshot.docs.length} записей`);
+      
+      return true;
     } catch (error) {
+      console.error('💥 Ошибка удаления из избранного:', error);
+      throw error;
+    }
+  }
+
+  // Проверить, находится ли в избранном
+  async isInFavorites(itemId, favoriteType, userId = null) {
+    try {
+      const currentUserId = userId || this.getCurrentUserId();
+      if (!currentUserId || !this.isValidId(itemId)) {
+        return false;
+      }
+
+      let favoritesQuery;
+      if (favoriteType === 'recipe') {
+        favoritesQuery = query(
+          collection(db, 'user_favorites'),
+          where('userId', '==', currentUserId),
+          where('recipeId', '==', itemId)
+        );
+      } else {
+        favoritesQuery = query(
+          collection(db, 'user_favorites'),
+          where('userId', '==', currentUserId),
+          where('rationPlanId', '==', itemId)
+        );
+      }
+
+      const snapshot = await getDocs(favoritesQuery);
+      const result = !snapshot.empty;
+      
+      // Проверяем активность записей
+      if (result) {
+        const hasActive = snapshot.docs.some(doc => {
+          const data = doc.data();
+          return data.active === undefined || data.active === true;
+        });
+        return hasActive;
+      }
+      
+      return false;
+    } catch (error) {
+      console.error('💥 Ошибка проверки избранного:', error);
       return false;
     }
   }
 
   // Получить только избранные рецепты
-  async getFavoriteRecipes() {
+  async getFavoriteRecipes(userId = null) {
     try {
-      const allFavorites = await this.getUserFavorites();
-      return allFavorites.filter(fav => 
-        fav.favoriteType === 'recipe' && fav.item
-      );
+      console.log("🍳 Загрузка только избранных рецептов...");
+      const allFavorites = await this.getUserFavorites(userId);
+      const recipes = allFavorites.filter(fav => fav.favoriteType === 'recipe');
+      console.log(`  📊 Найдено рецептов: ${recipes.length}`);
+      return recipes;
     } catch (error) {
-      console.error('Error getting favorite recipes:', error);
-      throw error;
+      console.error('💥 Ошибка получения избранных рецептов:', error);
+      return [];
     }
   }
 
-  // Получить только избранные рационы
-  async getFavoriteRations() {
+  // Получить только избранные планы
+  async getFavoriteRations(userId = null) {
     try {
-      const allFavorites = await this.getUserFavorites();
-      return allFavorites.filter(fav => 
-        fav.favoriteType === 'ration' && fav.item
-      );
+      console.log("📅 Загрузка только избранных планов...");
+      const allFavorites = await this.getUserFavorites(userId);
+      const rations = allFavorites.filter(fav => fav.favoriteType === 'ration');
+      console.log(`  📊 Найдено планов: ${rations.length}`);
+      return rations;
     } catch (error) {
-      console.error('Error getting favorite rations:', error);
+      console.error('💥 Ошибка получения избранных планов:', error);
+      return [];
+    }
+  }
+
+  // Обновить активность записи
+  async setFavoriteActive(itemId, favoriteType, active = true, userId = null) {
+    try {
+      const currentUserId = userId || this.getCurrentUserId();
+      if (!currentUserId) {
+        throw new Error('Пользователь не аутентифицирован');
+      }
+
+      if (!this.isValidId(itemId)) {
+        throw new Error('Некорректный ID элемента');
+      }
+
+      console.log(`${active ? '✅ Активация' : '❌ Деактивация'} избранного: ${favoriteType} ${itemId}`);
+
+      // Находим документ
+      let favoritesQuery;
+      if (favoriteType === 'recipe') {
+        favoritesQuery = query(
+          collection(db, 'user_favorites'),
+          where('userId', '==', currentUserId),
+          where('recipeId', '==', itemId)
+        );
+      } else {
+        favoritesQuery = query(
+          collection(db, 'user_favorites'),
+          where('userId', '==', currentUserId),
+          where('rationPlanId', '==', itemId)
+        );
+      }
+
+      const snapshot = await getDocs(favoritesQuery);
+      
+      if (snapshot.empty) {
+        throw new Error('Не найдено в избранном');
+      }
+
+      // Обновляем поле active
+      const docToUpdate = snapshot.docs[0];
+      console.log(`  📝 Обновление документа ${docToUpdate.id}...`);
+      await updateDoc(docToUpdate.ref, { 
+        active: active,
+        favoriteType: favoriteType // Обновляем тип для совместимости
+      });
+      
+      console.log(`  ✅ Активность записи ${docToUpdate.id} обновлена на ${active}`);
+      
+      return true;
+    } catch (error) {
+      console.error('💥 Ошибка обновления избранного:', error);
       throw error;
     }
   }
 }
 
 export const favoriteService = new FavoriteService();
-export default favoriteService;

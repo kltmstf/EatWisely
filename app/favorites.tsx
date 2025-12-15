@@ -1,5 +1,5 @@
 import { useRouter, useFocusEffect } from "expo-router";
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useCallback } from "react";
 import {
   Image,
   ScrollView,
@@ -13,8 +13,8 @@ import {
   Alert,
 } from "react-native";
 import { Ionicons, Feather } from "@expo/vector-icons";
+import { auth } from "@/app/firebase/config";
 
-// Предполагаемые импорты (должны быть доступны в среде Expo)
 import { favoriteService } from "@/app/services/favoriteService";
 import { useFavorites } from "@/app/hooks/useFavorites";
 
@@ -25,7 +25,7 @@ type RecipeDetail = {
   category: string;
   calories: number;
   cookingTime: string;
-  image: any; // Используем 'any' для совместимости с require/uri
+  image: any;
   rating: number;
   difficulty: string;
 };
@@ -47,7 +47,7 @@ type FavoriteItem = {
   favoriteType: "recipe" | "ration";
   recipeId?: string;
   rationPlanId?: string;
-  createdAt: string;
+  createdAt: any;
   item?: {
     id: string;
     name?: string;
@@ -64,6 +64,12 @@ type FavoriteItem = {
   };
 };
 
+// ИСПРАВЛЕНИЕ: Создаем тип для упрощенного объекта с id
+type ItemWithId = {
+  id: string;
+  [key: string]: any;
+};
+
 export default function SavedScreen() {
   const router = useRouter();
   const [searchQuery, setSearchQuery] = useState("");
@@ -74,8 +80,9 @@ export default function SavedScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Предполагаем, что useFavorites корректно работает с favoriteService
-  const { toggleFavorite } = useFavorites();
+  // ИСПРАВЛЕНИЕ: Правильно получаем toggleFavorite из хука
+  const favoritesContext = useFavorites();
+  const toggleFavorite = favoritesContext?.toggleFavorite;
 
   const categories = [
     "Все",
@@ -88,93 +95,124 @@ export default function SavedScreen() {
     "Десерты",
   ];
 
-  // Функция для загрузки данных из БД, обернутая в useCallback
+  // Функция нормализации данных из Firestore
+  const normalizeFirestoreData = (item: any, type: "recipe" | "ration"): RecipeDetail | PlanDetail => {
+    if (type === "recipe") {
+      const recipe: RecipeDetail = {
+        id: item.id || "",
+        name: item.name || item.title || "Рецепт без названия",
+        category: item.category || item.categoryId || "Без категории",
+        calories: item.calories || item.calorie || 0,
+        cookingTime: item.cookingTime || item.time || "0 мин",
+        image: item.image || item.imageUrl
+          ? { uri: item.image || item.imageUrl }
+          : require("@/assets/images/dinner-rice.png"),
+        rating: item.rating || item.averageRating || 0,
+        difficulty: item.difficulty || "Легко",
+      };
+      return recipe;
+    } else {
+      const plan: PlanDetail = {
+        id: item.id || "",
+        name: item.name || item.title || "План без названия",
+        description: item.description || item.desc || "Описание отсутствует",
+        totalCalories: item.totalCalories || item.dailyCalories || 0,
+        duration: item.duration || item.days || "0 дней",
+        mealsCount: item.mealsCount || item.mealsPerDay || 0,
+        image: item.image || item.imageUrl
+          ? { uri: item.image || item.imageUrl }
+          : require("@/assets/images/dinner-rice.png"),
+        savedDate: item.createdAt && item.createdAt.seconds
+          ? new Date(item.createdAt.seconds * 1000).toLocaleDateString("ru-RU")
+          : new Date().toLocaleDateString("ru-RU"),
+      };
+      return plan;
+    }
+  };
+
+  // Функция для загрузки данных из БД
   const loadFavorites = useCallback(async () => {
+    console.log("🔄 Начало загрузки избранного...");
+    console.log("Текущий пользователь:", auth.currentUser?.uid);
+    
     setLoading(true);
     setError(null);
     try {
-      // Теперь service.getUserFavorites() возвращает ТОЛЬКО избранное текущего пользователя
-      const allFavorites = (await favoriteService.getUserFavorites()) as
-        | FavoriteItem[]
-        | null;
+      // Загружаем избранное через сервис
+      const allFavorites = await favoriteService.getUserFavorites();
+      console.log("📥 Получено избранных:", allFavorites?.length || 0);
 
-      if (!allFavorites) {
-        // Если пользователь не авторизован или произошла ошибка в сервисе, allFavorites может быть null
+      if (!allFavorites || allFavorites.length === 0) {
+        console.log("📭 Избранное пустое");
         setRecipesData([]);
         setPlansData([]);
         return;
       }
 
-      // Используем Map для устранения дубликатов по настоящему item ID и гарантируем наличие item
+      // Используем Map для устранения дубликатов
       const uniqueRecipes = new Map<string, RecipeDetail>();
       const uniquePlans = new Map<string, PlanDetail>();
 
-      allFavorites.forEach((fav) => {
-        // Пропускаем элементы, для которых не удалось получить данные (item === undefined)
-        if (!fav.item) return;
+      // ИСПРАВЛЕНИЕ: Используем правильный тип для forEach
+      (allFavorites as FavoriteItem[]).forEach((fav: FavoriteItem) => {
+        // Пропускаем элементы без данных
+        if (!fav.item) {
+          console.log(`⚠️ Пропущен элемент без данных: ${fav.id}`);
+          return;
+        }
 
-        let itemId = fav.item.id; // Используем item.id, который был обогащен в сервисе
+        const itemId = fav.item.id;
+        console.log(`📋 Обработка ${fav.favoriteType}: ${itemId}`);
 
         if (fav.favoriteType === "recipe") {
           if (itemId && !uniqueRecipes.has(itemId)) {
-            uniqueRecipes.set(itemId, {
-              id: itemId,
-              // Используем оператор объединения нулей (??) для безопасных значений
-              name: fav.item.name ?? "Рецепт без имени",
-              category: fav.item.category ?? "Нет категории",
-              calories: fav.item.calories ?? 0,
-              cookingTime: fav.item.cookingTime ?? "0 мин",
-              // Используем image как uri, если это строка, иначе - заглушка
-              image: fav.item.image
-                ? { uri: fav.item.image }
-                : require("@/assets/images/dinner-rice.png"),
-              rating: fav.item.rating ?? 0,
-              difficulty: fav.item.difficulty ?? "Легко",
-            });
+            const normalizedItem = normalizeFirestoreData(fav.item, "recipe");
+            // Проверяем, что это RecipeDetail (у него есть category)
+            if ('category' in normalizedItem) {
+              uniqueRecipes.set(itemId, normalizedItem as RecipeDetail);
+            }
           }
         } else if (fav.favoriteType === "ration") {
           if (itemId && !uniquePlans.has(itemId)) {
-            uniquePlans.set(itemId, {
-              id: itemId,
-              name: fav.item.name ?? "План без названия",
-              description: fav.item.description ?? "Описание отсутствует",
-              totalCalories: fav.item.totalCalories ?? 0,
-              duration: fav.item.duration ?? "0 дней",
-              mealsCount: fav.item.mealsCount ?? 0,
-              image: fav.item.image
-                ? { uri: fav.item.image }
-                : require("@/assets/images/dinner-rice.png"),
-              // Предполагаем, что fav.createdAt - строка даты/времени
-              savedDate: new Date(fav.createdAt).toLocaleDateString("ru-RU"),
-            });
+            const normalizedItem = normalizeFirestoreData(fav.item, "ration");
+            // Проверяем, что это PlanDetail (у него есть description)
+            if ('description' in normalizedItem) {
+              uniquePlans.set(itemId, normalizedItem as PlanDetail);
+            }
           }
         }
       });
 
+      console.log(`🍳 Рецептов: ${uniqueRecipes.size}, 📅 Планов: ${uniquePlans.size}`);
+      
       setRecipesData(Array.from(uniqueRecipes.values()));
       setPlansData(Array.from(uniquePlans.values()));
+      
     } catch (e: any) {
-      // Улучшенная обработка ошибок для случаев, когда сервис бросает ошибку
-      const errorMessage = e?.message || "Неизвестная ошибка загрузки данных.";
-      console.error("Ошибка при загрузке избранного:", e);
+      console.error("❌ Ошибка при загрузке избранного:", e);
+      const errorMessage = e?.message || "Неизвестная ошибка";
+      
       setError(
-        errorMessage.includes("authenticated")
+        errorMessage.includes("authenticated") || errorMessage.includes("auth")
           ? "Для просмотра избранного необходимо авторизоваться."
           : "Не удалось загрузить сохраненные данные"
       );
+      
       setRecipesData([]);
       setPlansData([]);
     } finally {
       setLoading(false);
     }
-  }, []); // Пустой массив зависимостей, так как loadFavorites не использует внешних state/props
+  }, []);
 
   // Используем useFocusEffect для перезагрузки данных при фокусе экрана
   useFocusEffect(
     useCallback(() => {
+      console.log("🎯 Экран в фокусе, загружаем избранное...");
       loadFavorites();
-      // Опционально: можно вернуть функцию очистки, если бы были подписки на события
-      return () => {};
+      return () => {
+        console.log("👋 Экран потерял фокус");
+      };
     }, [loadFavorites])
   );
 
@@ -188,14 +226,21 @@ export default function SavedScreen() {
     return matchesSearch && matchesCategory;
   });
 
-  // Обработчик удаления из избранного
+  // ИСПРАВЛЕНИЕ: Обработчик удаления из избранного с проверкой toggleFavorite
   const handleToggleFavorite = async (
     itemId: string,
     favoriteType: "recipe" | "ration"
   ) => {
+    console.log(`🗑️ Удаление ${favoriteType} с ID: ${itemId}`);
+    
     try {
-      // toggleFavorite в useFavorites должен вызывать service.removeFromFavorites
-      //await toggleFavorite(itemId, favoriteType);
+      // Проверяем, что toggleFavorite существует
+      if (!toggleFavorite) {
+        throw new Error("Функция toggleFavorite недоступна");
+      }
+
+      // Вызываем toggleFavorite
+      await toggleFavorite(itemId, favoriteType);
 
       // Обновляем локальное состояние для мгновенного отклика UI
       if (favoriteType === "recipe") {
@@ -203,15 +248,21 @@ export default function SavedScreen() {
       } else {
         setPlansData((prev) => prev.filter((plan) => plan.id !== itemId));
       }
-    } catch (error) {
-      console.error("Ошибка при удалении из избранного:", error);
-      Alert.alert("Ошибка", "Не удалось удалить из избранного");
+      
+      Alert.alert("Успешно", "Удалено из избранного", [{ text: "OK" }]);
+    } catch (error: any) {
+      console.error("❌ Ошибка при удалении из избранного:", error);
+      Alert.alert(
+        "Ошибка", 
+        error.message || "Не удалось удалить из избранного",
+        [{ text: "OK" }]
+      );
     }
   };
 
   const navigateToRecipe = (recipe: RecipeDetail) => {
     router.push({
-      pathname: "/meal",
+      pathname: "/meal" as any,
       params: {
         mealId: recipe.id,
         mealName: recipe.name,
@@ -222,11 +273,27 @@ export default function SavedScreen() {
 
   const navigateToPlan = (plan: PlanDetail) => {
     console.log(`Переход к плану: ${plan.name}`);
-    // Здесь должна быть реальная навигация, например:
+    // ИСПРАВЛЕНИЕ: Закомментировал навигацию, так как страницы пока нет
     // router.push({
-    // pathname: "/plan-details",
-    // params: { planId: plan.id }
+    //   pathname: "/plan-details",
+    //   params: { planId: plan.id }
     // });
+  };
+
+  // ИСПРАВЛЕНИЕ: Функция для навигации на страницу авторизации
+  const navigateToAuth = () => {
+    // Используем любой существующий маршрут или создаем fallback
+    try {
+      // Пробуем перейти на /login, если он существует
+      router.push("/login" as any);
+    } catch {
+      // Если /login не существует, пробуем другие варианты
+      try {
+        router.push("/" as any); // На главную
+      } catch {
+        console.log("Не удалось выполнить навигацию");
+      }
+    }
   };
 
   const clearFilters = () => {
@@ -247,6 +314,24 @@ export default function SavedScreen() {
     }
   };
 
+  // Добавим кнопку обновления для отладки
+  const DebugHeaderButton = () => (
+    <TouchableOpacity 
+      style={styles.debugButton}
+      onPress={() => {
+        console.log("=== ДЕБАГ ИНФОРМАЦИЯ ===");
+        console.log("Текущий пользователь:", auth.currentUser?.uid);
+        console.log("Загружено рецептов:", recipesData.length);
+        console.log("Загружено планов:", plansData.length);
+        console.log("Все рецепты:", recipesData.map(r => ({id: r.id, name: r.name})));
+        console.log("Все планы:", plansData.map(p => ({id: p.id, name: p.name})));
+        loadFavorites();
+      }}
+    >
+      <Ionicons name="refresh-circle" size={28} color="#6A9AA9" />
+    </TouchableOpacity>
+  );
+
   if (loading) {
     return (
       <View style={styles.container}>
@@ -259,17 +344,17 @@ export default function SavedScreen() {
             <Ionicons name="arrow-back" size={24} color="#000" />
           </TouchableOpacity>
           <Text style={styles.headerTitle}>Сохраненное</Text>
-          <View style={{ width: 40 }} />
+          <DebugHeaderButton />
         </View>
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color="#6A9AA9" />
-          <Text style={styles.loadingText}>Загрузка...</Text>
+          <Text style={styles.loadingText}>Загрузка избранного...</Text>
         </View>
       </View>
     );
   }
 
-  // Обработка ошибок и пустого состояния
+  // Обработка ошибок
   if (error && recipesData.length === 0 && plansData.length === 0) {
     return (
       <View style={styles.container}>
@@ -282,7 +367,7 @@ export default function SavedScreen() {
             <Ionicons name="arrow-back" size={24} color="#000" />
           </TouchableOpacity>
           <Text style={styles.headerTitle}>Сохраненное</Text>
-          <View style={{ width: 40 }} />
+          <DebugHeaderButton />
         </View>
         <View style={styles.loadingContainer}>
           <Ionicons name="warning-outline" size={48} color="#F44336" />
@@ -293,6 +378,12 @@ export default function SavedScreen() {
             onPress={loadFavorites}
           >
             <Text style={styles.clearFiltersText}>Повторить попытку</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.clearFiltersButton, { marginTop: 10, backgroundColor: "#6A9AA9" }]}
+            onPress={navigateToAuth} // ИСПРАВЛЕНИЕ: Используем функцию навигации
+          >
+            <Text style={styles.clearFiltersText}>Войти в аккаунт</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -312,7 +403,7 @@ export default function SavedScreen() {
           <Ionicons name="arrow-back" size={24} color="#000" />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Сохраненное</Text>
-        <View style={{ width: 40 }} />
+        <DebugHeaderButton />
       </View>
 
       {/* Вкладки */}
@@ -379,6 +470,11 @@ export default function SavedScreen() {
                   value={searchQuery}
                   onChangeText={setSearchQuery}
                 />
+                {searchQuery.length > 0 && (
+                  <TouchableOpacity onPress={() => setSearchQuery("")}>
+                    <Ionicons name="close-circle" size={16} color="#666" />
+                  </TouchableOpacity>
+                )}
               </View>
             </View>
 
@@ -475,11 +571,10 @@ export default function SavedScreen() {
                               </Text>
                             </View>
                           </View>
-                          {/* Кнопка удаления из избранного (заполненная закладка) */}
+                          {/* Кнопка удаления из избранного */}
                           <TouchableOpacity
                             style={styles.bookmarkButton}
                             onPress={(e) => {
-                              // Предотвращаем срабатывание navigateToRecipe
                               e.stopPropagation();
                               handleToggleFavorite(recipe.id, "recipe");
                             }}
@@ -605,11 +700,10 @@ export default function SavedScreen() {
                         <TouchableOpacity
                           style={styles.usePlanButton}
                           onPress={(e) => {
-                            e.stopPropagation(); // Предотвращаем срабатывание navigateToPlan
+                            e.stopPropagation();
                             handleToggleFavorite(plan.id, "ration");
                           }}
                         >
-                          {/* ИСПРАВЛЕНО: используем заполненную иконку, показывающую, что элемент сохранен и будет удален */}
                           <Ionicons
                             name="bookmark"
                             size={16}
@@ -631,7 +725,7 @@ export default function SavedScreen() {
   );
 }
 
-// Добавляем недостающие стили
+// Стили остаются без изменений
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -651,11 +745,13 @@ const styles = StyleSheet.create({
   backButton: {
     padding: 8,
   },
+  debugButton: {
+    padding: 8,
+  },
   headerTitle: {
     fontSize: 24,
     color: "#1a1a1a",
-    // В реальном приложении нужно убедиться, что этот шрифт загружен
-    fontFamily: "System", // Заменено на System для безопасности, если шрифт не импортирован
+    fontFamily: "System",
     textAlign: "center",
   },
   tabsContainer: {
@@ -679,7 +775,7 @@ const styles = StyleSheet.create({
   tabText: {
     fontSize: 14,
     color: "#666",
-    fontFamily: "System", // Заменено
+    fontFamily: "System",
     fontWeight: "500",
   },
   tabTextActive: {
@@ -719,7 +815,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: "#000",
     paddingVertical: 4,
-    fontFamily: "System", // Заменено
+    fontFamily: "System",
   },
   categoriesContainer: {
     marginBottom: 12,
@@ -740,7 +836,7 @@ const styles = StyleSheet.create({
   categoryText: {
     fontSize: 14,
     color: "#000000",
-    fontFamily: "System", // Заменено
+    fontFamily: "System",
     fontWeight: "600",
   },
   categoryTextActive: {
@@ -803,7 +899,7 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: "bold",
     color: "#000000",
-    fontFamily: "System", // Заменено
+    fontFamily: "System",
     marginLeft: 2,
   },
   difficultyBadge: {
@@ -815,7 +911,7 @@ const styles = StyleSheet.create({
     fontSize: 9,
     fontWeight: "bold",
     color: "#FFFFFF",
-    fontFamily: "System", // Заменено
+    fontFamily: "System",
   },
   bookmarkButton: {
     position: "absolute",
@@ -847,14 +943,14 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: "#212529",
     marginBottom: 4,
-    fontFamily: "System", // Заменено
+    fontFamily: "System",
     lineHeight: 18,
     minHeight: 36,
   },
   recipeCategory: {
     fontSize: 11,
     color: "#6A9AA9",
-    fontFamily: "System", // Заменено
+    fontFamily: "System",
     fontStyle: "italic",
     marginBottom: 6,
   },
@@ -867,7 +963,7 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: "#000000",
     fontWeight: "normal",
-    fontFamily: "System", // Заменено
+    fontFamily: "System",
     marginLeft: 2,
     marginRight: 8,
   },
@@ -878,7 +974,7 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: "#6C757D",
     marginLeft: 2,
-    fontFamily: "System", // Заменено
+    fontFamily: "System",
   },
   viewButton: {
     backgroundColor: "#9BDF11",
@@ -894,7 +990,7 @@ const styles = StyleSheet.create({
     color: "#000000",
     fontSize: 12,
     fontWeight: "normal",
-    fontFamily: "System", // Заменено
+    fontFamily: "System",
   },
   plansSection: {
     backgroundColor: "#FFFFFF",
@@ -929,13 +1025,13 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "600",
     color: "#212529",
-    fontFamily: "System", // Заменено
+    fontFamily: "System",
     marginBottom: 4,
   },
   planDescription: {
     fontSize: 12,
     color: "#6A9AA9",
-    fontFamily: "System", // Заменено
+    fontFamily: "System",
     marginBottom: 8,
   },
   planDetails: {
@@ -951,7 +1047,7 @@ const styles = StyleSheet.create({
   planDetailText: {
     fontSize: 10,
     color: "#000000",
-    fontFamily: "System", // Заменено
+    fontFamily: "System",
   },
   planFooter: {
     flexDirection: "row",
@@ -961,7 +1057,7 @@ const styles = StyleSheet.create({
   planDate: {
     fontSize: 10,
     color: "#6C757D",
-    fontFamily: "System", // Заменено
+    fontFamily: "System",
   },
   usePlanButton: {
     backgroundColor: "#9BDF11",
@@ -975,7 +1071,7 @@ const styles = StyleSheet.create({
     color: "#000000",
     fontSize: 12,
     fontWeight: "600",
-    fontFamily: "System", // Заменено
+    fontFamily: "System",
   },
   emptyState: {
     alignItems: "center",
@@ -987,7 +1083,7 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: "600",
     color: "#000000",
-    fontFamily: "System", // Заменено
+    fontFamily: "System",
     marginTop: 16,
     marginBottom: 8,
     textAlign: "center",
@@ -995,7 +1091,7 @@ const styles = StyleSheet.create({
   emptyText: {
     fontSize: 14,
     color: "#6C757D",
-    fontFamily: "System", // Заменено
+    fontFamily: "System",
     textAlign: "center",
     lineHeight: 20,
     marginBottom: 20,
@@ -1010,7 +1106,7 @@ const styles = StyleSheet.create({
     color: "#000000",
     fontSize: 16,
     fontWeight: "600",
-    fontFamily: "System", // Заменено
+    fontFamily: "System",
   },
   loadingContainer: {
     flex: 1,
@@ -1021,6 +1117,6 @@ const styles = StyleSheet.create({
     marginTop: 10,
     fontSize: 16,
     color: "#6C757D",
-    fontFamily: "System", // Заменено
+    fontFamily: "System",
   },
 });

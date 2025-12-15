@@ -15,6 +15,8 @@ import {
   TouchableOpacity,
   View,
   ActivityIndicator,
+  Alert,
+  Dimensions,
 } from "react-native";
 import { getAuth, onAuthStateChanged, Auth } from "firebase/auth";
 import {
@@ -26,10 +28,15 @@ import {
   getDoc,
   Firestore,
   setLogLevel,
+  collection,
+  query,
+  where,
+  getDocs,
 } from "firebase/firestore";
 import { getApp, getApps, initializeApp } from "firebase/app";
+import { Ionicons, FontAwesome, MaterialIcons } from "@expo/vector-icons";
 
-// 1. ИМПОРТ РЕАЛЬНОГО СЕРВИСА
+// ИМПОРТ СЕРВИСОВ
 import { recipeService } from "../services/recipeService";
 
 setLogLevel("debug");
@@ -37,9 +44,9 @@ setLogLevel("debug");
 // --- ТИПИЗАЦИЯ И КОНСТАНТЫ ---
 
 interface Meal {
-  id: string; // ID рецепта из Firebase
-  category: string; // mealType
-  name: string; // title
+  id: string;
+  category: string;
+  name: string;
   calories: number;
   proteins: number;
   fats: number;
@@ -47,10 +54,12 @@ interface Meal {
   weight: string;
   marked: boolean;
   bookmarked: boolean;
-  image: any; // URL или локальный ресурс
+  image: any;
+  cookingTime?: string;
+  difficultyLevel?: string;
+  rating?: number;
 }
 
-// Минимальная структура рецепта, возвращаемая из сервиса
 interface RecipeData {
   id: string;
   title: string;
@@ -61,11 +70,14 @@ interface RecipeData {
   carbohydrates: number;
   weight: string;
   imageUrl?: string;
+  cookingTime?: number;
+  difficultyLevel?: string;
+  rating?: number;
 }
 
 interface UserDataState {
   userName: string;
-  dailyCalories: number; // Хранит целое число (1394), округление до 100 происходит только для отображения
+  dailyCalories: number;
   consumedCalories: number;
 }
 
@@ -75,7 +87,6 @@ interface KBRUState {
   carbohydrates: number;
 }
 
-// Целевое распределение калорий по приемам пищи
 const MEAL_DISTRIBUTION = {
   Завтрак: 0.2,
   Обед: 0.35,
@@ -83,24 +94,45 @@ const MEAL_DISTRIBUTION = {
   Перекусы: 0.1,
 };
 
-// Целевое распределение КБЖУ (например: 30% Белки, 30% Жиры, 40% Углеводы)
 const TARGET_KBRU_RATIOS = {
   protein: 0.3,
   fat: 0.3,
   carb: 0.4,
 };
 
-// Заглушка для изображений, если в рецепте нет imageUrl
 const DEFAULT_MEAL_IMAGE = require("@/assets/images/logo.png");
+
+const { width } = Dimensions.get("window");
+const CARD_WIDTH = (width - 56) / 2; // (Ширина экрана - 20*2 padding - 16 gap)/2
+
+// Функция для склонения минут
+const formatMinutes = (minutes: number): string => {
+  const absMinutes = Math.abs(minutes);
+  const lastDigit = absMinutes % 10;
+  const lastTwoDigits = absMinutes % 100;
+
+  if (lastTwoDigits >= 11 && lastTwoDigits <= 14) return `${absMinutes} минут`;
+  if (lastDigit === 1) return `${absMinutes} минута`;
+  if (lastDigit >= 2 && lastDigit <= 4) return `${absMinutes} минуты`;
+  return `${absMinutes} минут`;
+};
+
+// Функция для цвета сложности
+const getDifficultyColor = (difficulty: string | undefined) => {
+  switch (difficulty?.trim()) {
+    case "Легко":
+      return "#4CAF50";
+    case "Средне":
+      return "#FF9800";
+    case "Сложно":
+      return "#F44336";
+    default:
+      return "#6A9AA9";
+  }
+};
 
 // --- АЛГОРИТМ ГЕНЕРАЦИИ РАЦИОНА ---
 
-/**
- * Генерирует суточный рацион, используя реальные рецепты из базы.
- * @param dailyCalories - Целевые калории пользователя (целое число, не округленное до 100).
- * @param recipeDatabase - Массив RecipeData из Firebase.
- * @returns Массив подобранных блюд.
- */
 const generateDailyPlan = (
   dailyCalories: number,
   recipeDatabase: RecipeData[]
@@ -109,18 +141,15 @@ const generateDailyPlan = (
   const categories = Object.keys(MEAL_DISTRIBUTION);
 
   categories.forEach((category) => {
-    // Используем Math.round(dailyCalories) для расчета целевых калорий на прием пищи
     const targetCalories =
       Math.round(dailyCalories) *
       (MEAL_DISTRIBUTION[category as keyof typeof MEAL_DISTRIBUTION] || 0);
 
-    // Фильтруем рецепты по типу приема пищи
     const mealsInCategory = recipeDatabase.filter(
       (m) => m.mealType === category
     );
 
     if (mealsInCategory.length === 0) {
-      // Добавляем заглушку, если рецептов нет
       plannedMeals.push({
         id: "default-" + category,
         category: category,
@@ -137,11 +166,9 @@ const generateDailyPlan = (
       return;
     }
 
-    // Алгоритм выбора: ищем блюдо, калорийность которого ближе всего к целевой
     const bestMatch = mealsInCategory.reduce((best, current) => {
       const currentDiff = Math.abs(current.calories - targetCalories);
       const bestDiff = Math.abs(best.calories - targetCalories);
-      // Если разница одинакова, выбираем случайное, чтобы избежать повторяемости
       if (currentDiff === bestDiff) {
         return Math.random() > 0.5 ? current : best;
       }
@@ -149,23 +176,28 @@ const generateDailyPlan = (
     }, mealsInCategory[0]);
 
     if (bestMatch) {
-      plannedMeals.push({
-        id: bestMatch.id,
-        category: bestMatch.mealType, // Используем mealType как category
-        name: bestMatch.title, // Используем title как name
-        calories: Math.round(bestMatch.calories), // Округляем калории рецепта
-        proteins: Math.round(bestMatch.proteins), // Округляем БЖУ рецепта
-        fats: Math.round(bestMatch.fats),
-        carbohydrates: Math.round(bestMatch.carbohydrates),
-        weight: bestMatch.weight || "300 гр.",
-        marked: false,
-        bookmarked: false,
-        // Если есть imageUrl, используем его, иначе - заглушку
-        image: bestMatch.imageUrl
-          ? { uri: bestMatch.imageUrl }
-          : DEFAULT_MEAL_IMAGE,
-      });
-    }
+  // ИСПРАВЛЕНИЕ: Используем difficultyLevel из RecipeData
+  const difficultyValue = bestMatch.difficultyLevel || "Легко";
+  
+  plannedMeals.push({
+    id: bestMatch.id,
+    category: bestMatch.mealType,
+    name: bestMatch.title,
+    calories: Math.round(bestMatch.calories),
+    proteins: Math.round(bestMatch.proteins),
+    fats: Math.round(bestMatch.fats),
+    carbohydrates: Math.round(bestMatch.carbohydrates),
+    weight: bestMatch.weight || "300 гр.",
+    marked: false,
+    bookmarked: false,
+    cookingTime: bestMatch.cookingTime ? `${bestMatch.cookingTime} минут` : "20 минут",
+    difficultyLevel: difficultyValue, 
+    rating: bestMatch.rating || 0,
+    image: bestMatch.imageUrl
+      ? { uri: bestMatch.imageUrl }
+      : DEFAULT_MEAL_IMAGE,
+  });
+}
   });
 
   return plannedMeals;
@@ -176,7 +208,6 @@ const generateDailyPlan = (
 export default function Home() {
   const router = useRouter();
 
-  // --- СОСТОЯНИЕ FIREBASE ---
   const [db, setDb] = useState<Firestore | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
@@ -184,18 +215,13 @@ export default function Home() {
     typeof __app_id !== "undefined" ? __app_id : "default-app-id"
   );
 
-  // --- НОВЫЕ СОСТОЯНИЯ ---
-  const [recipeDatabase, setRecipeDatabase] = useState<RecipeData[]>([]); // База рецептов из Firebase
-
-  // --- СОСТОЯНИЕ ПРИЛОЖЕНИЯ ---
+  const [recipeDatabase, setRecipeDatabase] = useState<RecipeData[]>([]);
   const [meals, setMeals] = useState<Meal[]>([]);
 
-  
   const mealsRef = useRef(meals);
   useEffect(() => {
     mealsRef.current = meals;
   }, [meals]);
-  // 🛑 КОНЕЦ ИСПРАВЛЕНИЯ Ref
 
   const [userData, setUserData] = useState<UserDataState>({
     userName: "Пользователь",
@@ -207,17 +233,15 @@ export default function Home() {
     fats: 0,
     carbohydrates: 0,
   });
-  // Добавлено состояние для целевого КБЖУ (для отображения в прогресс-баре)
   const [targetKBRU, setTargetKBRU] = useState<KBRUState>({
     proteins: 0,
     fats: 0,
     carbohydrates: 0,
   });
 
-  // Скорректировано условие загрузки: достаточно, что аутентификация и база инициализированы.
   const loading = !isAuthReady || !db || recipeDatabase.length === 0;
 
-  // 1. Инициализация Firebase и Отслеживание Аутентификации (ДОБАВЛЕНО ЛОГИРОВАНИЕ)
+  // 1. Инициализация Firebase
   useEffect(() => {
     try {
       const firebaseConfig =
@@ -234,7 +258,6 @@ export default function Home() {
       const unsubscribeAuth = onAuthStateChanged(authInstance, async (user) => {
         if (user) {
           setUserId(user.uid);
-          // 🚀 ЛОГ 1: УСПЕШНАЯ АУТЕНТИФИКАЦИЯ
           console.log("✅ AUTH: User authenticated. UID:", user.uid);
         } else {
           setUserId(null);
@@ -256,9 +279,8 @@ export default function Home() {
     }
   }, []);
 
-  // 2. ЗАГРУЗКА РЕЦЕПТОВ ДЛЯ ПЛАНИРОВЩИКА (ДОБАВЛЕНО ЛОГИРОВАНИЕ)
+  // 2. Загрузка рецептов
   useEffect(() => {
-    // Загрузка происходит, как только userId становится доступен (после isAuthReady)
     if (!userId) {
       setRecipeDatabase([]);
       return;
@@ -268,7 +290,6 @@ export default function Home() {
       try {
         const recipes = await recipeService.getRecipesForPlanner();
         setRecipeDatabase(recipes as RecipeData[]);
-        // 🚀 ЛОГ 2: КОЛИЧЕСТВО ЗАГРУЖЕННЫХ РЕЦЕПТОВ
         console.log(`✅ RECIPES: Loaded ${recipes.length} recipes.`);
       } catch (error) {
         console.error(
@@ -282,7 +303,7 @@ export default function Home() {
     loadRecipes();
   }, [userId]);
 
-  // 3. Расчет плана и КБЖУ на основе ЦЕЛЕВЫХ КАЛОРИЙ и БАЗЫ РЕЦЕПТОВ (useMemo)
+  // 3. Расчет плана
   const generatedPlan = useMemo(() => {
     if (recipeDatabase.length === 0) {
       return {
@@ -305,9 +326,8 @@ export default function Home() {
     return { plan, totalKBRU };
   }, [userData.dailyCalories, recipeDatabase]);
 
-  // 4. Установка КБЖУ и Плана в локальный стейт
+  // 4. Установка КБЖУ и плана
   useEffect(() => {
-    // 1. Расчет Целевого КБЖУ в граммах (для отображения)
     const dailyCaloriesRoundedToNearestHundred =
       Math.round(userData.dailyCalories / 100) * 100;
 
@@ -327,9 +347,7 @@ export default function Home() {
       carbohydrates: targetCarbs,
     });
 
-    // 2. Установка фактического КБЖУ из сгенерированного плана
     setRecommendedKBRU(generatedPlan.totalKBRU);
-    // 3. Установка сгенерированного плана
     setMeals(generatedPlan.plan);
   }, [userData.dailyCalories, generatedPlan]);
 
@@ -398,7 +416,7 @@ export default function Home() {
     return () => unsubscribeProfile();
   }, [db, userId]);
 
-  // 6. Прослушивание ежедневного журнала (ОБНОВЛЕНО: теперь берет ID из Firebase)
+  // 6. Прослушивание ежедневного журнала
   useEffect(() => {
     if (!db || !userId || generatedPlan.plan.length === 0) {
       setUserData((prev) => ({ ...prev, consumedCalories: 0 }));
@@ -432,7 +450,6 @@ export default function Home() {
 
           return {
             ...currentMeal,
-            // 🛑 ОБНОВЛЕНИЕ: Берем ID рецепта из Firebase, если он там есть
             id: firebaseState?.id || currentMeal.id,
             marked: marked,
             bookmarked: firebaseState?.bookmarked ?? false,
@@ -455,7 +472,7 @@ export default function Home() {
     return () => unsubscribeLog();
   }, [db, userId, appId, generatedPlan]);
 
-  // 7. НОВЫЙ useEffect: СОХРАНЕНИЕ СГЕНЕРИРОВАННОГО ПЛАНА В FIREBASE (ОДИН РАЗ В ДЕНЬ) (ОБНОВЛЕНО: добавлено ID)
+  // 7. Сохранение сгенерированного плана
   useEffect(() => {
     if (!db || !userId || generatedPlan.plan.length === 0) {
       if (generatedPlan.plan.length === 0 && userId) {
@@ -495,7 +512,6 @@ export default function Home() {
           const initialLogData = {
             consumedCalories: 0,
             meals: generatedPlan.plan.map((m) => ({
-              // 🛑 ОБНОВЛЕНИЕ: ДОБАВЛЯЕМ ID РЕЦЕПТА!
               id: m.id,
               category: m.category,
               marked: m.marked,
@@ -514,7 +530,6 @@ export default function Home() {
           );
         }
       } catch (error) {
-        // Ошибка 403 (Permission Denied) будет поймана здесь!
         console.error(
           "❌ SAVE: FATAL ERROR checking or saving generated plan to Firebase:",
           error
@@ -524,7 +539,7 @@ export default function Home() {
     checkAndSavePlan();
   }, [db, userId, appId, generatedPlan.plan.length]);
 
-  // 8. Обновление логики Firebase для динамического рациона (ОБНОВЛЕНО: useRef и удалена зависимость meals)
+  // 8. Обновление состояния в Firebase
   const updateMealStateInFirebase = useCallback(
     async (index: number, field: "marked" | "bookmarked", value: boolean) => {
       if (!db || !userId) return;
@@ -534,10 +549,8 @@ export default function Home() {
         `artifacts/${appId}/users/${userId}/ration_plan_days/today`
       );
 
-      // 🛑 ИСПОЛЬЗУЕМ Ref: Получаем актуальное состояние meals
       const currentMeals = mealsRef.current;
 
-      // Локальный расчет нового состояния meals
       const updatedMealsArrayForCalc = currentMeals.map((meal, i) => {
         if (i === index) {
           return { ...meal, [field]: value };
@@ -552,7 +565,6 @@ export default function Home() {
       const newConsumedCaloriesRounded = Math.round(newConsumedCalories);
 
       const firebaseUpdateArray = updatedMealsArrayForCalc.map((m) => ({
-        // 🛑 ОБНОВЛЕНИЕ: ДОБАВЛЯЕМ ID РЕЦЕПТА!
         id: m.id,
         category: m.category,
         marked: m.marked,
@@ -569,13 +581,11 @@ export default function Home() {
         });
         console.log("✅ UPDATE: Log successfully updated.");
       } catch (error) {
-        // Ошибка 403 (Permission Denied) или "Document Does Not Exist" будет поймана здесь!
         console.error(
           "❌ UPDATE: Error updating meal state in Firebase:",
           error
         );
       }
-      // 🛑 ИСПРАВЛЕНИЕ: Удалена зависимость meals, используется mealsRef
     },
     [db, userId, appId]
   );
@@ -585,9 +595,71 @@ export default function Home() {
     updateMealStateInFirebase(index, "marked", newValue);
   };
 
-  const toggleBookmark = (index: number) => {
-    const newValue = !meals[index].bookmarked;
-    updateMealStateInFirebase(index, "bookmarked", newValue);
+  // ИСПРАВЛЕННАЯ ФУНКЦИЯ ДЛЯ ИЗБРАННОГО (как на странице Recipes)
+  const toggleBookmark = async (index: number) => {
+    if (!userId) {
+      Alert.alert("Ошибка", "Для добавления в избранное необходимо авторизоваться");
+      return;
+    }
+
+    const meal = meals[index];
+    const newValue = !meal.bookmarked;
+    
+    try {
+      // 1. Обновляем локальное состояние
+      const updatedMeals = [...meals];
+      updatedMeals[index] = { ...updatedMeals[index], bookmarked: newValue };
+      setMeals(updatedMeals);
+
+      // 2. Обновляем в Firebase (как на странице Recipes)
+      if (newValue) {
+        // Добавление закладки - используем подход из Recipes
+        if (!db) throw new Error("База данных не инициализирована");
+        
+        await setDoc(
+          doc(db, "user_favorites", `${userId}_${meal.id}`),
+          {
+            userId: userId,
+            recipeId: meal.id,
+            favoriteType: 'recipe', // Добавляем поле для совместимости
+            createdAt: new Date(),
+            active: true,
+          },
+          { merge: true }
+        );
+        console.log(`✅ Рецепт "${meal.name}" (ID: ${meal.id}) добавлен в избранное`);
+      } else {
+        // Удаление закладки - используем подход из Recipes
+        if (!db) throw new Error("База данных не инициализирована");
+        
+        const favoriteQuery = query(
+          collection(db, "user_favorites"),
+          where("userId", "==", userId),
+          where("recipeId", "==", meal.id)
+        );
+        
+        const favoriteSnapshot = await getDocs(favoriteQuery);
+        if (!favoriteSnapshot.empty) {
+          favoriteSnapshot.forEach(async (doc) => {
+            await updateDoc(doc.ref, { active: false });
+          });
+          console.log(`❌ Рецепт "${meal.name}" (ID: ${meal.id}) удален из избранного`);
+        }
+      }
+
+      // 3. Также обновляем в daily log
+      updateMealStateInFirebase(index, "bookmarked", newValue);
+
+    } catch (error: any) {
+      console.error("Ошибка при обновлении избранного:", error);
+      
+      // Откатываем локальное состояние при ошибке
+      const rollbackMeals = [...meals];
+      rollbackMeals[index] = { ...rollbackMeals[index], bookmarked: !newValue };
+      setMeals(rollbackMeals);
+      
+      Alert.alert("Ошибка", error.message || "Не удалось обновить избранное");
+    }
   };
 
   const navigateToMealPage = (mealIndex: number) => {
@@ -600,6 +672,14 @@ export default function Home() {
         category: meal.category,
         mealIndex: mealIndex.toString(),
         initialBookmarked: meal.bookmarked.toString(),
+        calories: meal.calories.toString(),
+        proteins: meal.proteins.toString(),
+        fats: meal.fats.toString(),
+        carbohydrates: meal.carbohydrates.toString(),
+        weight: meal.weight,
+        cookingTime: meal.cookingTime || "20 минут",
+        difficultyLevel: meal.difficultyLevel || "Легко",
+        rating: meal.rating?.toString() || "0",
       },
     });
   };
@@ -615,12 +695,10 @@ export default function Home() {
     );
   }
 
-  // Цель для прогресс-бара
   const dailyTargetForDisplay = Math.round(userData.dailyCalories / 100) * 100;
   const progressPercentage =
     (userData.consumedCalories / dailyTargetForDisplay) * 100;
 
-  // Расчет оставшихся калорий
   const remainingCalories = userData.dailyCalories - userData.consumedCalories;
 
   return (
@@ -642,7 +720,6 @@ export default function Home() {
               source={require("@/assets/images/people-icon.png")}
               style={styles.profileImage}
             />
-            {/* Отображаем полное имя */}
             <Text style={styles.userName}>
               {userData.userName || "Пользователь"}
             </Text>
@@ -657,23 +734,16 @@ export default function Home() {
           <View style={styles.caloriesSection}>
             <Text style={styles.caloriesTitle}>
               Цель на день:{" "}
-              {
-                // ОКРУГЛЕНИЕ ЦЕЛИ до ближайшей СОТНИ для отображения
-                dailyTargetForDisplay
-              }{" "}
-              ккал
+              {dailyTargetForDisplay} ккал
             </Text>
 
-            {/* Секция с оставшимися калориями */}
             <View style={styles.remainingCaloriesContainer}>
               <Text style={styles.remainingCaloriesLabel}>Осталось:</Text>
               <Text style={styles.remainingCaloriesValue}>
-                {/* Остаток округляется до ближайшей сотни для лучшей читаемости */}
                 {Math.round(remainingCalories / 100) * 100} ккал
               </Text>
             </View>
 
-            {/* Прогресс-бар */}
             <View style={styles.progressBar}>
               <View
                 style={[
@@ -683,9 +753,7 @@ export default function Home() {
               />
             </View>
 
-            {/* Отображение КБЖУ (РАЗДЕЛЕННЫЕ ПЛАН И ЦЕЛЬ) */}
             <View style={styles.kbruContainer}>
-              {/* HEADER ROW */}
               <View style={styles.kbruRow}>
                 <Text
                   style={[styles.kbruHeader, { flex: 1, textAlign: "left" }]}
@@ -697,7 +765,6 @@ export default function Home() {
                 <Text style={styles.kbruHeader}>Углеводы (г)</Text>
               </View>
 
-              {/* PLAN ROW */}
               <View style={styles.kbruRow}>
                 <Text
                   style={[styles.kbruLabel, { flex: 1, textAlign: "left" }]}
@@ -711,23 +778,22 @@ export default function Home() {
                 </Text>
               </View>
 
-              {/* TARGET ROW */}
               <View style={[styles.kbruRow, styles.targetKBRURow]}>
                 <Text
                   style={[
                     styles.kbruLabel,
-                    { flex: 1, textAlign: "left", fontWeight: "bold" },
+                    { flex: 1, textAlign: "left", fontFamily: "Playfair Display Bold" },
                   ]}
                 >
                   Цель (Ваша норма)
                 </Text>
-                <Text style={[styles.kbruValue, { fontWeight: "bold" }]}>
+                <Text style={[styles.kbruValue, { fontFamily: "Playfair Display Bold" }]}>
                   {targetKBRU.proteins}
                 </Text>
-                <Text style={[styles.kbruValue, { fontWeight: "bold" }]}>
+                <Text style={[styles.kbruValue, { fontFamily: "Playfair Display Bold" }]}>
                   {targetKBRU.fats}
                 </Text>
-                <Text style={[styles.kbruValue, { fontWeight: "bold" }]}>
+                <Text style={[styles.kbruValue, { fontFamily: "Playfair Display Bold" }]}>
                   {targetKBRU.carbohydrates}
                 </Text>
               </View>
@@ -736,92 +802,115 @@ export default function Home() {
             <View style={styles.sectionDivider} />
           </View>
 
-          {/* Приемы пищи в виде таблицы 2x2 (ДИНАМИЧЕСКИЙ РАЦИОН) */}
+          {/* Приемы пищи - ОБНОВЛЕННАЯ ВЕРСИЯ (как на странице Recipes) */}
           <View style={styles.mealsSection}>
-            {[0, 2].map((startIndex, rowIndex) => (
-              <View key={rowIndex} style={styles.mealRow}>
-                {meals
-                  .slice(startIndex, startIndex + 2)
-                  .map((meal, indexInRow) => {
-                    const mealIndex = startIndex + indexInRow;
-                    return (
-                      <View key={mealIndex} style={styles.mealColumn}>
-                        <TouchableOpacity
-                          style={styles.mealCategoryHeader}
-                          onPress={() => navigateToMealPage(mealIndex)}
+            <View style={styles.recipesGrid}>
+              {meals.map((meal, mealIndex) => (
+                <View key={mealIndex} style={styles.recipeColumn}>
+                  <TouchableOpacity
+                    style={styles.recipeCard}
+                    onPress={() => navigateToMealPage(mealIndex)}
+                  >
+                    <View style={styles.imageContainer}>
+                      <Image
+                        source={meal.image}
+                        style={styles.recipeImage}
+                        resizeMode="cover"
+                      />
+                      
+                      {/* Бейджи рейтинга и сложности как в Recipes */}
+                      <View style={styles.recipeBadges}>
+                        {meal.rating && meal.rating > 0 ? (
+                          <View style={styles.ratingBadge}>
+                            <FontAwesome name="star" size={10} color="#FFD700" />
+                            <Text style={styles.ratingText}>
+                              {meal.rating.toFixed(1)}
+                            </Text>
+                          </View>
+                        ) : null}
+                        <View
+                          style={[
+                            styles.difficultyBadge,
+                            {
+                              backgroundColor: getDifficultyColor(meal.difficultyLevel),
+                            },
+                          ]}
                         >
-                          <Text style={styles.mealCategoryTitle}>
-                            {meal.category}
+                          <Text style={styles.difficultyText}>
+                            {meal.difficultyLevel || "Легко"}
                           </Text>
-                          <Image
-                            source={require("@/assets/images/arrow-right.png")}
-                            style={styles.arrowIcon}
-                          />
-                        </TouchableOpacity>
-                        <View style={styles.mealCard}>
-                          <View style={styles.imageContainer}>
-                            <Image
-                              source={meal.image}
-                              style={styles.mealImage}
-                              resizeMode="cover"
-                            />
-                            <TouchableOpacity
-                              style={styles.bookmarkButton}
-                              onPress={() => toggleBookmark(mealIndex)}
-                            >
-                              <Image
-                                source={
-                                  meal.bookmarked
-                                    ? require("@/assets/images/bookmark-filled.png")
-                                    : require("@/assets/images/bookmark-outline.png")
-                                }
-                                style={styles.bookmarkIcon}
-                              />
-                            </TouchableOpacity>
-                          </View>
-                          <View style={styles.mealContent}>
-                            <View style={styles.mealInfo}>
-                              <Text
-                                style={styles.mealName}
-                                numberOfLines={2}
-                                ellipsizeMode="tail"
-                              >
-                                {meal.name}
-                              </Text>
-                              <View style={styles.mealDetails}>
-                                <Text style={styles.mealCalories}>
-                                  {meal.calories} ккал
-                                </Text>
-                                <Text style={styles.mealWeight}>
-                                  • {meal.weight}
-                                </Text>
-                              </View>
-                            </View>
-                            <TouchableOpacity
-                              style={[
-                                styles.markButton,
-                                meal.marked && styles.markButtonActive,
-                              ]}
-                              onPress={() => toggleMeal(mealIndex)}
-                            >
-                              {meal.marked ? (
-                                <Image
-                                  source={require("@/assets/images/checkmark-done.png")}
-                                  style={styles.checkmarkIcon}
-                                />
-                              ) : (
-                                <Text style={styles.markButtonText}>
-                                  Отметить
-                                </Text>
-                              )}
-                            </TouchableOpacity>
-                          </View>
                         </View>
                       </View>
-                    );
-                  })}
-              </View>
-            ))}
+                      
+                      {/* Кнопка закладки */}
+                      <TouchableOpacity
+                        style={styles.bookmarkButton}
+                        onPress={() => toggleBookmark(mealIndex)}
+                      >
+                        <Ionicons
+                          name={meal.bookmarked ? "bookmark" : "bookmark-outline"}
+                          size={18}
+                          color="#6A9AA9"
+                        />
+                      </TouchableOpacity>
+                    </View>
+                    
+                    <View style={styles.recipeContent}>
+                      <View style={styles.recipeInfo}>
+                        <Text
+                          style={styles.recipeName}
+                          numberOfLines={2}
+                          ellipsizeMode="tail"
+                        >
+                          {meal.name}
+                        </Text>
+                        
+                        {/* Категория */}
+                        <Text style={styles.recipeCategory}>
+                          {meal.category}
+                        </Text>
+                        
+                        <View style={styles.recipeDetails}>
+                          {/* Калории */}
+                          <Text style={styles.recipeCalories}>
+                            {meal.calories} ккал
+                          </Text>
+                          
+                          <MaterialIcons
+                            name="access-time"
+                            size={12}
+                            color="#6A9AA9"
+                            style={styles.timeIcon}
+                          />
+                          <Text style={styles.recipeTime}>
+                            {formatMinutes(parseInt(meal.cookingTime?.match(/\d+/)?.[0] || "20"))}
+                          </Text>
+                        </View>
+                      </View>
+                      
+                      <TouchableOpacity
+                        style={[
+                          styles.markButton,
+                          meal.marked && styles.markButtonActive,
+                        ]}
+                        onPress={() => toggleMeal(mealIndex)}
+                      >
+                        {meal.marked ? (
+                          <Image
+                            source={require("@/assets/images/checkmark-done.png")}
+                            style={styles.checkmarkIcon}
+                          />
+                        ) : (
+                          <Text style={styles.markButtonText}>
+                            Отметить
+                          </Text>
+                        )}
+                      </TouchableOpacity>
+                    </View>
+                  </TouchableOpacity>
+                </View>
+              ))}
+            </View>
           </View>
         </ScrollView>
       </View>
@@ -829,7 +918,6 @@ export default function Home() {
   );
 }
 
-// ... (Стили остаются без изменений) ...
 const styles = StyleSheet.create({
   loadingContainer: {
     flex: 1,
@@ -904,7 +992,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: "#000000ff",
     marginBottom: 12,
-    fontWeight: "500",
     fontFamily: "Playfair Display Regular",
   },
   remainingCaloriesContainer: {
@@ -920,7 +1007,6 @@ const styles = StyleSheet.create({
   },
   remainingCaloriesValue: {
     fontSize: 18,
-    fontWeight: "bold",
     color: "#9BDF11",
     fontFamily: "Playfair Display Bold",
   },
@@ -954,16 +1040,15 @@ const styles = StyleSheet.create({
   },
   targetKBRURow: {
     borderBottomWidth: 0,
-    backgroundColor: "#DDEEF4", // Небольшой акцент для Цели
+    backgroundColor: "#DDEEF4",
     borderRadius: 8,
-    marginHorizontal: -1, // Смещаем, чтобы перекрыть родительский бордюр
+    marginHorizontal: -1,
     paddingHorizontal: 6,
   },
   kbruHeader: {
     fontSize: 12,
     color: "#6A9AA9",
-    fontFamily: "Playfair Display Regular",
-    fontWeight: "bold",
+    fontFamily: "Playfair Display Bold",
     textAlign: "center",
     width: "23%",
   },
@@ -971,12 +1056,10 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: "#212529",
     fontFamily: "Playfair Display Regular",
-    fontWeight: "500",
     width: "23%",
   },
   kbruValue: {
     fontSize: 14,
-    fontWeight: "bold",
     color: "#212529",
     fontFamily: "Playfair Display Bold",
     textAlign: "center",
@@ -992,33 +1075,18 @@ const styles = StyleSheet.create({
     padding: 20,
     paddingBottom: 20,
   },
-  mealRow: {
+  // Новые стили для карточек как в Recipes
+  recipesGrid: {
     flexDirection: "row",
+    flexWrap: "wrap",
     justifyContent: "space-between",
-    marginBottom: 24,
+    gap: 16,
   },
-  mealColumn: {
-    width: "48%",
+  recipeColumn: {
+    width: CARD_WIDTH,
+    marginBottom: 16,
   },
-  mealCategoryHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 12,
-    paddingHorizontal: 4,
-  },
-  mealCategoryTitle: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: "#212529",
-    fontFamily: "Playfair Display Regular",
-  },
-  arrowIcon: {
-    width: 16,
-    height: 16,
-    tintColor: "#000000",
-  },
-  mealCard: {
+  recipeCard: {
     backgroundColor: "#C2DAE2",
     borderRadius: 16,
     overflow: "hidden",
@@ -1030,16 +1098,47 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.1,
     shadowRadius: 3.84,
     elevation: 5,
+    height: 280,
     borderWidth: 1,
     borderColor: "#A8C8D4",
-    height: 260,
   },
   imageContainer: {
     position: "relative",
   },
-  mealImage: {
+  recipeImage: {
     width: "100%",
     height: 120,
+  },
+  recipeBadges: {
+    position: "absolute",
+    top: 8,
+    left: 8,
+    flexDirection: "column",
+    gap: 4,
+  },
+  ratingBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(255, 255, 255, 0.9)",
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: 10,
+  },
+  ratingText: {
+    fontSize: 10,
+    color: "#000000",
+    fontFamily: "Playfair Display Bold",
+    marginLeft: 2,
+  },
+  difficultyBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: 10,
+  },
+  difficultyText: {
+    fontSize: 9,
+    color: "#FFFFFF",
+    fontFamily: "Playfair Display Bold",
   },
   bookmarkButton: {
     position: "absolute",
@@ -1060,44 +1159,47 @@ const styles = StyleSheet.create({
     shadowRadius: 1.41,
     elevation: 2,
   },
-  bookmarkIcon: {
-    width: 18,
-    height: 18,
-    tintColor: "#6A9AA9",
-  },
-  mealContent: {
+  recipeContent: {
     padding: 12,
     flex: 1,
     justifyContent: "space-between",
   },
-  mealInfo: {
+  recipeInfo: {
     flex: 1,
     marginBottom: 8,
   },
-  mealName: {
+  recipeName: {
     fontSize: 14,
-    fontWeight: "600",
     color: "#212529",
-    marginBottom: 6,
+    marginBottom: 4,
     fontFamily: "Playfair Display Regular",
     lineHeight: 18,
+    minHeight: 36,
   },
-  mealDetails: {
+  recipeCategory: {
+    fontSize: 11,
+    color: "#6A9AA9",
+    fontFamily: "Playfair Display Regular",
+    fontStyle: "italic",
+    marginBottom: 6,
+  },
+  recipeDetails: {
     flexDirection: "row",
     alignItems: "center",
     flexWrap: "wrap",
-    marginTop: 4,
   },
-  mealCalories: {
+  recipeCalories: {
     fontSize: 12,
     color: "#000000",
-    fontWeight: "normal",
     fontFamily: "Playfair Display Bold",
+    marginRight: 8,
   },
-  mealWeight: {
+  timeIcon: {
+    marginRight: 4,
+  },
+  recipeTime: {
     fontSize: 12,
     color: "#6C757D",
-    marginLeft: 45,
     fontFamily: "Playfair Display Regular",
   },
   markButton: {
@@ -1118,7 +1220,6 @@ const styles = StyleSheet.create({
   markButtonText: {
     color: "#000000ff",
     fontSize: 12,
-    fontWeight: "normal",
     fontFamily: "Playfair Display Regular",
   },
   checkmarkIcon: {
