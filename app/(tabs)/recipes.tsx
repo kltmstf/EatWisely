@@ -1,6 +1,6 @@
 // app/recipes.tsx
-import { useRouter } from "expo-router";
-import React, { useState, useEffect } from "react";
+import { useRouter, useFocusEffect } from "expo-router";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   Image,
   ScrollView,
@@ -12,6 +12,9 @@ import {
   View,
   ActivityIndicator,
   Dimensions,
+  Animated,
+  Easing,
+  RefreshControl,
 } from "react-native";
 import {
   getFirestore,
@@ -35,9 +38,9 @@ import { useAuthContext } from "@/app/contexts/AuthContext";
 
 // --- Утилиты ---
 const { width } = Dimensions.get("window");
-const CARD_WIDTH = (width - 48) / 2; // (Ширина экрана - 30*2 padding - 8 gap)/2
+const CARD_WIDTH = (width - 48) / 2;
 
-// --- Интерфейс данных (оставлен без изменений) ---
+// --- Интерфейс данных ---
 interface Recipe {
   id: string;
   title: string;
@@ -56,7 +59,7 @@ interface Recipe {
   difficultyLevel?: string;
 }
 
-// --- Функция для правильного склонения слова "минута" (НОВАЯ) ---
+// --- Функция для правильного склонения слова "минута" ---
 const formatMinutes = (minutes: number): string => {
   const absMinutes = Math.abs(minutes);
   const lastDigit = absMinutes % 10;
@@ -77,12 +80,16 @@ export default function Recipes() {
   const [recipes, setRecipes] = useState<Recipe[]>([]);
   const [loading, setLoading] = useState(true);
   const [isUpdating, setIsUpdating] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   const { user } = useAuthContext();
   const userId = user?.uid || null;
   const userName = user?.displayName || user?.email || "Пользователь";
 
   const categories = ["Все", "Завтрак", "Обед", "Ужин", "Перекусы"];
+
+  // Анимация для пульсации кнопки
+  const pulseAnim = useRef(new Animated.Value(1)).current;
 
   // --- 1. Инициализация Firebase ---
   useEffect(() => {
@@ -106,7 +113,30 @@ export default function Recipes() {
     initializeFirebase();
   }, []);
 
-  // --- 2. Вспомогательные функции ---
+  // --- 2. Анимация пульсации кнопки ---
+  useEffect(() => {
+    const pulse = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulseAnim, {
+          toValue: 1.1,
+          duration: 1000,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulseAnim, {
+          toValue: 1,
+          duration: 1000,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+      ])
+    );
+    pulse.start();
+    
+    return () => pulse.stop();
+  }, []);
+
+  // --- 3. Вспомогательные функции ---
   const getDifficultyColor = (difficulty: string | undefined) => {
     switch (difficulty?.trim()) {
       case "Легко":
@@ -141,72 +171,90 @@ export default function Recipes() {
     }
   };
 
-  // --- 3. Логика загрузки рецептов ---
-  useEffect(() => {
+  // --- 4. Логика загрузки рецептов ---
+  const loadRecipes = useCallback(async () => {
     if (!db) return;
 
-    const loadRecipes = async () => {
-      try {
-        setLoading(true);
+    try {
+      setLoading(true);
 
-        const recipesQuery = query(
-          collection(db, "recipes"),
-          where("isPublic", "==", true)
-        );
+      const recipesQuery = query(
+        collection(db, "recipes"),
+        where("isPublic", "==", true)
+      );
 
-        const [recipesSnapshot, favoritesSnapshot] = await Promise.all([
-          getDocs(recipesQuery),
-          userId
-            ? getDocs(
-                query(
-                  collection(db, "user_favorites"),
-                  where("userId", "==", userId),
-                  where("active", "==", true)
-                )
+      const [recipesSnapshot, favoritesSnapshot] = await Promise.all([
+        getDocs(recipesQuery),
+        userId
+          ? getDocs(
+              query(
+                collection(db, "user_favorites"),
+                where("userId", "==", userId),
+                where("active", "==", true)
               )
-            : { docs: [] },
-        ]);
+            )
+          : { docs: [] },
+      ]);
 
-        const userFavorites = favoritesSnapshot.docs.map(
-          (doc) => doc.data().recipeId
-        );
+      const userFavorites = favoritesSnapshot.docs.map(
+        (doc) => doc.data().recipeId
+      );
 
-        const loadedRecipes: Recipe[] = recipesSnapshot.docs.map((doc) => {
-          const data = doc.data();
-          const recipeId = doc.id;
-          const rawImageUrl = data.image || data.imageUrl || null;
+      const loadedRecipes: Recipe[] = recipesSnapshot.docs.map((doc) => {
+        const data = doc.data();
+        const recipeId = doc.id;
+        const rawImageUrl = data.image || data.imageUrl || null;
 
-          return {
-            id: recipeId,
-            title: String(data.title || "Без названия"),
-            description: String(data.description || ""),
-            mealType: String(data.mealType || "other"),
-            calories: Number(data.calories) || 0,
-            cookingTime: Number(data.cookingTime) || 20,
-            ingredientsText: String(data.ingredientsText || ""),
-            isPublic: Boolean(data.isPublic || false),
-            likedCount: Number(data.likedCount) || 0,
-            saveCount: Number(data.saveCount) || 0,
-            userId: String(data.userId || ""),
-            imageUrl: String(rawImageUrl || ""),
-            bookmarked: userFavorites.includes(recipeId),
-            rating: Number(data.rating) || 0,
-            difficultyLevel: String(data.difficultyLevel || "Легко"),
-          };
-        });
+        return {
+          id: recipeId,
+          title: String(data.title || "Без названия"),
+          description: String(data.description || ""),
+          mealType: String(data.mealType || "other"),
+          calories: Number(data.calories) || 0,
+          cookingTime: Number(data.cookingTime) || 20,
+          ingredientsText: String(data.ingredientsText || ""),
+          isPublic: Boolean(data.isPublic || false),
+          likedCount: Number(data.likedCount) || 0,
+          saveCount: Number(data.saveCount) || 0,
+          userId: String(data.userId || ""),
+          imageUrl: String(rawImageUrl || ""),
+          bookmarked: userFavorites.includes(recipeId),
+          rating: Number(data.rating) || 0,
+          difficultyLevel: String(data.difficultyLevel || "Легко"),
+        };
+      });
 
-        setRecipes(loadedRecipes);
-      } catch (error) {
-        console.error("Ошибка загрузки рецептов:", error);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    loadRecipes();
+      setRecipes(loadedRecipes);
+    } catch (error) {
+      console.error("Ошибка загрузки рецептов:", error);
+    } finally {
+      setLoading(false);
+    }
   }, [db, userId]);
 
-  // --- 4. Логика фильтрации ---
+  // --- Автоматическое обновление при возврате на экран ---
+  useFocusEffect(
+    useCallback(() => {
+      if (db) {
+        loadRecipes();
+      }
+    }, [db, loadRecipes])
+  );
+
+  useEffect(() => {
+    if (db) {
+      loadRecipes();
+    }
+  }, [db, loadRecipes]);
+
+  // --- Pull-to-refresh функция ---
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await loadRecipes();
+    setRefreshing(false);
+  }, [loadRecipes]);
+
+  // --- 5. Логика фильтрации ---
   const filteredRecipes = recipes.filter((recipe) => {
     const matchesSearch =
       recipe.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -221,7 +269,7 @@ export default function Recipes() {
     return matchesSearch && matchesCategory;
   });
 
-  // --- 5. Логика переключения закладки (оставлена для удобства) ---
+  // --- 6. Логика переключения закладки ---
   const toggleBookmark = async (recipeId: string) => {
     if (!db || !userId || isUpdating) return;
 
@@ -232,16 +280,13 @@ export default function Recipes() {
 
       const isCurrentlyBookmarked = recipe.bookmarked;
 
-      // Оптимистическое обновление UI
       setRecipes((prev) =>
         prev.map((r) =>
           r.id === recipeId ? { ...r, bookmarked: !isCurrentlyBookmarked } : r
         )
       );
 
-      // Обновление Firestore
       if (isCurrentlyBookmarked) {
-        // Удаление закладки (установка active: false)
         const favoriteQuery = query(
           collection(db, "user_favorites"),
           where("userId", "==", userId),
@@ -252,7 +297,6 @@ export default function Recipes() {
           await updateDoc(doc.ref, { active: false });
         });
       } else {
-        // Добавление закладки
         await setDoc(
           doc(db, "user_favorites", `${userId}_${recipeId}`),
           {
@@ -266,7 +310,6 @@ export default function Recipes() {
       }
     } catch (error) {
       console.error("Ошибка обновления закладки:", error);
-      // Откат UI в случае ошибки
       setRecipes((prev) =>
         prev.map((r) =>
           r.id === recipeId ? { ...r, bookmarked: !r.bookmarked } : r
@@ -277,7 +320,7 @@ export default function Recipes() {
     }
   };
 
-  // --- 6. КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: Упрощенная навигация ---
+  // --- 7. Навигация к рецепту ---
   const navigateToRecipe = (recipe: Recipe) => {
     router.push({
       pathname: "/meal",
@@ -285,14 +328,17 @@ export default function Recipes() {
         mealId: recipe.id,   
         mealName: recipe.title, 
         mealType: recipe.mealType, 
-
         initialBookmarked: 'false',
       },
     });
   };
-  // ---------------------------------------------------
 
-  if (loading) {
+  // --- 8. Навигация к созданию рецепта ---
+  const navigateToCreateRecipe = () => {
+    router.push('/create-recipe');
+  };
+
+  if (loading && !refreshing) {
     return (
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="large" color="#6A9AA9" />
@@ -326,10 +372,18 @@ export default function Recipes() {
       <ScrollView
         style={styles.scrollView}
         showsVerticalScrollIndicator={false}
+        contentContainerStyle={styles.scrollContent}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            colors={["#6A9AA9"]}
+            tintColor="#6A9AA9"
+          />
+        }
       >
         {/* Поиск и фильтры */}
         <View style={styles.searchSection}>
-          {/* Категории */}
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
@@ -356,7 +410,6 @@ export default function Recipes() {
             ))}
           </ScrollView>
 
-          {/* Поле поиска */}
           <View style={styles.searchRow}>
             <View style={styles.searchInputContainer}>
               <Feather
@@ -393,7 +446,6 @@ export default function Recipes() {
                   onPress={() => navigateToRecipe(recipe)}
                 >
                   <View style={styles.imageContainer}>
-                    {/* --- Отображение сетевого изображения --- */}
                     <Image
                       source={
                         recipe.imageUrl && recipe.imageUrl.length > 5
@@ -403,7 +455,6 @@ export default function Recipes() {
                       style={styles.recipeImage}
                       resizeMode="cover"
                     />
-                    {/* Бейджи рейтинга и сложности */}
                     <View style={styles.recipeBadges}>
                       {recipe.rating && recipe.rating > 0 ? (
                         <View style={styles.ratingBadge}>
@@ -428,7 +479,6 @@ export default function Recipes() {
                         </Text>
                       </View>
                     </View>
-                    {/* Кнопка закладки */}
                     <TouchableOpacity
                       style={styles.bookmarkButton}
                       onPress={() => toggleBookmark(recipe.id)}
@@ -452,12 +502,10 @@ export default function Recipes() {
                       >
                         {recipe.title}
                       </Text>
-                      {/* Категория */}
                       <Text style={styles.recipeCategory}>
                         {getCategoryName(recipe.mealType)}
                       </Text>
                       <View style={styles.recipeDetails}>
-                        {/* Калории */}
                         {recipe.calories && recipe.calories > 0 ? (
                           <Text style={styles.recipeCalories}>
                             {recipe.calories} ккал
@@ -488,14 +536,38 @@ export default function Recipes() {
 
           {filteredRecipes.length === 0 && !loading && (
             <View style={styles.emptyState}>
+              <Ionicons name="restaurant-outline" size={64} color="#C2DAE2" />
               <Text style={styles.emptyStateText}>Рецепты не найдены</Text>
               <Text style={styles.emptyStateSubtext}>
                 Попробуйте изменить параметры поиска
               </Text>
+              <TouchableOpacity 
+                style={styles.emptyStateButton}
+                onPress={navigateToCreateRecipe}
+              >
+                <Ionicons name="add-circle" size={20} color="#000000" />
+                <Text style={styles.emptyStateButtonText}>Создать рецепт</Text>
+              </TouchableOpacity>
             </View>
           )}
         </View>
       </ScrollView>
+
+      {/* FAB кнопка для создания рецепта */}
+      <TouchableOpacity
+        style={styles.fab}
+        onPress={navigateToCreateRecipe}
+        activeOpacity={0.8}
+      >
+        <Animated.View 
+          style={[
+            styles.fabContent,
+            { transform: [{ scale: pulseAnim }] }
+          ]}
+        >
+          <Ionicons name="add" size={28} color="#FFFFFF" />
+        </Animated.View>
+      </TouchableOpacity>
     </View>
   );
 }
@@ -504,6 +576,7 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: "#FFFFFF",
+    position: 'relative',
   },
   loadingContainer: {
     flex: 1,
@@ -517,21 +590,46 @@ const styles = StyleSheet.create({
     color: "#6A9AA9",
     fontFamily: "Playfair Display Regular",
   },
+  scrollView: {
+    flex: 1,
+  },
+  scrollContent: {
+    paddingBottom: 100,
+  },
   emptyState: {
     alignItems: "center",
     padding: 40,
+    marginTop: 40,
   },
   emptyStateText: {
     fontSize: 18,
     color: "#6C757D",
     fontFamily: "Playfair Display Regular",
     marginBottom: 8,
+    marginTop: 16,
   },
   emptyStateSubtext: {
     fontSize: 14,
     color: "#6C757D",
     fontFamily: "Playfair Display Regular",
     textAlign: "center",
+    marginBottom: 24,
+  },
+  emptyStateButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: "#9BDF11",
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 25,
+    borderWidth: 2,
+    borderColor: "#C2DAE2",
+    gap: 8,
+  },
+  emptyStateButtonText: {
+    color: "#000000",
+    fontSize: 14,
+    fontFamily: "Playfair Display Bold",
   },
   header: {
     flexDirection: "row",
@@ -574,9 +672,6 @@ const styles = StyleSheet.create({
     fontFamily: "Playfair Display Regular",
     marginTop: 4,
     textAlign: "center",
-  },
-  scrollView: {
-    flex: 1,
   },
   searchSection: {
     backgroundColor: "#FFFFFF",
@@ -662,7 +757,7 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   recipeCard: {
-    backgroundColor: "#C2DAE2",
+    backgroundColor: "#C2DAE2", // Оригинальный цвет карточек
     borderRadius: 16,
     overflow: "hidden",
     shadowColor: "#000",
@@ -677,10 +772,14 @@ const styles = StyleSheet.create({
   },
   imageContainer: {
     position: "relative",
+    height: 120,
+    backgroundColor: "#F8F8F8",
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   recipeImage: {
     width: "100%",
-    height: 120,
+    height: "100%",
   },
   recipeBadges: {
     position: "absolute",
@@ -794,5 +893,29 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "normal",
     fontFamily: "Playfair Display Regular",
+  },
+  fab: {
+    position: 'absolute',
+    bottom: 30,
+    right: 20,
+    zIndex: 1000,
+  },
+  fabContent: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: '#9BDF11',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 3,
+    borderColor: '#FFFFFF',
+    shadowColor: '#000',
+    shadowOffset: {
+      width: 0,
+      height: 4,
+    },
+    shadowOpacity: 0.3,
+    shadowRadius: 4.65,
+    elevation: 12,
   },
 });

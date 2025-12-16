@@ -60,6 +60,7 @@ export default function RootLayout() {
               <Stack.Screen name="meal" />
               <Stack.Screen name="profile-settings" />
               <Stack.Screen name="help-support" />
+              <Stack.Screen name="create-recipe"/>
             </Stack>
           </FavoritesProvider> 
         </AuthInitializer>

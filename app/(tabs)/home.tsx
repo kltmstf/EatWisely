@@ -176,7 +176,7 @@ const generateDailyPlan = (
     }, mealsInCategory[0]);
 
     if (bestMatch) {
-  // ИСПРАВЛЕНИЕ: Используем difficultyLevel из RecipeData
+
   const difficultyValue = bestMatch.difficultyLevel || "Легко";
   
   plannedMeals.push({
