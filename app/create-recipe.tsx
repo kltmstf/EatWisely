@@ -21,8 +21,8 @@ import {
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
-import { recipeService } from '@/app/services/recipeService'; // Исправлен путь
-import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { recipeService } from '@/app/services/recipeService';
+import { cloudinaryService, UploadProgress } from '@/app/services/cloudinaryService';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -61,8 +61,12 @@ export default function CreateRecipeModal() {
     servings: '1',
   });
   
+  // Состояния для изображения и загрузки
   const [image, setImage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [uploadingImage, setUploadingImage] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadStage, setUploadStage] = useState<string>(''); // Новое состояние для этапа загрузки
   const [isPublic, setIsPublic] = useState(true);
   
   // Ингредиенты и шаги как массивы
@@ -102,7 +106,7 @@ export default function CreateRecipeModal() {
       const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
       
       if (status !== 'granted') {
-        Alert.alert('Ошибка', 'Необходимо разрешение для доступа к галерее');
+        Alert.alert('Доступ к галерее', 'Для выбора фото рецепта необходимо разрешение на доступ к галерее');
         return;
       }
 
@@ -110,11 +114,13 @@ export default function CreateRecipeModal() {
         mediaTypes: ['images'],
         allowsEditing: true,
         aspect: [4, 3],
-        quality: 0.7,
+        quality: 0.8,
+        selectionLimit: 1,
       });
 
-      if (!result.canceled) {
-        setImage(result.assets[0].uri);
+      if (!result.canceled && result.assets[0]) {
+        const selectedImage = result.assets[0];
+        setImage(selectedImage.uri);
       }
     } catch (error) {
       console.error('Ошибка выбора изображения:', error);
@@ -122,23 +128,53 @@ export default function CreateRecipeModal() {
     }
   };
 
-  // Загрузка изображения в Firebase Storage
-  const uploadImage = async (uri: string): Promise<string | null> => {
+  // Загрузка изображения в Cloudinary
+  const uploadImageToCloudinary = async (): Promise<{
+    url: string | null;
+    publicId: string | null;
+  }> => {
+    if (!image) {
+      console.log('⚠️ Нет изображения для загрузки');
+      return { url: null, publicId: null };
+    }
+
     try {
-      const response = await fetch(uri);
-      const blob = await response.blob();
-      
-      const storage = getStorage();
-      const fileName = `recipes/${Date.now()}_${Math.random().toString(36).substring(7)}`;
-      const storageRef = ref(storage, fileName);
-      
-      await uploadBytes(storageRef, blob);
-      const downloadURL = await getDownloadURL(storageRef);
-      
-      return downloadURL;
-    } catch (error) {
-      console.error('Ошибка загрузки изображения:', error);
-      return null;
+      console.log('🚀 Начинаем загрузку в Cloudinary...');
+      setUploadingImage(true);
+      setUploadProgress(0);
+      setUploadStage('Подготовка изображения...');
+
+      const result = await cloudinaryService.uploadImage(
+        image,
+        (progress: UploadProgress) => {
+          setUploadProgress(progress.percent);
+          setUploadStage(`Загрузка: ${Math.round(progress.percent)}%`);
+          console.log(`📊 Прогресс загрузки: ${progress.percent.toFixed(1)}%`);
+        }
+      );
+
+      if (result.success && result.url && result.publicId) {
+        console.log('✅ Изображение успешно загружено!');
+        setUploadStage('Завершение...');
+        
+        // Небольшая задержка для UX
+        await new Promise(resolve => setTimeout(resolve, 300));
+        
+        return {
+          url: result.url,
+          publicId: result.publicId,
+        };
+      } else {
+        console.error('❌ Ошибка загрузки:', result.error);
+        throw new Error(result.error || 'Не удалось загрузить изображение');
+      }
+    } catch (error: any) {
+      console.error('❌ Критическая ошибка при загрузке:', error);
+      throw error;
+    } finally {
+      setUploadingImage(false);
+      setUploadProgress(0);
+      setUploadStage('');
     }
   };
 
@@ -228,15 +264,46 @@ export default function CreateRecipeModal() {
 
     try {
       let imageUrl = null;
+      let cloudinaryPublicId = null;
       
+      // Загружаем изображение если есть
       if (image) {
-        const uploadedUrl = await uploadImage(image);
-        if (uploadedUrl) {
-          imageUrl = uploadedUrl;
+        console.log('📤 Загрузка изображения в Cloudinary...');
+        
+        try {
+          const uploadResult = await uploadImageToCloudinary();
+          
+          if (uploadResult.url) {
+            imageUrl = uploadResult.url;
+            cloudinaryPublicId = uploadResult.publicId;
+            
+            console.log('✅ Изображение загружено успешно');
+            console.log('Cloudinary URL:', imageUrl);
+            console.log('Public ID:', cloudinaryPublicId);
+          }
+        } catch (uploadError: any) {
+          console.error('❌ Ошибка загрузки изображения:', uploadError);
+          
+          // Спрашиваем пользователя хочет ли он продолжить без изображения
+          const shouldContinue = await new Promise((resolve) => {
+            Alert.alert(
+              'Не удалось загрузить фото',
+              'Хотите создать рецепт без изображения?',
+              [
+                { text: 'Отмена', style: 'cancel', onPress: () => resolve(false) },
+                { text: 'Продолжить без фото', onPress: () => resolve(true) },
+              ]
+            );
+          });
+          
+          if (!shouldContinue) {
+            setLoading(false);
+            return;
+          }
         }
       }
 
-      // Подготавливаем данные
+      // Подготавливаем данные для рецепта
       const recipeData = {
         title: form.title.trim(),
         description: form.description.trim(),
@@ -268,20 +335,42 @@ export default function CreateRecipeModal() {
           text: step.text.trim()
         })),
         
+        // Cloudinary данные
         imageUrl: imageUrl,
+        cloudinaryPublicId: cloudinaryPublicId,
+        imageMetadata: imageUrl ? {
+          source: 'cloudinary',
+          publicId: cloudinaryPublicId,
+          uploadedAt: new Date().toISOString(),
+          inRecipesFolder: cloudinaryPublicId ? cloudinaryPublicId.startsWith('recipes/') : false,
+        } : null,
+        
         isPublic: isPublic,
+        
+        // Дополнительные метаданные
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        userId: 'current_user_id', // TODO: Заменить на реальный ID пользователя
+        likes: 0,
+        views: 0,
+        isApproved: true,
       };
 
-      await recipeService.createRecipe(recipeData);
+      console.log('💾 Сохранение рецепта в базу данных...');
+      
+      // Сохраняем рецепт
+      const createdRecipe = await recipeService.createRecipe(recipeData);
+      
+      console.log('✅ Рецепт успешно создан! ID:', createdRecipe.id);
       
       Alert.alert(
-        'Успех!',
+        '🎉 Успех!',
         'Рецепт успешно создан',
         [{ text: 'ОК', onPress: handleClose }]
       );
       
     } catch (error: any) {
-      console.error('Ошибка создания рецепта:', error);
+      console.error('❌ Ошибка создания рецепта:', error);
       Alert.alert('Ошибка', error.message || 'Не удалось создать рецепт. Попробуйте еще раз.');
     } finally {
       setLoading(false);
@@ -368,25 +457,80 @@ export default function CreateRecipeModal() {
 
                   {/* Изображение */}
                   <View style={styles.inputGroup}>
-                    <Text style={styles.label}>Изображение</Text>
+                    <View style={styles.sectionHeader}>
+                      <Text style={styles.label}>
+                        Фотография рецепта
+                        <Text style={styles.optionalText}> (необязательно)</Text>
+                      </Text>
+                    </View>
+                    
+                    {/* Кнопка выбора изображения */}
                     <TouchableOpacity 
-                      style={styles.imageButton} 
+                      style={[
+                        styles.imageButton,
+                        uploadingImage && styles.imageButtonDisabled
+                      ]}
                       onPress={pickImage}
+                      disabled={uploadingImage}
                     >
                       <Ionicons 
                         name={image ? "image" : "image-outline"} 
                         size={24} 
-                        color="#6A9AA9" 
+                        color={uploadingImage ? "#999" : "#6A9AA9"} 
                       />
-                      <Text style={styles.imageButtonText}>
+                      <Text style={[
+                        styles.imageButtonText,
+                        uploadingImage && styles.imageButtonTextDisabled
+                      ]}>
                         {image ? 'Изменить фото' : 'Добавить фото'}
                       </Text>
                     </TouchableOpacity>
-                    {image && (
-                      <Image 
-                        source={{ uri: image }} 
-                        style={styles.previewImage} 
-                      />
+                    
+                    {/* Контейнер состояния загрузки */}
+                    {uploadingImage && (
+                      <View style={styles.uploadStatusContainer}>
+                        <View style={styles.uploadStatusHeader}>
+                          <ActivityIndicator size="small" color="#6A9AA9" style={styles.uploadSpinner} />
+                          <Text style={styles.uploadStatusTitle}>Загрузка фотографии</Text>
+                        </View>
+                        
+                        {/* Прогресс-бар */}
+                        <View style={styles.progressContainer}>
+                          <View style={styles.progressBar}>
+                            <View 
+                              style={[
+                                styles.progressFill,
+                                { width: `${uploadProgress}%` }
+                              ]} 
+                            />
+                          </View>
+                          <View style={styles.progressInfo}>
+                            <Text style={styles.progressText}>
+                              {uploadStage || `Загрузка: ${Math.round(uploadProgress)}%`}
+                            </Text>
+                            <Text style={styles.progressPercent}>{Math.round(uploadProgress)}%</Text>
+                          </View>
+                        </View>
+                        
+                        <Text style={styles.uploadHint}>
+                          Пожалуйста, не закрывайте приложение
+                        </Text>
+                      </View>
+                    )}
+                    
+                    {/* Предпросмотр изображения */}
+                    {image && !uploadingImage && (
+                      <View style={styles.previewContainer}>
+                        <Image 
+                          source={{ uri: image }} 
+                          style={styles.previewImage} 
+                          resizeMode="cover"
+                        />
+                        <View style={styles.previewOverlay}>
+                          <Ionicons name="checkmark-circle" size={20} color="#4CAF50" />
+                          <Text style={styles.previewStatus}>Готово к загрузке</Text>
+                        </View>
+                      </View>
                     )}
                   </View>
 
@@ -460,7 +604,7 @@ export default function CreateRecipeModal() {
                         placeholderTextColor="#999"
                         value={form.weight}
                         onChangeText={(value) => updateForm('weight', value)}
-                        keyboardType="default" // Исправлено на default
+                        keyboardType="default"
                       />
                     </View>
 
@@ -674,17 +818,25 @@ export default function CreateRecipeModal() {
 
                   {/* Кнопка создания */}
                   <TouchableOpacity 
-                    style={[styles.submitButton, loading && styles.submitButtonDisabled]}
+                    style={[
+                      styles.submitButton, 
+                      (loading || uploadingImage) && styles.submitButtonDisabled
+                    ]}
                     onPress={handleSubmit}
-                    disabled={loading}
+                    disabled={loading || uploadingImage}
                   >
-                    {loading ? (
-                      <ActivityIndicator color="#FFFFFF" />
+                    {(loading || uploadingImage) ? (
+                      <View style={styles.submitButtonContent}>
+                        <ActivityIndicator color="#FFFFFF" size="small" style={styles.buttonSpinner} />
+                        <Text style={styles.submitButtonText}>
+                          {uploadingImage ? 'Загрузка фото...' : 'Создание рецепта...'}
+                        </Text>
+                      </View>
                     ) : (
-                      <>
+                      <View style={styles.submitButtonContent}>
                         <Ionicons name="add-circle" size={20} color="#FFFFFF" />
                         <Text style={styles.submitButtonText}>Создать рецепт</Text>
-                      </>
+                      </View>
                     )}
                   </TouchableOpacity>
 
@@ -768,6 +920,11 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     fontFamily: 'Playfair Display Regular',
   },
+  optionalText: {
+    color: '#999',
+    fontSize: 12,
+    fontFamily: 'Playfair Display Regular',
+  },
   smallLabel: {
     fontSize: 11,
     color: '#999',
@@ -842,18 +999,108 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     gap: 12,
   },
+  imageButtonDisabled: {
+    opacity: 0.6,
+    backgroundColor: '#F0F0F0',
+  },
   imageButtonText: {
     fontSize: 16,
     color: '#6A9AA9',
     fontFamily: 'Playfair Display Regular',
   },
+  imageButtonTextDisabled: {
+    color: '#999',
+  },
+  // Новые стили для статуса загрузки
+  uploadStatusContainer: {
+    marginTop: 12,
+    padding: 16,
+    backgroundColor: '#F8F8F8',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#C2DAE2',
+  },
+  uploadStatusHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  uploadSpinner: {
+    marginRight: 8,
+  },
+  uploadStatusTitle: {
+    fontSize: 14,
+    color: '#1a1a1a',
+    fontFamily: 'Playfair Display Bold',
+  },
+  progressContainer: {
+    marginBottom: 8,
+  },
+  progressBar: {
+    height: 6,
+    backgroundColor: '#E0E0E0',
+    borderRadius: 3,
+    overflow: 'hidden',
+    marginBottom: 8,
+  },
+  progressFill: {
+    height: '100%',
+    backgroundColor: '#6A9AA9',
+    borderRadius: 3,
+  },
+  progressInfo: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  progressText: {
+    fontSize: 12,
+    color: '#666',
+    fontFamily: 'Playfair Display Regular',
+    flex: 1,
+  },
+  progressPercent: {
+    fontSize: 12,
+    color: '#6A9AA9',
+    fontFamily: 'Playfair Display Bold',
+    marginLeft: 8,
+  },
+  uploadHint: {
+    fontSize: 11,
+    color: '#999',
+    fontStyle: 'italic',
+    textAlign: 'center',
+    fontFamily: 'Playfair Display Regular',
+    marginTop: 4,
+  },
+  previewContainer: {
+    marginTop: 12,
+    position: 'relative',
+  },
   previewImage: {
     width: '100%',
     height: 200,
     borderRadius: 12,
-    marginTop: 12,
     backgroundColor: '#F8F8F8',
   },
+  previewOverlay: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.9)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 16,
+    gap: 4,
+  },
+  previewStatus: {
+    fontSize: 11,
+    color: '#4CAF50',
+    fontFamily: 'Playfair Display Regular',
+  },
+  // Удалены: cloudinaryHint
   nutritionGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -986,6 +1233,15 @@ const styles = StyleSheet.create({
   },
   submitButtonDisabled: {
     backgroundColor: '#C2DAE2',
+  },
+  submitButtonContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+  },
+  buttonSpinner: {
+    marginRight: 8,
   },
   submitButtonText: {
     color: '#000000',
