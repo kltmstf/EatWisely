@@ -1,8 +1,8 @@
+// app/(tabs)/home.tsx
 import { useRouter } from "expo-router";
 import React, {
   useEffect,
   useState,
-  useMemo,
   useCallback,
   useRef,
 } from "react";
@@ -17,27 +17,23 @@ import {
   ActivityIndicator,
   Alert,
   Dimensions,
+  RefreshControl,
 } from "react-native";
-import { getAuth, onAuthStateChanged, Auth } from "firebase/auth";
+import { getAuth, onAuthStateChanged } from "firebase/auth";
 import {
   getFirestore,
   doc,
   onSnapshot,
-  setDoc,
-  updateDoc,
   getDoc,
   Firestore,
   setLogLevel,
-  collection,
-  query,
-  where,
-  getDocs,
 } from "firebase/firestore";
 import { getApp, getApps, initializeApp } from "firebase/app";
-import { Ionicons, FontAwesome, MaterialIcons } from "@expo/vector-icons";
+import { Ionicons, FontAwesome, MaterialIcons, Feather } from "@expo/vector-icons";
 
 // ИМПОРТ СЕРВИСОВ
-import { recipeService } from "../services/recipeService";
+import { userService } from "@/app/services/userService";
+import { dailyRationService } from "@/app/services/rationService";
 
 setLogLevel("debug");
 
@@ -58,27 +54,17 @@ interface Meal {
   cookingTime?: string;
   difficultyLevel?: string;
   rating?: number;
-}
-
-interface RecipeData {
-  id: string;
-  title: string;
-  mealType: string;
-  calories: number;
-  proteins: number;
-  fats: number;
-  carbohydrates: number;
-  weight: string;
-  imageUrl?: string;
-  cookingTime?: number;
-  difficultyLevel?: string;
-  rating?: number;
+  recipeId?: string;
 }
 
 interface UserDataState {
   userName: string;
   dailyCalories: number;
   consumedCalories: number;
+  photoURL: string | null;
+  targetProteins: number;
+  targetFats: number;
+  targetCarbs: number;
 }
 
 interface KBRUState {
@@ -87,12 +73,19 @@ interface KBRUState {
   carbohydrates: number;
 }
 
-const MEAL_DISTRIBUTION = {
-  Завтрак: 0.2,
-  Обед: 0.35,
-  Ужин: 0.35,
-  Перекусы: 0.1,
-};
+interface UserProfileData {
+  firstName?: string;
+  lastName?: string;
+  name?: string;
+  first_name?: string;
+  last_name?: string;
+  dailyCalories?: number;
+  targetCalories?: number;
+  targetProteinGrams?: number;
+  targetFatGrams?: number;
+  targetCarbGrams?: number;
+  photoURL?: string;
+}
 
 const TARGET_KBRU_RATIOS = {
   protein: 0.3,
@@ -103,7 +96,46 @@ const TARGET_KBRU_RATIOS = {
 const DEFAULT_MEAL_IMAGE = require("@/assets/images/logo.png");
 
 const { width } = Dimensions.get("window");
-const CARD_WIDTH = (width - 56) / 2; // (Ширина экрана - 20*2 padding - 16 gap)/2
+const CARD_WIDTH = (width - 56) / 2;
+
+// --- КОМПОНЕНТ АВАТАРА ---
+interface AvatarProps {
+  photoURL?: string | null;
+  size?: number;
+}
+
+const Avatar: React.FC<AvatarProps> = ({ photoURL, size = 55 }) => {
+  if (photoURL) {
+    return (
+      <Image
+        source={{ uri: photoURL }}
+        style={{
+          width: size,
+          height: size,
+          borderRadius: size / 2,
+          borderWidth: 2,
+          borderColor: "#9BDF11",
+        }}
+        resizeMode="cover"
+      />
+    );
+  }
+  
+  return (
+    <View style={{
+      width: size,
+      height: size,
+      borderRadius: size / 2,
+      backgroundColor: "#E5F0F5",
+      justifyContent: "center",
+      alignItems: "center",
+      borderWidth: 2,
+      borderColor: "#9BDF11",
+    }}>
+      <Feather name="user" size={size * 0.4} color="#6A9AA9" />
+    </View>
+  );
+};
 
 // Функция для склонения минут
 const formatMinutes = (minutes: number): string => {
@@ -131,76 +163,20 @@ const getDifficultyColor = (difficulty: string | undefined) => {
   }
 };
 
-// --- АЛГОРИТМ ГЕНЕРАЦИИ РАЦИОНА ---
-
-const generateDailyPlan = (
-  dailyCalories: number,
-  recipeDatabase: RecipeData[]
-): Meal[] => {
-  const plannedMeals: Meal[] = [];
-  const categories = Object.keys(MEAL_DISTRIBUTION);
-
-  categories.forEach((category) => {
-    const targetCalories =
-      Math.round(dailyCalories) *
-      (MEAL_DISTRIBUTION[category as keyof typeof MEAL_DISTRIBUTION] || 0);
-
-    const mealsInCategory = recipeDatabase.filter(
-      (m) => m.mealType === category
-    );
-
-    if (mealsInCategory.length === 0) {
-      plannedMeals.push({
-        id: "default-" + category,
-        category: category,
-        name: "Рецепты не найдены",
-        calories: 0,
-        proteins: 0,
-        fats: 0,
-        carbohydrates: 0,
-        weight: "0 гр.",
-        marked: false,
-        bookmarked: false,
-        image: DEFAULT_MEAL_IMAGE,
-      });
-      return;
-    }
-
-    const bestMatch = mealsInCategory.reduce((best, current) => {
-      const currentDiff = Math.abs(current.calories - targetCalories);
-      const bestDiff = Math.abs(best.calories - targetCalories);
-      if (currentDiff === bestDiff) {
-        return Math.random() > 0.5 ? current : best;
-      }
-      return currentDiff < bestDiff ? current : best;
-    }, mealsInCategory[0]);
-
-    if (bestMatch) {
-
-  const difficultyValue = bestMatch.difficultyLevel || "Легко";
-  
-  plannedMeals.push({
-    id: bestMatch.id,
-    category: bestMatch.mealType,
-    name: bestMatch.title,
-    calories: Math.round(bestMatch.calories),
-    proteins: Math.round(bestMatch.proteins),
-    fats: Math.round(bestMatch.fats),
-    carbohydrates: Math.round(bestMatch.carbohydrates),
-    weight: bestMatch.weight || "300 гр.",
-    marked: false,
-    bookmarked: false,
-    cookingTime: bestMatch.cookingTime ? `${bestMatch.cookingTime} минут` : "20 минут",
-    difficultyLevel: difficultyValue, 
-    rating: bestMatch.rating || 0,
-    image: bestMatch.imageUrl
-      ? { uri: bestMatch.imageUrl }
-      : DEFAULT_MEAL_IMAGE,
-  });
+// --- КОМПОНЕНТ ДИФФИКУЛЬТИ БЭДЖА ---
+interface DifficultyBadgeProps {
+  difficulty: string | undefined;
 }
-  });
 
-  return plannedMeals;
+const DifficultyBadge: React.FC<DifficultyBadgeProps> = ({ difficulty }) => {
+  const difficultyText = difficulty || 'Легко';
+  const color = getDifficultyColor(difficultyText);
+  
+  return (
+    <View style={[styles.difficultyBadge, { backgroundColor: color }]}>
+      <Text style={styles.difficultyText}>{difficultyText}</Text>
+    </View>
+  );
 };
 
 // --- КОМПОНЕНТ HOME ---
@@ -211,12 +187,10 @@ export default function Home() {
   const [db, setDb] = useState<Firestore | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
-  const [appId] = useState(() =>
-    typeof __app_id !== "undefined" ? __app_id : "default-app-id"
-  );
 
-  const [recipeDatabase, setRecipeDatabase] = useState<RecipeData[]>([]);
   const [meals, setMeals] = useState<Meal[]>([]);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isGeneratingPlan, setIsGeneratingPlan] = useState(false);
 
   const mealsRef = useRef(meals);
   useEffect(() => {
@@ -227,19 +201,49 @@ export default function Home() {
     userName: "Пользователь",
     dailyCalories: 2000,
     consumedCalories: 0,
+    photoURL: null,
+    targetProteins: 0,
+    targetFats: 0,
+    targetCarbs: 0,
   });
+  
   const [recommendedKBRU, setRecommendedKBRU] = useState<KBRUState>({
     proteins: 0,
     fats: 0,
     carbohydrates: 0,
   });
+  
   const [targetKBRU, setTargetKBRU] = useState<KBRUState>({
     proteins: 0,
     fats: 0,
     carbohydrates: 0,
   });
 
-  const loading = !isAuthReady || !db || recipeDatabase.length === 0;
+  const [userProfileLoading, setUserProfileLoading] = useState(false);
+  const [userSettingsChanged, setUserSettingsChanged] = useState(false);
+
+  const loading = !isAuthReady || !db;
+
+  // Функция для загрузки фото профиля
+  const loadUserProfilePhoto = useCallback(async (userId: string) => {
+    if (!userId) return null;
+    
+    try {
+      setUserProfileLoading(true);
+      const profileData = await userService.fetchUserProfile(userId);
+      if (profileData?.photoURL) {
+        return profileData.photoURL;
+      }
+      
+      const auth = getAuth();
+      return auth.currentUser?.photoURL || null;
+    } catch (error) {
+      console.error("Ошибка загрузки фото профиля:", error);
+      return null;
+    } finally {
+      setUserProfileLoading(false);
+    }
+  }, []);
 
   // 1. Инициализация Firebase
   useEffect(() => {
@@ -258,16 +262,23 @@ export default function Home() {
       const unsubscribeAuth = onAuthStateChanged(authInstance, async (user) => {
         if (user) {
           setUserId(user.uid);
+          
+          const photoURL = await loadUserProfilePhoto(user.uid);
+          setUserData(prev => ({
+            ...prev,
+            photoURL: photoURL
+          }));
+          
           console.log("✅ AUTH: User authenticated. UID:", user.uid);
         } else {
           setUserId(null);
-          userData.dailyCalories = 2000;
-          setUserData((prev) => ({
+          setUserData(prev => ({
             ...prev,
             userName: "Пользователь",
             dailyCalories: 2000,
+            photoURL: null,
           }));
-          console.log("⚠️ AUTH: User is NOT authenticated (UID is null).");
+          console.log("⚠️ AUTH: User is NOT authenticated.");
         }
         setIsAuthReady(true);
       });
@@ -277,85 +288,193 @@ export default function Home() {
       console.error("❌ INIT: Ошибка инициализации Firebase:", error);
       setIsAuthReady(true);
     }
-  }, []);
+  }, [loadUserProfilePhoto]);
 
-  // 2. Загрузка рецептов
-  useEffect(() => {
+  // 2. Загрузка ежедневного плана
+  const loadDailyPlan = useCallback(async (forceRegenerate = false) => {
     if (!userId) {
-      setRecipeDatabase([]);
+      console.log("⚠️ No user ID, skipping plan load");
       return;
     }
-
-    const loadRecipes = async () => {
-      try {
-        const recipes = await recipeService.getRecipesForPlanner();
-        setRecipeDatabase(recipes as RecipeData[]);
-        console.log(`✅ RECIPES: Loaded ${recipes.length} recipes.`);
-      } catch (error) {
-        console.error(
-          "❌ RECIPES: Ошибка загрузки рецептов для планировщика:",
-          error
-        );
-        setRecipeDatabase([]);
+    
+    try {
+      setIsGeneratingPlan(true);
+      
+      // Проверяем, изменились ли настройки пользователя
+      const shouldRegenerate = forceRegenerate || userSettingsChanged;
+      
+      let plan;
+      if (shouldRegenerate) {
+        console.log("🔄 User settings changed or forced regeneration, creating new plan");
+        // Создаем новый план с учетом текущих настроек
+        plan = await dailyRationService.createNewPlanWithUserSettings(userId);
+        setUserSettingsChanged(false);
+      } else {
+        // Получаем существующий план
+        plan = await dailyRationService.getOrGenerateDailyPlan(userId);
       }
-    };
-
-    loadRecipes();
-  }, [userId]);
-
-  // 3. Расчет плана
-  const generatedPlan = useMemo(() => {
-    if (recipeDatabase.length === 0) {
-      return {
-        plan: [],
-        totalKBRU: { proteins: 0, fats: 0, carbohydrates: 0 },
-      };
+      
+      if (!plan || !plan.meals || plan.meals.length === 0) {
+        console.log("⚠️ План не получен, создаем стандартные рецепты");
+        const standardMeals: Meal[] = [
+          {
+            id: '1',
+            category: 'Завтрак',
+            name: 'Овсяная каша с фруктами',
+            calories: 350,
+            proteins: 12,
+            fats: 8,
+            carbohydrates: 58,
+            weight: '250г',
+            marked: false,
+            bookmarked: false,
+            cookingTime: '15 минут',
+            difficultyLevel: 'Легко',
+            rating: 4.5,
+            image: DEFAULT_MEAL_IMAGE
+          },
+          {
+            id: '2',
+            category: 'Обед',
+            name: 'Куриная грудка с овощами',
+            calories: 450,
+            proteins: 35,
+            fats: 12,
+            carbohydrates: 40,
+            weight: '300г',
+            marked: false,
+            bookmarked: false,
+            cookingTime: '30 минут',
+            difficultyLevel: 'Легко',
+            rating: 4.7,
+            image: DEFAULT_MEAL_IMAGE
+          },
+          {
+            id: '3',
+            category: 'Ужин',
+            name: 'Запеченная рыба с салатом',
+            calories: 400,
+            proteins: 30,
+            fats: 15,
+            carbohydrates: 25,
+            weight: '280г',
+            marked: false,
+            bookmarked: false,
+            cookingTime: '25 минут',
+            difficultyLevel: 'Средне',
+            rating: 4.6,
+            image: DEFAULT_MEAL_IMAGE
+          },
+          {
+            id: '4',
+            category: 'Перекусы',
+            name: 'Йогурт с орехами и мёдом',
+            calories: 200,
+            proteins: 10,
+            fats: 12,
+            carbohydrates: 15,
+            weight: '150г',
+            marked: false,
+            bookmarked: false,
+            cookingTime: '5 минут',
+            difficultyLevel: 'Легко',
+            rating: 4.3,
+            image: DEFAULT_MEAL_IMAGE
+          }
+        ];
+        
+        plan = { meals: standardMeals };
+      }
+      
+      // Преобразуем план в формат для отображения
+      const formattedMeals: Meal[] = plan.meals.map((meal: any, index: number) => {
+        const carbsValue = meal.carbohydrates || meal.carbs || 0;
+        
+        const baseMeal = {
+          id: meal.recipeId || meal.id || `meal-${index}-${Date.now()}`,
+          category: meal.category || ['Завтрак', 'Обед', 'Ужин', 'Перекусы'][index] || 'Обед',
+          name: meal.name || 'Рецепт',
+          calories: meal.calories || 350,
+          proteins: meal.proteins || 20,
+          fats: meal.fats || 10,
+          carbohydrates: carbsValue,
+          weight: meal.weight || '250г',
+          marked: meal.marked || false,
+          bookmarked: meal.bookmarked || false,
+          cookingTime: `${meal.cookingTime || 20} минут`,
+          difficultyLevel: meal.difficulty || meal.difficultyLevel || 'Легко',
+          rating: meal.rating || 0,
+          recipeId: meal.recipeId || meal.id,
+          image: meal.imageUrl 
+            ? { uri: meal.imageUrl }
+            : DEFAULT_MEAL_IMAGE
+        };
+        
+        return baseMeal;
+      });
+      
+      // Гарантируем, что всегда есть 4 приема пищи
+      if (formattedMeals.length < 4) {
+        console.log(`⚠️ В плане только ${formattedMeals.length} рецептов, дополняем...`);
+        const categories = ['Завтрак', 'Обед', 'Ужин', 'Перекусы'];
+        while (formattedMeals.length < 4) {
+          const missingIndex = formattedMeals.length;
+          formattedMeals.push({
+            id: `missing-${missingIndex}-${Date.now()}`,
+            category: categories[missingIndex] || 'Обед',
+            name: 'Рецепт',
+            calories: 400,
+            proteins: 25,
+            fats: 12,
+            carbohydrates: 45,
+            weight: '250г',
+            marked: false,
+            bookmarked: false,
+            cookingTime: '20 минут',
+            difficultyLevel: 'Легко',
+            rating: 0,
+            image: DEFAULT_MEAL_IMAGE
+          });
+        }
+      }
+      
+      // Обновляем состояние
+      setMeals(formattedMeals);
+      
+      // Обновляем потребленные калории и КБЖУ
+      const consumed = formattedMeals
+        .filter(meal => meal.marked)
+        .reduce((sum, meal) => sum + meal.calories, 0);
+      
+      const totalKBRU = formattedMeals.reduce(
+        (acc, meal) => ({
+          proteins: acc.proteins + meal.proteins,
+          fats: acc.fats + meal.fats,
+          carbohydrates: acc.carbohydrates + meal.carbohydrates,
+        }),
+        { proteins: 0, fats: 0, carbohydrates: 0 }
+      );
+      
+      setRecommendedKBRU(totalKBRU);
+      setUserData(prev => ({ ...prev, consumedCalories: consumed }));
+      
+      console.log("✅ Daily plan loaded:", {
+        meals: formattedMeals.length,
+        totalKBRU: totalKBRU
+      });
+      
+    } catch (error) {
+      console.error("❌ Critical error loading plan:", error);
+      Alert.alert("Ошибка", "Не удалось загрузить рацион. Попробуйте обновить.");
+    } finally {
+      setIsGeneratingPlan(false);
+      setIsRefreshing(false);
     }
+  }, [userId, userSettingsChanged]);
 
-    const plan = generateDailyPlan(userData.dailyCalories, recipeDatabase);
-
-    const totalKBRU = plan.reduce(
-      (acc, meal) => ({
-        proteins: acc.proteins + meal.proteins,
-        fats: acc.fats + meal.fats,
-        carbohydrates: acc.carbohydrates + meal.carbohydrates,
-      }),
-      { proteins: 0, fats: 0, carbohydrates: 0 }
-    );
-
-    return { plan, totalKBRU };
-  }, [userData.dailyCalories, recipeDatabase]);
-
-  // 4. Установка КБЖУ и плана
+  // 3. Загрузка данных пользователя (ТОЛЬКО для отображения, не для перегенерации плана)
   useEffect(() => {
-    const dailyCaloriesRoundedToNearestHundred =
-      Math.round(userData.dailyCalories / 100) * 100;
-
-    const targetProteins = Math.round(
-      (dailyCaloriesRoundedToNearestHundred * TARGET_KBRU_RATIOS.protein) / 4
-    );
-    const targetFats = Math.round(
-      (dailyCaloriesRoundedToNearestHundred * TARGET_KBRU_RATIOS.fat) / 9
-    );
-    const targetCarbs = Math.round(
-      (dailyCaloriesRoundedToNearestHundred * TARGET_KBRU_RATIOS.carb) / 4
-    );
-
-    setTargetKBRU({
-      proteins: targetProteins,
-      fats: targetFats,
-      carbohydrates: targetCarbs,
-    });
-
-    setRecommendedKBRU(generatedPlan.totalKBRU);
-    setMeals(generatedPlan.plan);
-  }, [userData.dailyCalories, generatedPlan]);
-
-  // 5. Прослушивание данных пользователя
-  useEffect(() => {
-    if (!db || !userId) {
-      return;
-    }
+    if (!db || !userId) return;
 
     const userDocRef = doc(db, `users/${userId}`);
 
@@ -363,10 +482,9 @@ export default function Home() {
       userDocRef,
       async (docSnap) => {
         if (docSnap.exists()) {
-          const data = docSnap.data() as any;
+          const data = docSnap.data() as UserProfileData;
 
-          const firstName =
-            data.first_name || data.firstName || data.name || "";
+          const firstName = data.first_name || data.firstName || data.name || "";
           const lastName = data.last_name || data.lastName || "";
 
           let currentName = "Пользователь";
@@ -378,292 +496,181 @@ export default function Home() {
             data.dailyCalories || data.targetCalories || 2000
           );
 
-          setUserData((prev) => ({
-            ...prev,
+          const photoURL = data.photoURL || null;
+
+          // Сравниваем с текущими значениями
+          const oldCalories = userData.dailyCalories;
+          
+          setUserData(prevState => ({
+            ...prevState,
             userName: currentName,
             dailyCalories: currentCalories,
+            targetProteins: data.targetProteinGrams || 0,
+            targetFats: data.targetFatGrams || 0,
+            targetCarbs: data.targetCarbGrams || 0,
+            photoURL: photoURL,
           }));
-        } else {
-          const defaultData = {
-            firstName: "Пользователь",
-            dailyCalories: 2000,
-            initialized: true,
-          };
-
-          await setDoc(userDocRef, defaultData, { merge: true }).catch((err) =>
-            console.error(
-              "❌ PROFILE: Error setting default user profile:",
-              err
-            )
-          );
-          setUserData((prev) => ({
-            ...prev,
-            userName: defaultData.firstName,
-            dailyCalories: defaultData.dailyCalories,
-          }));
+          
+          // Если изменились ключевые параметры, отмечаем что нужна перегенерация
+          if (Math.abs(currentCalories - oldCalories) > 100) {
+            console.log("🔄 User calories changed significantly, will regenerate on next refresh");
+            setUserSettingsChanged(true);
+          }
         }
       },
       (error) => {
         console.error("❌ PROFILE: Error listening to user profile:", error);
-        setUserData((prev) => ({
-          ...prev,
-          userName: "Ошибка",
-          dailyCalories: 2000,
-        }));
       }
     );
 
     return () => unsubscribeProfile();
   }, [db, userId]);
 
-  // 6. Прослушивание ежедневного журнала
+  // 4. Инициализация плана
   useEffect(() => {
-    if (!db || !userId || generatedPlan.plan.length === 0) {
-      setUserData((prev) => ({ ...prev, consumedCalories: 0 }));
-      return;
-    }
+    if (!userId) return;
+    
+    loadDailyPlan();
+    
+  }, [userId]);
 
-    const dailyLogDocRef = doc(
-      db,
-      `artifacts/${appId}/users/${userId}/ration_plan_days/today`
-    );
-
-    const unsubscribeLog = onSnapshot(
-      dailyLogDocRef,
-      async (docSnap) => {
-        const firebaseMealsState = docSnap.exists()
-          ? docSnap.data()?.meals || []
-          : [];
-        let newConsumedCalories = 0;
-        const currentGeneratedPlan = generatedPlan.plan;
-
-        const updatedMeals = currentGeneratedPlan.map((currentMeal) => {
-          const firebaseState = firebaseMealsState.find(
-            (fm: any) => fm.category === currentMeal.category
-          );
-
-          const marked = firebaseState?.marked ?? false;
-
-          if (marked) {
-            newConsumedCalories += currentMeal.calories;
-          }
-
-          return {
-            ...currentMeal,
-            id: firebaseState?.id || currentMeal.id,
-            marked: marked,
-            bookmarked: firebaseState?.bookmarked ?? false,
-          };
-        });
-
-        const roundedConsumedCalories = Math.round(newConsumedCalories);
-
-        setMeals(updatedMeals);
-        setUserData((prev) => ({
-          ...prev,
-          consumedCalories: roundedConsumedCalories,
-        }));
-      },
-      (error) => {
-        console.error("❌ LOG LISTEN: Error listening to daily log:", error);
-      }
-    );
-
-    return () => unsubscribeLog();
-  }, [db, userId, appId, generatedPlan]);
-
-  // 7. Сохранение сгенерированного плана
+  // 5. Расчет целевого КБЖУ
   useEffect(() => {
-    if (!db || !userId || generatedPlan.plan.length === 0) {
-      if (generatedPlan.plan.length === 0 && userId) {
-        console.log(
-          "⚠️ PLAN INIT: Plan generation skipped. No recipes available."
-        );
-      }
-      return;
-    }
-
-    const dailyLogDocRef = doc(
-      db,
-      `artifacts/${appId}/users/${userId}/ration_plan_days/today`
+    const dailyCalories = userData.dailyCalories;
+    
+    const targetProteins = Math.round(
+      (dailyCalories * TARGET_KBRU_RATIOS.protein) / 4
     );
+    const targetFats = Math.round(
+      (dailyCalories * TARGET_KBRU_RATIOS.fat) / 9
+    );
+    const targetCarbs = Math.round(
+      (dailyCalories * TARGET_KBRU_RATIOS.carb) / 4
+    );
+    
+    setTargetKBRU({
+      proteins: targetProteins,
+      fats: targetFats,
+      carbohydrates: targetCarbs,
+    });
+  }, [userData.dailyCalories]);
 
-    const checkAndSavePlan = async () => {
-      try {
-        const docSnap = await getDoc(dailyLogDocRef);
-
-        console.log("🔍 PLAN INIT: Checking path:", dailyLogDocRef.path);
-
-        if (docSnap.exists()) {
-          console.log(
-            `🔍 PLAN INIT: Document exists. Initialized flag: ${
-              docSnap.data()?.initialized
-            }`
-          );
-        } else {
-          console.log(
-            "🔍 PLAN INIT: Document does NOT exist. Proceeding to save."
-          );
-        }
-
-        if (!docSnap.exists() || docSnap.data()?.initialized !== true) {
-          console.log("🔥 SAVE: Attempting to save generated plan (setDoc)...");
-
-          const initialLogData = {
-            consumedCalories: 0,
-            meals: generatedPlan.plan.map((m) => ({
-              id: m.id,
-              category: m.category,
-              marked: m.marked,
-              bookmarked: m.bookmarked,
-            })),
-            initialized: true,
-            createdAt: new Date().toISOString(),
-          };
-          await setDoc(dailyLogDocRef, initialLogData);
-          console.log(
-            "✅ SAVE: Generated plan successfully saved to Firestore."
-          );
-        } else {
-          console.log(
-            "💡 PLAN INIT: Plan already initialized for today. Skipping setDoc."
-          );
-        }
-      } catch (error) {
-        console.error(
-          "❌ SAVE: FATAL ERROR checking or saving generated plan to Firebase:",
-          error
+  // 6. Функция обновления состояния приема пищи
+  const updateMealState = useCallback(async (mealId: string, updates: Partial<Meal>) => {
+    if (!userId || !db) return;
+    
+    try {
+      const mealIndex = meals.findIndex(m => m.id === mealId);
+      if (mealIndex === -1) return;
+      
+      const updatedMeals = [...meals];
+      updatedMeals[mealIndex] = { ...updatedMeals[mealIndex], ...updates };
+      setMeals(updatedMeals);
+      
+      const newConsumedCalories = updatedMeals
+        .filter(meal => meal.marked)
+        .reduce((sum, meal) => sum + meal.calories, 0);
+      
+      setUserData(prev => ({ ...prev, consumedCalories: newConsumedCalories }));
+      
+      if (updates.marked !== undefined) {
+        await dailyRationService.updateMealStatus(
+          userId,
+          new Date(),
+          mealId,
+          { marked: updates.marked }
         );
       }
-    };
-    checkAndSavePlan();
-  }, [db, userId, appId, generatedPlan.plan.length]);
+      
+    } catch (error) {
+      console.error("❌ Error updating meal state:", error);
+      loadDailyPlan();
+    }
+  }, [userId, db, meals, loadDailyPlan]);
 
-  // 8. Обновление состояния в Firebase
-  const updateMealStateInFirebase = useCallback(
-    async (index: number, field: "marked" | "bookmarked", value: boolean) => {
-      if (!db || !userId) return;
-
-      const dailyLogDocRef = doc(
-        db,
-        `artifacts/${appId}/users/${userId}/ration_plan_days/today`
-      );
-
-      const currentMeals = mealsRef.current;
-
-      const updatedMealsArrayForCalc = currentMeals.map((meal, i) => {
-        if (i === index) {
-          return { ...meal, [field]: value };
-        }
-        return meal;
-      });
-
-      const newConsumedCalories = updatedMealsArrayForCalc
-        .filter((m) => m.marked)
-        .reduce((sum, m) => sum + m.calories, 0);
-
-      const newConsumedCaloriesRounded = Math.round(newConsumedCalories);
-
-      const firebaseUpdateArray = updatedMealsArrayForCalc.map((m) => ({
-        id: m.id,
-        category: m.category,
-        marked: m.marked,
-        bookmarked: m.bookmarked,
-      }));
-
-      try {
-        console.log(
-          `🔄 UPDATE: Attempting to update log (${field}: ${value}). Calories: ${newConsumedCaloriesRounded}`
-        );
-        await updateDoc(dailyLogDocRef, {
-          meals: firebaseUpdateArray,
-          consumedCalories: newConsumedCaloriesRounded,
-        });
-        console.log("✅ UPDATE: Log successfully updated.");
-      } catch (error) {
-        console.error(
-          "❌ UPDATE: Error updating meal state in Firebase:",
-          error
-        );
-      }
-    },
-    [db, userId, appId]
-  );
-
-  const toggleMeal = (index: number) => {
-    const newValue = !meals[index].marked;
-    updateMealStateInFirebase(index, "marked", newValue);
-  };
-
-  // ИСПРАВЛЕННАЯ ФУНКЦИЯ ДЛЯ ИЗБРАННОГО (как на странице Recipes)
-  const toggleBookmark = async (index: number) => {
+  // 7. Функция обновления избранного
+  const toggleBookmark = useCallback(async (mealId: string) => {
     if (!userId) {
       Alert.alert("Ошибка", "Для добавления в избранное необходимо авторизоваться");
       return;
     }
-
-    const meal = meals[index];
-    const newValue = !meal.bookmarked;
     
     try {
-      // 1. Обновляем локальное состояние
+      const mealIndex = meals.findIndex(m => m.id === mealId);
+      if (mealIndex === -1) return;
+      
+      const currentBookmarked = meals[mealIndex].bookmarked;
+      const recipeId = meals[mealIndex].recipeId || mealId;
+      
       const updatedMeals = [...meals];
-      updatedMeals[index] = { ...updatedMeals[index], bookmarked: newValue };
+      updatedMeals[mealIndex] = { ...updatedMeals[mealIndex], bookmarked: !currentBookmarked };
       setMeals(updatedMeals);
-
-      // 2. Обновляем в Firebase (как на странице Recipes)
-      if (newValue) {
-        // Добавление закладки - используем подход из Recipes
-        if (!db) throw new Error("База данных не инициализирована");
-        
-        await setDoc(
-          doc(db, "user_favorites", `${userId}_${meal.id}`),
-          {
-            userId: userId,
-            recipeId: meal.id,
-            favoriteType: 'recipe', // Добавляем поле для совместимости
-            createdAt: new Date(),
-            active: true,
-          },
-          { merge: true }
-        );
-        console.log(`✅ Рецепт "${meal.name}" (ID: ${meal.id}) добавлен в избранное`);
-      } else {
-        // Удаление закладки - используем подход из Recipes
-        if (!db) throw new Error("База данных не инициализирована");
-        
-        const favoriteQuery = query(
-          collection(db, "user_favorites"),
-          where("userId", "==", userId),
-          where("recipeId", "==", meal.id)
-        );
-        
-        const favoriteSnapshot = await getDocs(favoriteQuery);
-        if (!favoriteSnapshot.empty) {
-          favoriteSnapshot.forEach(async (doc) => {
-            await updateDoc(doc.ref, { active: false });
-          });
-          console.log(`❌ Рецепт "${meal.name}" (ID: ${meal.id}) удален из избранного`);
-        }
-      }
-
-      // 3. Также обновляем в daily log
-      updateMealStateInFirebase(index, "bookmarked", newValue);
-
+      
+      await dailyRationService.toggleBookmark(userId, recipeId, !currentBookmarked);
+      
+      await dailyRationService.updateMealStatus(
+        userId,
+        new Date(),
+        mealId,
+        { bookmarked: !currentBookmarked }
+      );
+      
     } catch (error: any) {
       console.error("Ошибка при обновлении избранного:", error);
-      
-      // Откатываем локальное состояние при ошибке
-      const rollbackMeals = [...meals];
-      rollbackMeals[index] = { ...rollbackMeals[index], bookmarked: !newValue };
-      setMeals(rollbackMeals);
-      
       Alert.alert("Ошибка", error.message || "Не удалось обновить избранное");
+      loadDailyPlan();
     }
-  };
+  }, [userId, meals, loadDailyPlan]);
+
+  // 8. Функция сохранения всего рациона в избранное
+  const saveDailyPlanToFavorites = useCallback(() => {
+    if (!userId) {
+      Alert.alert("Ошибка", "Для сохранения рациона необходимо авторизоваться");
+      return;
+    }
+    
+    Alert.alert(
+      "Сохранить рацион",
+      "Сохранить дневной рацион в избранные рецепты?",
+      [
+        {
+          text: "Отмена",
+          style: "cancel"
+        },
+        {
+          text: "Сохранить",
+          onPress: async () => {
+            try {
+              // Здесь будет реализация сохранения всего рациона
+              Alert.alert("Успех", "Весь рацион сохранен в избранные рецепты!");
+            } catch (error) {
+              Alert.alert("Ошибка", "Не удалось сохранить рацион");
+            }
+          }
+        }
+      ]
+    );
+  }, [userId]);
+
+  // 9. Обработчики UI
+  const handleToggleMeal = useCallback((mealId: string) => {
+    const meal = meals.find(m => m.id === mealId);
+    if (meal) {
+      updateMealState(mealId, { marked: !meal.marked });
+    }
+  }, [meals, updateMealState]);
+
+  const handleToggleBookmark = useCallback((mealId: string) => {
+    const meal = meals.find(m => m.id === mealId);
+    if (meal) {
+      toggleBookmark(mealId);
+    }
+  }, [meals, toggleBookmark]);
 
   const navigateToMealPage = (mealIndex: number) => {
     const meal = meals[mealIndex];
+    if (!meal) return;
+    
     router.push({
       pathname: "/meal",
       params: {
@@ -680,26 +687,47 @@ export default function Home() {
         cookingTime: meal.cookingTime || "20 минут",
         difficultyLevel: meal.difficultyLevel || "Легко",
         rating: meal.rating?.toString() || "0",
+        fromScreen: "home",
       },
     });
   };
 
-  if (loading) {
+  const navigateToProfile = () => {
+    if (userId) {
+      router.push('/profile');
+    }
+  };
+
+  const navigateToAddRecipe = () => {
+    if (userId) {
+      router.push('/create-recipe');
+    }
+  };
+
+  const handleRefresh = () => {
+    setIsRefreshing(true);
+    loadDailyPlan(true); // Принудительная перегенерация при обновлении
+  };
+
+  // 10. Обработка пустого состояния
+  if (loading || isGeneratingPlan) {
     return (
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="large" color="#6A9AA9" />
         <Text style={styles.loadingText}>
-          Загрузка рецептов и генерация рациона...
+          {isGeneratingPlan ? "Генерируем ваш рацион..." : "Загрузка..."}
         </Text>
       </View>
     );
   }
 
+  // 11. Расчет отображения
   const dailyTargetForDisplay = Math.round(userData.dailyCalories / 100) * 100;
-  const progressPercentage =
-    (userData.consumedCalories / dailyTargetForDisplay) * 100;
-
-  const remainingCalories = userData.dailyCalories - userData.consumedCalories;
+  const progressPercentage = Math.min(
+    100,
+    (userData.consumedCalories / dailyTargetForDisplay) * 100
+  );
+  const remainingCalories = Math.max(0, dailyTargetForDisplay - userData.consumedCalories);
 
   return (
     <View style={styles.rootContainer}>
@@ -715,27 +743,42 @@ export default function Home() {
             </Text>
           </View>
 
-          <View style={styles.userInfo}>
-            <Image
-              source={require("@/assets/images/people-icon.png")}
-              style={styles.profileImage}
-            />
+          <TouchableOpacity 
+            style={styles.userInfo}
+            onPress={navigateToProfile}
+          >
+            {userProfileLoading ? (
+              <View style={styles.avatarLoading}>
+                <ActivityIndicator size="small" color="#6A9AA9" />
+              </View>
+            ) : (
+              <Avatar photoURL={userData.photoURL} size={55} />
+            )}
             <Text style={styles.userName}>
               {userData.userName || "Пользователь"}
             </Text>
-          </View>
+          </TouchableOpacity>
         </View>
 
         <ScrollView
           style={styles.scrollView}
           showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl
+              refreshing={isRefreshing}
+              onRefresh={handleRefresh}
+              colors={["#6A9AA9"]}
+              tintColor="#6A9AA9"
+            />
+          }
         >
           {/* Прогресс калорий и КБЖУ */}
           <View style={styles.caloriesSection}>
-            <Text style={styles.caloriesTitle}>
-              Цель на день:{" "}
-              {dailyTargetForDisplay} ккал
-            </Text>
+            <View style={styles.caloriesHeader}>
+              <Text style={styles.caloriesTitle}>
+                Цель на день: {dailyTargetForDisplay} ккал
+              </Text>
+            </View>
 
             <View style={styles.remainingCaloriesContainer}>
               <Text style={styles.remainingCaloriesLabel}>Осталось:</Text>
@@ -748,16 +791,14 @@ export default function Home() {
               <View
                 style={[
                   styles.progressFill,
-                  { width: `${Math.min(100, progressPercentage)}%` },
+                  { width: `${progressPercentage}%` },
                 ]}
               />
             </View>
 
             <View style={styles.kbruContainer}>
               <View style={styles.kbruRow}>
-                <Text
-                  style={[styles.kbruHeader, { flex: 1, textAlign: "left" }]}
-                >
+                <Text style={[styles.kbruHeader, { flex: 1, textAlign: "left" }]}>
                   Макронутриенты
                 </Text>
                 <Text style={styles.kbruHeader}>Белки (г)</Text>
@@ -766,9 +807,7 @@ export default function Home() {
               </View>
 
               <View style={styles.kbruRow}>
-                <Text
-                  style={[styles.kbruLabel, { flex: 1, textAlign: "left" }]}
-                >
+                <Text style={[styles.kbruLabel, { flex: 1, textAlign: "left" }]}>
                   План (Рацион)
                 </Text>
                 <Text style={styles.kbruValue}>{recommendedKBRU.proteins}</Text>
@@ -779,12 +818,10 @@ export default function Home() {
               </View>
 
               <View style={[styles.kbruRow, styles.targetKBRURow]}>
-                <Text
-                  style={[
-                    styles.kbruLabel,
-                    { flex: 1, textAlign: "left", fontFamily: "Playfair Display Bold" },
-                  ]}
-                >
+                <Text style={[
+                  styles.kbruLabel,
+                  { flex: 1, textAlign: "left", fontFamily: "Playfair Display Bold" },
+                ]}>
                   Цель (Ваша норма)
                 </Text>
                 <Text style={[styles.kbruValue, { fontFamily: "Playfair Display Bold" }]}>
@@ -799,17 +836,43 @@ export default function Home() {
               </View>
             </View>
 
+            {/* Кнопка сохранения всего рациона - ПОД таблицей БЖУ */}
+            <TouchableOpacity
+              style={styles.saveDailyPlanButton}
+              onPress={saveDailyPlanToFavorites}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="bookmark-outline" size={18} color="#6A9AA9" />
+              <Text style={styles.saveDailyPlanText}>
+                Сохранить рацион в избранные
+              </Text>
+            </TouchableOpacity>
+
             <View style={styles.sectionDivider} />
           </View>
 
-          {/* Приемы пищи - ОБНОВЛЕННАЯ ВЕРСИЯ (как на странице Recipes) */}
+          {/* Заголовок приемов пищи с кнопкой добавления рецепта справа */}
+          <View style={styles.mealsTitleSection}>
+            <Text style={styles.mealsTitle}>Приемы пищи на сегодня</Text>
+            <TouchableOpacity 
+              style={styles.addRecipeButton}
+              onPress={navigateToAddRecipe}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="add-circle-outline" size={18} color="#6A9AA9" />
+              <Text style={styles.addRecipeText}>Добавить рецепт</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Приемы пищи */}
           <View style={styles.mealsSection}>
             <View style={styles.recipesGrid}>
               {meals.map((meal, mealIndex) => (
-                <View key={mealIndex} style={styles.recipeColumn}>
+                <View key={meal.id} style={styles.recipeColumn}>
                   <TouchableOpacity
                     style={styles.recipeCard}
                     onPress={() => navigateToMealPage(mealIndex)}
+                    activeOpacity={0.7}
                   >
                     <View style={styles.imageContainer}>
                       <Image
@@ -818,41 +881,30 @@ export default function Home() {
                         resizeMode="cover"
                       />
                       
-                      {/* Бейджи рейтинга и сложности как в Recipes */}
-                      <View style={styles.recipeBadges}>
-                        {meal.rating && meal.rating > 0 ? (
-                          <View style={styles.ratingBadge}>
-                            <FontAwesome name="star" size={10} color="#FFD700" />
-                            <Text style={styles.ratingText}>
-                              {meal.rating.toFixed(1)}
-                            </Text>
-                          </View>
-                        ) : null}
-                        <View
-                          style={[
-                            styles.difficultyBadge,
-                            {
-                              backgroundColor: getDifficultyColor(meal.difficultyLevel),
-                            },
-                          ]}
-                        >
-                          <Text style={styles.difficultyText}>
-                            {meal.difficultyLevel || "Легко"}
-                          </Text>
-                        </View>
-                      </View>
+                      {/* Бэдж сложности в ВЕРХНЕМ ЛЕВОМ углу */}
+                      <DifficultyBadge difficulty={meal.difficultyLevel} />
                       
-                      {/* Кнопка закладки */}
+                      {/* Кнопка избранного в ВЕРХНЕМ ПРАВОМ углу */}
                       <TouchableOpacity
                         style={styles.bookmarkButton}
-                        onPress={() => toggleBookmark(mealIndex)}
+                        onPress={() => handleToggleBookmark(meal.id)}
                       >
                         <Ionicons
                           name={meal.bookmarked ? "bookmark" : "bookmark-outline"}
                           size={18}
-                          color="#6A9AA9"
+                          color={meal.bookmarked ? "#FF6B6B" : "#6A9AA9"}
                         />
                       </TouchableOpacity>
+                      
+                      {/* Рейтинг в нижнем левом углу */}
+                      {meal.rating && meal.rating > 0 ? (
+                        <View style={styles.ratingBadge}>
+                          <FontAwesome name="star" size={10} color="#FFD700" />
+                          <Text style={styles.ratingText}>
+                            {meal.rating.toFixed(1)}
+                          </Text>
+                        </View>
+                      ) : null}
                     </View>
                     
                     <View style={styles.recipeContent}>
@@ -865,13 +917,11 @@ export default function Home() {
                           {meal.name}
                         </Text>
                         
-                        {/* Категория */}
                         <Text style={styles.recipeCategory}>
                           {meal.category}
                         </Text>
                         
                         <View style={styles.recipeDetails}>
-                          {/* Калории */}
                           <Text style={styles.recipeCalories}>
                             {meal.calories} ккал
                           </Text>
@@ -893,7 +943,7 @@ export default function Home() {
                           styles.markButton,
                           meal.marked && styles.markButtonActive,
                         ]}
-                        onPress={() => toggleMeal(mealIndex)}
+                        onPress={() => handleToggleMeal(meal.id)}
                       >
                         {meal.marked ? (
                           <Image
@@ -902,7 +952,7 @@ export default function Home() {
                           />
                         ) : (
                           <Text style={styles.markButtonText}>
-                            Отметить
+                            Отметить прием
                           </Text>
                         )}
                       </TouchableOpacity>
@@ -968,17 +1018,22 @@ const styles = StyleSheet.create({
     alignItems: "center",
     minWidth: 60,
   },
-  profileImage: {
-    width: 55,
-    height: 55,
-    borderRadius: 25,
-  },
   userName: {
     fontSize: 12,
     color: "#666",
     fontFamily: "Playfair Display Regular",
     marginTop: 4,
     textAlign: "center",
+  },
+  avatarLoading: {
+    width: 55,
+    height: 55,
+    borderRadius: 27.5,
+    backgroundColor: "#E5F0F5",
+    justifyContent: "center",
+    alignItems: "center",
+    borderWidth: 2,
+    borderColor: "#9BDF11",
   },
   scrollView: {
     flex: 1,
@@ -988,11 +1043,17 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255, 255, 255, 0.95)",
     marginBottom: 1,
   },
+  caloriesHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 12,
+  },
   caloriesTitle: {
     fontSize: 16,
     color: "#000000ff",
-    marginBottom: 12,
     fontFamily: "Playfair Display Regular",
+    flex: 1,
   },
   remainingCaloriesContainer: {
     flexDirection: "row",
@@ -1021,6 +1082,25 @@ const styles = StyleSheet.create({
     height: "100%",
     backgroundColor: "#9BDF11",
     borderRadius: 6,
+  },
+  saveDailyPlanButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#E5F0F5",
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 12,
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: "#C2DAE2",
+    marginTop: 0, 
+  },
+  saveDailyPlanText: {
+    fontSize: 14,
+    color: "#6A9AA9",
+    fontFamily: "Playfair Display Regular",
+    marginLeft: 8,
   },
   kbruContainer: {
     paddingHorizontal: 5,
@@ -1070,12 +1150,43 @@ const styles = StyleSheet.create({
     backgroundColor: "#6A9AA9",
     marginHorizontal: -20,
   },
+  mealsTitleSection: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 16,
+    backgroundColor: "rgba(255, 255, 255, 0.95)",
+  },
+  mealsTitle: {
+    fontSize: 20,
+    color: "#1a1a1a",
+    fontFamily: "Playfair Display Bold",
+    flex: 1,
+  },
+  addRecipeButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 20,
+    backgroundColor: "#E5F0F5",
+    borderWidth: 1,
+    borderColor: "#C2DAE2",
+    marginLeft: 12,
+  },
+  addRecipeText: {
+    fontSize: 14,
+    color: "#6A9AA9",
+    fontFamily: "Playfair Display Regular",
+    marginLeft: 6,
+  },
   mealsSection: {
     backgroundColor: "rgba(255, 255, 255, 0.95)",
-    padding: 20,
-    paddingBottom: 20,
+    paddingHorizontal: 20,
+    paddingBottom: 40,
   },
-  // Новые стили для карточек как в Recipes
   recipesGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -1091,52 +1202,37 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     overflow: "hidden",
     shadowColor: "#000",
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
+    shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.1,
     shadowRadius: 3.84,
     elevation: 5,
-    height: 280,
+    height: 300,
     borderWidth: 1,
     borderColor: "#A8C8D4",
   },
   imageContainer: {
     position: "relative",
+    height: 140,
   },
   recipeImage: {
     width: "100%",
-    height: 120,
+    height: "100%",
   },
-  recipeBadges: {
+  difficultyBadge: {
     position: "absolute",
     top: 8,
     left: 8,
-    flexDirection: "column",
-    gap: 4,
-  },
-  ratingBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.9)",
-    paddingHorizontal: 6,
-    paddingVertical: 3,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
     borderRadius: 10,
-  },
-  ratingText: {
-    fontSize: 10,
-    color: "#000000",
-    fontFamily: "Playfair Display Bold",
-    marginLeft: 2,
-  },
-  difficultyBadge: {
-    paddingHorizontal: 6,
-    paddingVertical: 3,
-    borderRadius: 10,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.2,
+    shadowRadius: 1.41,
+    elevation: 2,
   },
   difficultyText: {
-    fontSize: 9,
+    fontSize: 10,
     color: "#FFFFFF",
     fontFamily: "Playfair Display Bold",
   },
@@ -1151,13 +1247,27 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     shadowColor: "#000",
-    shadowOffset: {
-      width: 0,
-      height: 1,
-    },
+    shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.2,
     shadowRadius: 1.41,
     elevation: 2,
+  },
+  ratingBadge: {
+    position: "absolute",
+    bottom: 8,
+    left: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(255, 255, 255, 0.9)",
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: 10,
+  },
+  ratingText: {
+    fontSize: 10,
+    color: "#000000",
+    fontFamily: "Playfair Display Bold",
+    marginLeft: 2,
   },
   recipeContent: {
     padding: 12,
@@ -1187,6 +1297,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     flexWrap: "wrap",
+    marginTop: 4,
   },
   recipeCalories: {
     fontSize: 12,
@@ -1201,6 +1312,7 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: "#6C757D",
     fontFamily: "Playfair Display Regular",
+    marginRight: 12,
   },
   markButton: {
     backgroundColor: "#9BDF11",

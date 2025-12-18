@@ -89,14 +89,20 @@ export default function Meal() {
     mealIndex = "0",
     initialBookmarked = "false",
     mealId = "",
+    fromScreen = "", // получаем параметр fromScreen
   } = params;
+
+  // Определяем, пришли ли мы с домашней страницы
+  const isFromHome = fromScreen === "home";
 
   // Лог для проверки переданного ID
   useEffect(() => {
     console.log("📍 MEAL.JS - Params Received:");
     console.log(`Meal ID: ${mealId || "N/A"}`);
     console.log(`Meal Name: ${mealName}`);
-  }, [mealId, mealName]);
+    console.log(`From Screen: ${fromScreen || "N/A"}`);
+    console.log(`Is from Home: ${isFromHome}`);
+  }, [mealId, mealName, fromScreen, isFromHome]);
 
   // --- СОСТОЯНИЕ ---
   const [db, setDb] = useState<any>(null);
@@ -389,11 +395,15 @@ export default function Meal() {
 
   // Смена блюда - использует handleNavigationBack (теперь с replace)
   const handleChangeMeal = () => {
-    handleNavigationBack(true, isBookmarked);
+    if (isFromHome) {
+      handleNavigationBack(true, isBookmarked);
+    }
   };
 
   const handleChooseFromList = () => {
-    router.push("/recipes");
+    if (isFromHome) {
+      router.push("/recipes");
+    }
   };
 
   const getMealImage = () => {
@@ -502,22 +512,24 @@ export default function Meal() {
           </TouchableOpacity>
         </View>
 
-        {/* Кнопки действий под изображением */}
-        <View style={styles.actionButtons}>
-          <TouchableOpacity
-            style={styles.changeMealButton}
-            onPress={handleChangeMeal}
-          >
-            <Text style={styles.changeMealText}>Сменить блюдо</Text>
-          </TouchableOpacity>
+        {/* Кнопки действий под изображением - ТОЛЬКО если пришли с Home */}
+        {isFromHome && (
+          <View style={styles.actionButtons}>
+            <TouchableOpacity
+              style={styles.changeMealButton}
+              onPress={handleChangeMeal}
+            >
+              <Text style={styles.changeMealText}>Сменить блюдо</Text>
+            </TouchableOpacity>
 
-          <TouchableOpacity
-            style={styles.chooseFromListButton}
-            onPress={handleChooseFromList}
-          >
-            <Text style={styles.chooseFromListText}>Выбрать из списка</Text>
-          </TouchableOpacity>
-        </View>
+            <TouchableOpacity
+              style={styles.chooseFromListButton}
+              onPress={handleChooseFromList}
+            >
+              <Text style={styles.chooseFromListText}>Выбрать из списка</Text>
+            </TouchableOpacity>
+          </View>
+        )}
 
         {/* Основная информация */}
         <View style={styles.content}>

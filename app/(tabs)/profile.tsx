@@ -34,7 +34,8 @@ type ProfileData = {
   customNutritionType: string;
   cookingTimeLimit: string;
   isProfileFilled: boolean;
-  avatarUri?: string | null;
+  photoURL?: string | null; // Изменено: теперь photoURL вместо avatarUri
+  cloudinaryPublicId?: string; // Добавлено для Cloudinary
 };
 
 type Recipe = {
@@ -65,7 +66,7 @@ const PROFILE_SETUP_KEY = "profile_setup_complete";
 
 // Размеры для карточек
 const { width } = Dimensions.get("window");
-const CARD_WIDTH = (width - 48) / 2; // (Ширина экрана - 30*2 padding - 8 gap)/2
+const CARD_WIDTH = (width - 48) / 2;
 
 // Функция для правильного склонения слова "минута"
 const formatMinutes = (minutes: number): string => {
@@ -88,13 +89,9 @@ const getCategoryName = (mealType: string) => {
   switch (normalizedMealType) {
     case "breakfast":
     case "завтрак":
-    case "breakfast":
       return "Завтрак";
     case "lunch":
     case "обед":
-    case "ocheq":
-    case "dceq":
-    case "ocеq":
       return "Обед";
     case "dinner":
     case "ужин":
@@ -135,7 +132,7 @@ export default function ProfileScreen() {
   const [favoriteRecipes, setFavoriteRecipes] = useState<Recipe[]>([]);
   const [savedPlans, setSavedPlans] = useState<Plan[]>([]);
   const [favoritesLoading, setFavoritesLoading] = useState(false);
-  const [, setProfileCompleted] = useState(false);
+  const [profileCompleted, setProfileCompleted] = useState(false);
 
   // --- ФУНКЦИЯ ЗАГРУЗКИ ИЗБРАННОГО ИЗ БД ---
   const loadFavoritesFromDB = useCallback(async () => {
@@ -286,23 +283,92 @@ export default function ProfileScreen() {
   const loadProfileData = useCallback(async () => {
     setLoading(true);
     try {
+      // 1. Загружаем данные из AsyncStorage
       const [storedProfile, setupStatus] = await Promise.all([
         AsyncStorage.getItem(PROFILE_STORAGE_KEY),
         AsyncStorage.getItem(PROFILE_SETUP_KEY),
       ]);
 
+      let profileFromStorage: ProfileData = defaultProfileData;
+      
       if (storedProfile) {
-        const parsedData = JSON.parse(storedProfile);
-        setProfileData({ ...defaultProfileData, ...parsedData });
-      } else {
-        setProfileData(defaultProfileData);
+        try {
+          const parsedData = JSON.parse(storedProfile);
+          profileFromStorage = { ...defaultProfileData, ...parsedData };
+        } catch (parseError) {
+          console.error("Ошибка парсинга профиля из AsyncStorage:", parseError);
+        }
       }
 
+      // 2. Пробуем загрузить фото из Firebase Auth (если пользователь авторизован)
+      if (auth.currentUser) {
+        const authUser = auth.currentUser;
+        
+        // Получаем имя из Auth, если его нет в хранилище
+        if (!profileFromStorage.name || profileFromStorage.name === "Пользователь") {
+          profileFromStorage.name = authUser.displayName || 
+                                   authUser.email?.split('@')[0] || 
+                                   "Пользователь";
+        }
+        
+        // Получаем email из Auth, если его нет в хранилище
+        if (!profileFromStorage.email) {
+          profileFromStorage.email = authUser.email || "";
+        }
+        
+        // Получаем фото из Firebase Auth (приоритет 1)
+        if (authUser.photoURL && !profileFromStorage.photoURL) {
+          profileFromStorage.photoURL = authUser.photoURL;
+        }
+        
+        // 3. Пробуем загрузить из Firestore через userService (приоритет 2)
+        try {
+          // Импортируем userService внутри функции
+          const { userService } = require("@/app/services/userService");
+          const firestoreData = await userService.fetchUserProfile(authUser.uid);
+          
+          if (firestoreData) {
+            // Обновляем фото из Firestore, если есть
+            if (firestoreData.photoURL && !profileFromStorage.photoURL) {
+              profileFromStorage.photoURL = firestoreData.photoURL;
+            }
+            
+            // Обновляем другие данные из Firestore
+            profileFromStorage = {
+              ...profileFromStorage,
+              name: firestoreData.name || profileFromStorage.name,
+              email: firestoreData.email || profileFromStorage.email,
+              description: firestoreData.description || profileFromStorage.description,
+              age: firestoreData.age || profileFromStorage.age,
+              height: firestoreData.height || profileFromStorage.height,
+              gender: firestoreData.gender || profileFromStorage.gender,
+              weight: firestoreData.weight || profileFromStorage.weight,
+              goal: firestoreData.goal || profileFromStorage.goal,
+              activity: firestoreData.activity || profileFromStorage.activity,
+              nutritionType: firestoreData.dietType || firestoreData.nutritionType || profileFromStorage.nutritionType,
+              allergies: firestoreData.allergies || profileFromStorage.allergies,
+              dislikes: firestoreData.excludedIngredients || firestoreData.dislikes || profileFromStorage.dislikes,
+              isPrivate: firestoreData.isProfilePrivate ?? profileFromStorage.isPrivate,
+              cookingTimeLimit: firestoreData.cookingTimeLimit || profileFromStorage.cookingTimeLimit,
+              isProfileFilled: firestoreData.isProfileFilled ?? profileFromStorage.isProfileFilled,
+              cloudinaryPublicId: firestoreData.cloudinaryPublicId || profileFromStorage.cloudinaryPublicId,
+            };
+          }
+        } catch (firestoreError) {
+          console.error("Ошибка загрузки профиля из Firestore:", firestoreError);
+          // Продолжаем с данными из AsyncStorage
+        }
+      }
+
+      setProfileData(profileFromStorage);
       setProfileCompleted(setupStatus === "true");
       
+      // 4. Загружаем избранное
       await loadFavoritesFromDB();
+      
     } catch (error) {
       console.error("Не удалось загрузить профиль:", error);
+      setProfileData(defaultProfileData);
     } finally {
       setLoading(false);
     }
@@ -432,7 +498,25 @@ export default function ProfileScreen() {
     </TouchableOpacity>
   );
 
-  // --- РЕНДЕР КАРТОЧКИ РЕЦЕПТА (КОПИЯ С RECIPES.TSX) ---
+  // --- КОМПОНЕНТ АВАТАРА С ФОТО ИЛИ ЗАГЛУШКОЙ ---
+  const AvatarComponent = () => {
+    if (profileData.photoURL) {
+      return (
+        <Image
+          source={{ uri: profileData.photoURL }}
+          style={styles.avatarImage}
+          resizeMode="cover"
+        />
+      );
+    }
+    
+    // Заглушка, если фото нет
+    return (
+      <Ionicons name="person" size={48} color="#6A9AA9" />
+    );
+  };
+
+  // --- РЕНДЕР КАРТОЧКИ РЕЦЕПТА ---
   const renderRecipeCard = (recipe: Recipe) => (
     <View key={recipe.id} style={styles.recipeColumn}>
       <TouchableOpacity
@@ -531,14 +615,7 @@ export default function ProfileScreen() {
     >
       <View style={styles.profileCard}>
         <View style={styles.avatar}>
-          {profileData.avatarUri ? (
-            <Image
-              source={{ uri: profileData.avatarUri }}
-              style={styles.avatarImage}
-            />
-          ) : (
-            <Ionicons name="person" size={48} color="#6A9AA9" />
-          )}
+          <AvatarComponent />
         </View>
         <Text style={styles.nameText}>{userName}</Text>
         <Text style={styles.descriptionText}>
@@ -848,7 +925,7 @@ const styles = StyleSheet.create({
     fontFamily: "Playfair Display Bold",
   },
 
-  // СТИЛИ ДЛЯ РЕЦЕПТОВ (КОПИЯ С RECIPES.TSX)
+  // СТИЛИ ДЛЯ РЕЦЕПТОВ
   recipesGrid: {
     flexDirection: "row",
     flexWrap: "wrap",

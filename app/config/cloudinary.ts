@@ -1,176 +1,84 @@
-/**
- * Конфигурация Cloudinary для приложения рецептов
- * Cloud Name: df88pkxud
- * Upload Preset: recipe_upload_app (настроен с папкой recipes)
- */
 
-// Основная конфигурация
 export const CLOUDINARY_CONFIG = {
-  // Ваш Cloud Name
+  // Ваш Cloud Name из Dashboard
   cloudName: 'df88pkxud',
   
-  // Имя Upload Preset (убедитесь что он настроен с папкой recipes)
+  // Имя Upload Preset который мы создали
   uploadPreset: 'recipe_upload_app',
   
-  // URL для загрузки (автоматически генерируется)
-  get uploadUrl() {
-    return `https://api.cloudinary.com/v1_1/${this.cloudName}/image/upload`;
-  },
-  
-  // URL для удаления (если понадобится)
-  get deleteUrl() {
-    return `https://api.cloudinary.com/v1_1/${this.cloudName}/image/destroy`;
-  },
-  
-  // Флаги для проверки настроек Upload Preset
-  expectedPresetSettings: {
-    useFilename: true,           // Использовать имя файла
-    uniqueFilename: true,        // Добавлять уникальный суффикс
-    prependPath: true,           // Добавлять путь к public_id
-    targetFolder: 'recipes',     // Целевая папка
-    overwrite: false,            // Не перезаписывать файлы
-  },
+  // URL для загрузки
+  uploadUrl: 'https://api.cloudinary.com/v1_1/df88pkxud/image/upload',
 };
 
 /**
- * Настройки изображений для оптимизации
+ * Настройки изображений
  */
 export const IMAGE_SETTINGS = {
-  // Максимальные размеры (Cloudinary бесплатно до 10MB, но оптимизируем)
+  // Максимальные размеры
   maxWidth: 1200,
   maxHeight: 1200,
   
-  // Качество сжатия
-  quality: 0.85,
+  // Качество сжатия (0.1 - 1.0)
+  quality: 0.8,
   
   // Формат для сохранения
   format: 'JPEG' as const,
   
-  // Целевая папка в Cloudinary (должна совпадать с Upload Preset)
-  targetFolder: 'recipes',
+  // Папка для загрузки (совпадает с Upload Preset)
+  folder: 'recipes',
   
   // Максимальный размер файла (10MB - Cloudinary бесплатный лимит)
-  maxFileSize: 10 * 1024 * 1024, // 10MB
+  maxFileSize: 10 * 1024 * 1024, // 10MB в байтах
   
   // Разрешенные типы файлов
-  allowedExtensions: ['jpg', 'jpeg', 'png', 'webp', 'gif'],
-  allowedMimeTypes: ['image/jpeg', 'image/png', 'image/webp', 'image/gif'],
+  allowedTypes: ['image/jpeg', 'image/png', 'image/jpg'],
   
-  // Параметры для Cloudinary трансформаций
+  // Автоматические преобразования Cloudinary
   cloudinaryTransformations: 'f_auto,q_auto:good',
-  
-  // Настройки имен файлов
-  fileNameOptions: {
-    maxLength: 100,                    // Максимальная длина имени
-    replaceSpaces: true,               // Заменять пробелы на _
-    preserveExtension: true,           // Сохранять расширение
-    addTimestamp: true,                // Добавлять timestamp
-    addRandomSuffix: true,             // Добавлять случайный суффикс
-  },
 };
 
 /**
- * Генерация безопасного имени файла
+ * Генерация имени файла
  */
-export const generateSafeFileName = (
-  originalName?: string,
-  options?: {
-    addTimestamp?: boolean;
-    addRandomSuffix?: boolean;
-    maxLength?: number;
-  }
-): string => {
+export const generateFileName = (originalName?: string): string => {
   const timestamp = Date.now();
-  const randomSuffix = Math.random().toString(36).substring(2, 10); // 8 символов
+  const random = Math.random().toString(36).substring(2, 10); // 8 символов
   
-  // Базовое имя
-  let baseName = 'recipe_image';
+  let baseName = 'recipe';
   
   if (originalName) {
-    // Очищаем имя файла
-    baseName = originalName
-      .replace(/[^a-zA-Z0-9а-яА-ЯёЁ\s\-\.]/g, '') // Удаляем опасные символы
-      .replace(/\s+/g, '_')                      // Заменяем пробелы на _
+    // Очищаем имя файла от небезопасных символов
+    const cleanName = originalName
+      .replace(/[^a-zA-Z0-9]/g, '_') // Заменяем спецсимволы на _
       .toLowerCase()
-      .replace(/\.(jpg|jpeg|png|webp|gif)$/i, ''); // Убираем расширение
+      .substring(0, 50); // Ограничиваем длину
+    
+    baseName = cleanName;
   }
   
-  // Ограничиваем длину
-  const maxLen = options?.maxLength || IMAGE_SETTINGS.fileNameOptions.maxLength;
-  if (baseName.length > maxLen) {
-    baseName = baseName.substring(0, maxLen);
-  }
-  
-  // Собираем финальное имя
-  let finalName = baseName;
-  
-  if (options?.addTimestamp !== false) {
-    finalName += `_${timestamp}`;
-  }
-  
-  if (options?.addRandomSuffix !== false) {
-    finalName += `_${randomSuffix}`;
-  }
-  
-  return finalName;
+  return `${baseName}_${timestamp}_${random}`;
 };
 
 /**
  * Проверка типа файла
  */
-export const isValidImageFile = (uri: string): boolean => {
-  try {
-    const extension = uri.toLowerCase().split('.').pop() || '';
-    return IMAGE_SETTINGS.allowedExtensions.includes(extension);
-  } catch {
-    return false;
-  }
-};
-
-/**
- * Получение MIME типа по расширению
- */
-export const getMimeTypeFromUri = (uri: string): string => {
-  const extension = uri.toLowerCase().split('.').pop() || '';
-  
-  switch (extension) {
-    case 'jpg':
-    case 'jpeg':
-      return 'image/jpeg';
-    case 'png':
-      return 'image/png';
-    case 'webp':
-      return 'image/webp';
-    case 'gif':
-      return 'image/gif';
-    default:
-      return 'image/jpeg';
-  }
+export const isValidImageType = (uri: string): boolean => {
+  const extension = uri.split('.').pop()?.toLowerCase() || '';
+  return ['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(extension);
 };
 
 /**
  * Форматирование размера файла
  */
 export const formatFileSize = (bytes: number): string => {
-  if (bytes === 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let size = bytes;
+  let unitIndex = 0;
   
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex++;
+  }
   
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-};
-
-/**
- * Информация о текущей конфигурации (для отладки)
- */
-export const getCloudinaryConfigInfo = () => {
-  return {
-    cloudName: CLOUDINARY_CONFIG.cloudName,
-    uploadPreset: CLOUDINARY_CONFIG.uploadPreset,
-    uploadUrl: CLOUDINARY_CONFIG.uploadUrl,
-    targetFolder: IMAGE_SETTINGS.targetFolder,
-    maxFileSize: formatFileSize(IMAGE_SETTINGS.maxFileSize),
-    expectedSettings: CLOUDINARY_CONFIG.expectedPresetSettings,
-  };
+  return `${size.toFixed(1)} ${units[unitIndex]}`;
 };

@@ -2,11 +2,32 @@ import * as ImageManipulator from 'expo-image-manipulator';
 import { Platform } from 'react-native';
 
 // ========== КОНФИГУРАЦИЯ ==========
-const CLOUDINARY_CONFIG = {
-  cloudName: 'df88pkxud',
-  uploadPreset: 'recipe_upload_app', // Убедитесь что preset создан и Unsigned
-  uploadUrl: 'https://api.cloudinary.com/v1_1/df88pkxud/image/upload',
+const CLOUDINARY_CONFIGS = {
+  // Для рецептов
+  recipes: {
+    cloudName: 'df88pkxud',
+    uploadPreset: 'recipe_upload_app',
+    targetFolder: 'recipes',
+    uploadUrl: 'https://api.cloudinary.com/v1_1/df88pkxud/image/upload',
+  },
+  // Для сообщества
+  community: {
+    cloudName: 'df88pkxud',
+    uploadPreset: 'community_upload_app',
+    targetFolder: 'community_photos',
+    uploadUrl: 'https://api.cloudinary.com/v1_1/df88pkxud/image/upload',
+  },
+  // Для аватаров
+  avatars: {
+    cloudName: 'df88pkxud',
+    uploadPreset: 'user_avatar_app', // ← ВАШ АВАТАР PRESET
+    targetFolder: 'avatars',
+    uploadUrl: 'https://api.cloudinary.com/v1_1/df88pkxud/image/upload',
+  }
 };
+
+// Типы конфигураций
+export type CloudinaryServiceType = 'recipes' | 'community' | 'avatars';
 
 // ========== ТИПЫ ==========
 export interface UploadResult {
@@ -15,6 +36,8 @@ export interface UploadResult {
   publicId?: string;
   width?: number;
   height?: number;
+  format?: string;
+  bytes?: number;
   error?: string;
   errorCode?: string;
   rawError?: any;
@@ -26,43 +49,95 @@ export interface UploadProgress {
   percent: number;
 }
 
+export interface UploadOptions {
+  onProgress?: (progress: UploadProgress) => void;
+  compressQuality?: number; // 0.1 - 1.0
+  maxWidth?: number;
+  maxHeight?: number;
+  fileName?: string;
+  folder?: string;
+}
+
 // ========== КЛАСС СЕРВИСА ==========
 class CloudinaryService {
   private cloudName: string;
   private uploadPreset: string;
+  private targetFolder: string;
   private uploadUrl: string;
+  private serviceType: CloudinaryServiceType;
 
-  constructor() {
-    this.cloudName = CLOUDINARY_CONFIG.cloudName;
-    this.uploadPreset = CLOUDINARY_CONFIG.uploadPreset;
-    this.uploadUrl = CLOUDINARY_CONFIG.uploadUrl;
+  constructor(serviceType: CloudinaryServiceType = 'recipes') {
+    const config = CLOUDINARY_CONFIGS[serviceType];
     
-    console.log('🌥 Cloudinary Service:');
+    this.serviceType = serviceType;
+    this.cloudName = config.cloudName;
+    this.uploadPreset = config.uploadPreset;
+    this.targetFolder = config.targetFolder;
+    this.uploadUrl = config.uploadUrl;
+    
+    console.log(`🌥 Cloudinary Service (${serviceType}):`);
     console.log('Cloud Name:', this.cloudName);
-    console.log('Upload Preset:', this.uploadPreset ? '✅ Указан' : '❌ Не указан');
+    console.log('Upload Preset:', this.uploadPreset);
+    console.log('Target Folder:', this.targetFolder);
   }
 
   /**
-   * Оптимизация изображения
+   * Оптимизация изображения с учетом типа сервиса
    */
-  private async optimizeImage(uri: string): Promise<string> {
+  private async optimizeImage(
+    uri: string, 
+    options?: {
+      compressQuality?: number;
+      maxWidth?: number;
+      maxHeight?: number;
+    }
+  ): Promise<string> {
     try {
-      console.log('🔧 Оптимизация изображения...');
+      console.log(`🔧 Оптимизация изображения для ${this.serviceType}...`);
+      
+      // Разные настройки для разных типов изображений
+      let compress = 0.8;
+      let maxWidth = 1200;
+      let maxHeight = 1200;
+      let format = ImageManipulator.SaveFormat.JPEG;
+      
+      switch (this.serviceType) {
+        case 'avatars':
+          compress = 0.9; // Высокое качество для аватаров
+          maxWidth = 800;
+          maxHeight = 800;
+          break;
+        case 'recipes':
+          compress = 0.8;
+          maxWidth = 1200;
+          maxHeight = 1200;
+          break;
+        case 'community':
+          compress = 0.75; // Немного меньше для быстрой загрузки
+          maxWidth = 1200;
+          maxHeight = 1200;
+          break;
+      }
+      
+      // Переопределяем настройки если переданы в options
+      if (options?.compressQuality) compress = options.compressQuality;
+      if (options?.maxWidth) maxWidth = options.maxWidth;
+      if (options?.maxHeight) maxHeight = options.maxHeight;
       
       const result = await ImageManipulator.manipulateAsync(
         uri,
         [
           {
             resize: {
-              width: 1200,
-              height: 1200,
+              width: maxWidth,
+              height: maxHeight,
             },
           },
         ],
         {
-          compress: 0.8,
-          format: ImageManipulator.SaveFormat.JPEG,
-          base64: true, // ВАЖНО: просим вернуть base64
+          compress,
+          format,
+          base64: true,
         }
       );
       
@@ -71,7 +146,6 @@ class CloudinaryService {
       
     } catch (error) {
       console.warn('⚠️  Optimization failed:', error);
-      // Возвращаем пустую строку, дальше будет обработано
       return '';
     }
   }
@@ -79,20 +153,29 @@ class CloudinaryService {
   /**
    * Создание FormData для Cloudinary
    */
-  private createFormData(base64Image: string): FormData {
+  private createFormData(base64Image: string, fileName?: string): FormData {
     console.log('📝 Создание FormData...');
     
+    // Определяем MIME тип
+    const mimeType = 'image/jpeg'; // Всегда JPEG после оптимизации
+    
     // Формат данных для Cloudinary: 'data:image/jpeg;base64,XXXXX'
-    const dataUrl = `data:image/jpeg;base64,${base64Image}`;
+    const dataUrl = `data:${mimeType};base64,${base64Image}`;
     
     const formData = new FormData();
     
-    // Ключевое поле: Cloudinary ожидает именно 'file' с data URL
+    // Основные поля
     formData.append('file', dataUrl);
     formData.append('upload_preset', this.uploadPreset);
     
+    // Дополнительные параметры
+    if (fileName) {
+      formData.append('public_id', `${this.targetFolder}/${fileName}`);
+    }
+    
     console.log('✅ FormData создан');
     console.log('Upload Preset:', this.uploadPreset);
+    console.log('Target Folder:', this.targetFolder);
     
     return formData;
   }
@@ -102,9 +185,9 @@ class CloudinaryService {
    */
   async uploadImage(
     imageUri: string,
-    onProgress?: (progress: UploadProgress) => void
+    options?: UploadOptions
   ): Promise<UploadResult> {
-    console.log('🚀 Начало загрузки в Cloudinary...');
+    console.log(`🚀 Начало загрузки в Cloudinary (${this.serviceType})...`);
     console.log('Source:', imageUri);
     console.log('Cloud Name:', this.cloudName);
 
@@ -119,7 +202,11 @@ class CloudinaryService {
       }
 
       // 1. Оптимизация и получение base64
-      const base64Image = await this.optimizeImage(imageUri);
+      const base64Image = await this.optimizeImage(imageUri, {
+        compressQuality: options?.compressQuality,
+        maxWidth: options?.maxWidth,
+        maxHeight: options?.maxHeight,
+      });
       
       if (!base64Image) {
         return {
@@ -130,16 +217,16 @@ class CloudinaryService {
       }
 
       // 2. Подготовка FormData
-      const formData = this.createFormData(base64Image);
+      const formData = this.createFormData(base64Image, options?.fileName);
 
       // 3. Отправка на Cloudinary
       console.log('📤 Отправка запроса на Cloudinary...');
       
       let response: Response;
       
-      if (Platform.OS !== 'web' && onProgress) {
+      if (Platform.OS !== 'web' && options?.onProgress) {
         // С отслеживанием прогресса для React Native
-        response = await this.sendWithProgress(formData, onProgress);
+        response = await this.sendWithProgress(formData, options.onProgress);
       } else {
         // Простая отправка
         response = await fetch(this.uploadUrl, {
@@ -162,13 +249,12 @@ class CloudinaryService {
         let errorCode = 'UPLOAD_FAILED';
         
         try {
-          // Пробуем распарсить JSON ошибки
           const errorJson = JSON.parse(responseText);
           errorMessage = errorJson.error?.message || errorMessage;
           
           // Детальная диагностика
           if (errorMessage.includes('upload preset')) {
-            errorMessage = 'Upload Preset не найден или неверный. Проверьте настройки Cloudinary Dashboard.';
+            errorMessage = `Upload Preset "${this.uploadPreset}" не найден. Проверьте настройки Cloudinary Dashboard.`;
             errorCode = 'INVALID_UPLOAD_PRESET';
           } else if (errorMessage.includes('unsigned')) {
             errorMessage = 'Upload Preset должен быть "Unsigned" для мобильных приложений.';
@@ -179,7 +265,6 @@ class CloudinaryService {
           }
           
         } catch (parseError) {
-          // Если не JSON, используем текст ответа
           errorMessage = `Cloudinary ошибка ${response.status}: ${responseText.substring(0, 100)}`;
         }
         
@@ -197,13 +282,16 @@ class CloudinaryService {
       console.log('✅ Успешно загружено!');
       console.log('URL:', result.secure_url);
       console.log('Public ID:', result.public_id);
+      console.log('Size:', result.bytes ? `${Math.round(result.bytes / 1024)} KB` : 'N/A');
       
       // Проверяем папку
-      if (!result.public_id.startsWith('recipes/')) {
-        console.warn('⚠️  Файл не в папке recipes!');
+      const expectedFolderPrefix = `${this.targetFolder}/`;
+      if (!result.public_id.startsWith(expectedFolderPrefix)) {
+        console.warn(`⚠️  Файл не в папке ${this.targetFolder}!`);
         console.warn('Public ID:', result.public_id);
+        console.warn('Expected prefix:', expectedFolderPrefix);
       } else {
-        console.log('✅ Файл в папке recipes');
+        console.log(`✅ Файл в папке ${this.targetFolder}`);
       }
 
       return {
@@ -212,6 +300,8 @@ class CloudinaryService {
         publicId: result.public_id,
         width: result.width,
         height: result.height,
+        format: result.format,
+        bytes: result.bytes,
       };
 
     } catch (error: any) {
@@ -268,7 +358,7 @@ class CloudinaryService {
   /**
    * Проверка конфигурации
    */
-  checkConfig(): { isValid: boolean; message: string } {
+  checkConfig(): { isValid: boolean; message: string; config: any } {
     const issues: string[] = [];
     
     if (!this.cloudName || this.cloudName === 'your-cloud-name') {
@@ -282,69 +372,282 @@ class CloudinaryService {
     if (issues.length > 0) {
       return {
         isValid: false,
-        message: issues.join(', '),
+        message: `Cloudinary ${this.serviceType}: ${issues.join(', ')}`,
+        config: {
+          cloudName: this.cloudName,
+          uploadPreset: this.uploadPreset,
+          targetFolder: this.targetFolder,
+          serviceType: this.serviceType,
+        }
       };
     }
     
     return {
       isValid: true,
-      message: 'Конфигурация Cloudinary проверена',
+      message: `Cloudinary ${this.serviceType} настроен корректно`,
+      config: {
+        cloudName: this.cloudName,
+        uploadPreset: this.uploadPreset,
+        targetFolder: this.targetFolder,
+        serviceType: this.serviceType,
+      }
     };
+  }
+
+  /**
+   * Получение URL для изображения с трансформациями
+   */
+  getImageUrl(publicId: string, size: 'original' | 'thumbnail' | 'medium' = 'original'): string {
+    let transformations = '';
+    
+    switch (size) {
+      case 'thumbnail':
+        transformations = this.serviceType === 'avatars' 
+          ? 'c_fill,w_150,h_150,r_max,q_auto:good'
+          : 'c_fill,w_300,h_200,q_auto:good';
+        break;
+      case 'medium':
+        transformations = this.serviceType === 'avatars'
+          ? 'c_fill,w_400,h_400,r_max,q_auto:good'
+          : 'c_fill,w_800,h_600,q_auto:good';
+        break;
+      case 'original':
+      default:
+        transformations = 'q_auto:good';
+    }
+    
+    return `https://res.cloudinary.com/${this.cloudName}/image/upload/${transformations}/${publicId}`;
+  }
+
+  /**
+   * Получение аватара пользователя
+   */
+  getUserAvatarUrl(userId: string, size: 'small' | 'medium' | 'large' = 'medium'): string {
+    const sizes = {
+      small: 'c_fill,w_100,h_100,r_max',
+      medium: 'c_fill,w_200,h_200,r_max',
+      large: 'c_fill,w_400,h_400,r_max',
+    };
+    
+    const transformation = `${sizes[size]},q_auto:good`;
+    const publicId = `avatars/user_${userId}`;
+    
+    return `https://res.cloudinary.com/${this.cloudName}/image/upload/${transformation}/${publicId}`;
   }
 }
 
-// Экспортируем singleton
-export const cloudinaryService = new CloudinaryService();
+// ========== СОЗДАЕМ ИНСТАНСЫ ДЛЯ РАЗНЫХ ТИПОВ ==========
 
-// Вспомогательная функция для теста
-export const testCloudinaryConfig = async (): Promise<{
+// Для рецептов
+export const recipeCloudinaryService = new CloudinaryService('recipes');
+
+// Для сообщества
+export const communityCloudinaryService = new CloudinaryService('community');
+
+// Для аватаров
+export const avatarCloudinaryService = new CloudinaryService('avatars');
+
+// Основной сервис (по умолчанию для рецептов для обратной совместимости)
+export const cloudinaryService = recipeCloudinaryService;
+
+// ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
+
+/**
+ * Тест конфигурации для всех типов сервисов
+ */
+export const testAllCloudinaryConfigs = async (): Promise<{
   success: boolean;
-  message: string;
-  config?: any;
+  results: Record<CloudinaryServiceType, {
+    success: boolean;
+    message: string;
+    config?: any;
+  }>;
 }> => {
-  try {
-    const config = cloudinaryService.checkConfig();
-    
-    if (!config.isValid) {
-      return {
+  const services = {
+    recipes: recipeCloudinaryService,
+    community: communityCloudinaryService,
+    avatars: avatarCloudinaryService,
+  };
+
+  const results: Record<CloudinaryServiceType, any> = {
+    recipes: { success: false, message: 'Не тестировался' },
+    community: { success: false, message: 'Не тестировался' },
+    avatars: { success: false, message: 'Не тестировался' },
+  };
+
+  let allSuccess = true;
+
+  // Тестируем каждый сервис
+  for (const [type, service] of Object.entries(services)) {
+    try {
+      const config = service.checkConfig();
+      
+      if (!config.isValid) {
+        results[type as CloudinaryServiceType] = {
+          success: false,
+          message: config.message,
+          config: config.config
+        };
+        allSuccess = false;
+        continue;
+      }
+
+      // Тестовое изображение 1x1 пиксель
+      const testBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+      
+      const formData = new FormData();
+      formData.append('file', `data:image/png;base64,${testBase64}`);
+      formData.append('upload_preset', config.config.uploadPreset);
+
+      const response = await fetch(`https://api.cloudinary.com/v1_1/${config.config.cloudName}/image/upload`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        results[type as CloudinaryServiceType] = {
+          success: true,
+          message: `✅ ${type} настроен корректно`,
+          config: {
+            cloudName: config.config.cloudName,
+            uploadPreset: config.config.uploadPreset,
+            targetFolder: config.config.targetFolder,
+            testUpload: {
+              publicId: result.public_id,
+              folder: result.folder,
+              bytes: result.bytes,
+            }
+          }
+        };
+      } else {
+        const errorText = await response.text();
+        results[type as CloudinaryServiceType] = {
+          success: false,
+          message: `❌ ${type} ошибка (${response.status}): ${errorText.substring(0, 100)}`,
+          config: config.config
+        };
+        allSuccess = false;
+      }
+
+    } catch (error: any) {
+      results[type as CloudinaryServiceType] = {
         success: false,
-        message: config.message,
+        message: `❌ ${type} ошибка теста: ${error.message}`,
       };
+      allSuccess = false;
     }
-    
-    // Простой тест: создаем мини-изображение
-    const testBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
-    
-    const formData = new FormData();
-    formData.append('file', `data:image/png;base64,${testBase64}`);
-    formData.append('upload_preset', CLOUDINARY_CONFIG.uploadPreset);
-    
-    const response = await fetch(CLOUDINARY_CONFIG.uploadUrl, {
-      method: 'POST',
-      body: formData,
-    });
-    
-    if (response.ok) {
-      return {
-        success: true,
-        message: 'Cloudinary настроен корректно',
-        config: {
-          cloudName: CLOUDINARY_CONFIG.cloudName,
-          uploadPreset: CLOUDINARY_CONFIG.uploadPreset,
-        },
-      };
-    } else {
-      const errorText = await response.text();
-      return {
-        success: false,
-        message: `Ошибка Cloudinary (${response.status}): ${errorText.substring(0, 100)}`,
-      };
-    }
-    
-  } catch (error: any) {
-    return {
-      success: false,
-      message: `Ошибка теста: ${error.message}`,
-    };
   }
+
+  return {
+    success: allSuccess,
+    results
+  };
+};
+
+/**
+ * Генерация имени файла для загрузки
+ */
+export const generateCloudinaryFileName = (
+  prefix: string,
+  userId?: string
+): string => {
+  const timestamp = Date.now();
+  const random = Math.random().toString(36).substring(2, 8);
+  
+  let fileName = prefix.toLowerCase().replace(/[^a-z0-9]/g, '_');
+  
+  if (userId) {
+    fileName += `_${userId.substring(0, 8)}`;
+  }
+  
+  fileName += `_${timestamp}_${random}`;
+  
+  return fileName;
+};
+
+/**
+ * Валидация изображения перед загрузкой
+ */
+export const validateImageForUpload = async (
+  uri: string,
+  type: CloudinaryServiceType = 'recipes'
+): Promise<{
+  isValid: boolean;
+  message: string;
+  errors: string[];
+}> => {
+  const errors: string[] = [];
+  
+  // Проверка расширения
+  const extension = uri.toLowerCase().split('.').pop() || '';
+  const allowedExtensions = ['jpg', 'jpeg', 'png', 'webp', 'gif'];
+  
+  if (!allowedExtensions.includes(extension)) {
+    errors.push(`Неподдерживаемый формат: .${extension}. Разрешены: ${allowedExtensions.join(', ')}`);
+  }
+  
+  return {
+    isValid: errors.length === 0,
+    message: errors.length > 0 ? errors[0] : 'Изображение валидно для загрузки',
+    errors
+  };
+};
+
+/**
+ * Быстрая загрузка аватара пользователя
+ */
+export const uploadUserAvatar = async (
+  userId: string,
+  imageUri: string,
+  onProgress?: (progress: UploadProgress) => void
+): Promise<UploadResult> => {
+  const service = avatarCloudinaryService;
+  const fileName = generateCloudinaryFileName('avatar', userId);
+  
+  return await service.uploadImage(imageUri, {
+    onProgress,
+    fileName,
+    compressQuality: 0.9, // Высокое качество для аватара
+    maxWidth: 800,
+    maxHeight: 800,
+  });
+};
+
+/**
+ * Быстрая загрузка изображения для поста сообщества
+ */
+export const uploadCommunityPostImage = async (
+  imageUri: string,
+  onProgress?: (progress: UploadProgress) => void
+): Promise<UploadResult> => {
+  const service = communityCloudinaryService;
+  const fileName = generateCloudinaryFileName('post');
+  
+  return await service.uploadImage(imageUri, {
+    onProgress,
+    fileName,
+    compressQuality: 0.75,
+    maxWidth: 1200,
+    maxHeight: 1200,
+  });
+};
+
+/**
+ * Быстрая загрузка изображения рецепта
+ */
+export const uploadRecipeImage = async (
+  imageUri: string,
+  onProgress?: (progress: UploadProgress) => void
+): Promise<UploadResult> => {
+  const service = recipeCloudinaryService;
+  const fileName = generateCloudinaryFileName('recipe');
+  
+  return await service.uploadImage(imageUri, {
+    onProgress,
+    fileName,
+    compressQuality: 0.8,
+    maxWidth: 1200,
+    maxHeight: 1200,
+  });
 };

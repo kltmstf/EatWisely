@@ -1,10 +1,14 @@
 // services/userService.ts
 
 import { doc, updateDoc, Timestamp, getDoc } from "firebase/firestore";
-// 🚨 НОВЫЙ ИМПОРТ: для обновления имени пользователя
 import { updateProfile } from "firebase/auth";
 import { Alert } from "react-native";
 import { db, auth } from "../firebase/config";
+import { 
+  avatarCloudinaryService, 
+  uploadUserAvatar,
+  UploadResult 
+} from "./cloudinaryService"; // НОВЫЙ ИМПОРТ
 
 // --- ТИПЫ ДАННЫХ ---
 
@@ -27,6 +31,8 @@ type LocalProfileData = {
   isPrivate: boolean; // Локальное имя
   cookingTimeLimit: string;
   isProfileFilled: boolean;
+  photoURL?: string; // НОВОЕ ПОЛЕ: ссылка на фото профиля в Cloudinary
+  cloudinaryPublicId?: string; // НОВОЕ ПОЛЕ: ID файла в Cloudinary
 };
 
 // Тип для результатов расчета КБЖУ
@@ -39,10 +45,125 @@ type MacroTargets = {
 
 class UserService {
   /**
+   * Загружает фото профиля в Cloudinary и обновляет ссылку в профиле
+   * @param imageUri URI изображения (локальный путь)
+   * @param userId UID пользователя
+   * @returns Ссылка на загруженное изображение
+   */
+  async uploadProfilePhoto(imageUri: string, userId: string): Promise<UploadResult> {
+    try {
+      console.log("Starting profile photo upload to Cloudinary for user:", userId);
+      
+      // Используем готовую функцию из cloudinaryService
+      const result = await uploadUserAvatar(userId, imageUri);
+      
+      if (result.success && result.url && result.publicId) {
+        console.log("✅ Cloudinary upload successful:", result.url);
+        
+        // Обновляем фото в Firebase Auth
+        const user = auth.currentUser;
+        if (user) {
+          await updateProfile(user, { 
+            photoURL: result.url 
+          });
+          console.log("✅ Firebase Auth photoURL updated");
+        }
+        
+        // Обновляем фото в Firestore
+        const userDocRef = doc(db, "users", userId);
+        await updateDoc(userDocRef, {
+          photoURL: result.url,
+          cloudinaryPublicId: result.publicId, // Сохраняем publicId для будущего удаления
+          updatedAt: Timestamp.now()
+        });
+        
+        console.log("✅ Firestore profile photo updated");
+        
+        return result;
+      } else {
+        throw new Error(result.error || "Не удалось загрузить фото");
+      }
+    } catch (error) {
+      console.error("❌ Error uploading profile photo to Cloudinary:", error);
+      Alert.alert("Ошибка", "Не удалось загрузить фото профиля");
+      throw error;
+    }
+  }
+  
+  /**
+   * Удаляет фото профиля из Cloudinary и обновляет профиль
+   * @param userId UID пользователя
+   * @param publicId Public ID файла в Cloudinary (опционально)
+   */
+  async deleteProfilePhoto(userId: string, publicId?: string): Promise<void> {
+    try {
+      console.log("Deleting profile photo from Cloudinary for user:", userId);
+      
+      // ПРИМЕЧАНИЕ: Cloudinary не предоставляет простого API для удаления через мобильное приложение
+      // из-за вопросов безопасности. Вам нужно настроить Cloud Function или серверный endpoint для удаления.
+      // Здесь мы только удаляем ссылки из Firebase.
+      
+      // Обновляем Firebase Auth
+      const user = auth.currentUser;
+      if (user) {
+        await updateProfile(user, { photoURL: null });
+        console.log("✅ Firebase Auth photoURL cleared");
+      }
+      
+      // Обновляем Firestore
+      const userDocRef = doc(db, "users", userId);
+      await updateDoc(userDocRef, {
+        photoURL: null,
+        cloudinaryPublicId: null,
+        updatedAt: Timestamp.now()
+      });
+      
+      console.log("✅ Firestore profile photo cleared");
+      
+      // Если нужно удалить файл из Cloudinary, нужно вызвать серверную функцию
+      // Пример:
+      // if (publicId) {
+      //   await this.deleteFromCloudinary(publicId);
+      // }
+      
+    } catch (error) {
+      console.error("❌ Error deleting profile photo:", error);
+      Alert.alert("Ошибка", "Не удалось удалить фото профиля");
+      throw error;
+    }
+  }
+  
+  /**
+   * Получает URL аватара с определенным размером из Cloudinary
+   * @param publicId Public ID файла в Cloudinary
+   * @param size Размер изображения ('small', 'medium', 'large')
+   * @returns URL изображения с трансформациями
+   */
+  getAvatarUrl(publicId: string, size: 'small' | 'medium' | 'large' = 'medium'): string {
+    try {
+      return avatarCloudinaryService.getUserAvatarUrl(publicId, size);
+    } catch (error) {
+      console.error("Error getting Cloudinary avatar URL:", error);
+      // Возвращаем оригинальный URL или placeholder
+      return `https://res.cloudinary.com/${avatarCloudinaryService['cloudName']}/image/upload/${publicId}`;
+    }
+  }
+  
+  /**
+   * Проверяет конфигурацию Cloudinary для аватаров
+   */
+  checkCloudinaryConfig(): { isValid: boolean; message: string } {
+    const config = avatarCloudinaryService.checkConfig();
+    return {
+      isValid: config.isValid,
+      message: config.message
+    };
+  }
+
+  /**
    * Обновляет имя пользователя (displayName) в Firebase Authentication.
    * @param newName Новое имя пользователя.
    */
-  // ⭐️ НОВЫЙ МЕТОД, требуемый ProfileSettings.tsx
   async updateAuthProfileName(newName: string): Promise<void> {
     const user = auth.currentUser;
     if (!user) {
@@ -51,7 +172,6 @@ class UserService {
     }
 
     try {
-      // Используем функцию updateProfile из Firebase Auth SDK
       await updateProfile(user, { displayName: newName });
       console.log("✅ Firebase Auth display name updated successfully.");
     } catch (error) {
@@ -85,7 +205,7 @@ class UserService {
     }
   }
 
-  // --- МЕТОДЫ РАСЧЕТА (Без изменений) ---
+  // --- МЕТОДЫ РАСЧЕТА ---
 
   /**
    * Преобразование уровня активности в коэффициент метаболизма (PAL - Physical Activity Level).
@@ -132,7 +252,6 @@ class UserService {
       // Мужчины: BMR = 10 * вес (кг) + 6.25 * рост (см) - 5 * возраст (лет) + 5
       bmr = 10 * weight + 6.25 * height - 5 * age + 5;
     } else {
-      // Женщины
       // Женщины: BMR = 10 * вес (кг) + 6.25 * рост (см) - 5 * возраст (лет) - 161
       bmr = 10 * weight + 6.25 * height - 5 * age - 161;
     }
@@ -216,13 +335,16 @@ class UserService {
       activity: profileData.activity,
 
       // ⭐️ ПЕРЕИМЕНОВАННЫЕ И ТЕХНИЧЕСКИЕ ПОЛЯ:
-      // В Firestore сохраняем объединенный nutritionType (включая "Другое: ...")
       dietType: profileData.nutritionType,
       allergies: profileData.allergies,
       excludedIngredients: profileData.dislikes,
       cookingTimeLimit: profileData.cookingTimeLimit,
       isProfilePrivate: profileData.isPrivate,
       isProfileFilled: profileData.isProfileFilled,
+
+      // ⭐️ ФОТО ПРОФИЛЯ (Cloudinary)
+      photoURL: profileData.photoURL || null,
+      cloudinaryPublicId: profileData.cloudinaryPublicId || null,
 
       // ⭐️ РЕЗУЛЬТАТЫ РАСЧЕТА КБЖУ
       targetCalories: macroTargets.targetCalories,

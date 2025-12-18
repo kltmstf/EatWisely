@@ -1,3 +1,5 @@
+// app/screens/ProfileSettings.tsx
+
 import { useRouter } from "expo-router";
 import React, { useState, useEffect } from "react";
 import {
@@ -10,11 +12,14 @@ import {
   TextInput,
   Alert,
   Modal,
+  Image,
+  ActivityIndicator,
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useAuthContext } from "../app/contexts/AuthContext";
+import { useAuthContext } from "@/app/contexts/AuthContext";
 import { Ionicons, MaterialIcons } from "@expo/vector-icons";
 import { userService } from "../app/services/userService";
+import * as ImagePicker from 'expo-image-picker';
 
 // 💡 Хелпер-маппинг для корректного отображения времени готовки
 const COOKING_TIME_MAP: { [key: string]: string } = {
@@ -40,14 +45,14 @@ type UserData = {
   allergies: string;
   dislikes: string;
   isPrivate: boolean;
-  // НОВЫЕ ПОЛЯ
   cookingTimeLimit: string;
   isProfileFilled: boolean;
+  photoURL?: string; // НОВОЕ ПОЛЕ
+  cloudinaryPublicId?: string; // НОВОЕ ПОЛЕ
 };
 
 export default function ProfileSettings() {
   const router = useRouter();
-  // user.displayName используется для сравнения имени
   const { signOut, deleteUserAccount, user } = useAuthContext();
 
   const [userData, setUserData] = useState<UserData>({
@@ -65,26 +70,25 @@ export default function ProfileSettings() {
     allergies: "",
     dislikes: "",
     isPrivate: false,
-    // 🚀 НОВЫЕ ДЕФОЛТЫ
     cookingTimeLimit: "30 минут",
     isProfileFilled: true,
+    photoURL: user?.photoURL || "",
   });
 
   const [originalData, setOriginalData] = useState<UserData | null>(null);
   const [deleteModalVisible, setDeleteModalVisible] = useState(false);
   const [confirmText, setConfirmText] = useState("");
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0); // НОВОЕ СОСТОЯНИЕ
 
   const goals = ["Похудение", "Поддержание веса", "Набор веса"];
-
   const activityLevels = [
     "Низкий (0-1 тренировка в неделю)",
     "Умеренный (2-3 тренировки в неделю)",
     "Интенсивный (3 и более тренировки в неделю)",
   ];
-
   const nutritionTypes = ["Обычное", "Вегетарианское", "Веганское", "Другое"];
   const genders = ["Муж", "Жен"];
-
   const cookingTimes = ["15 минут", "30 минут", "45 минут", "60+ минут"];
 
   const PROFILE_STORAGE_KEY = "user_profile_data";
@@ -97,19 +101,17 @@ export default function ProfileSettings() {
     loadProfileData();
   }, []);
 
-  // ФУНКЦИЯ ЗАГРУЗКИ ДАННЫХ (ПРИОРИТЕТ: FIREBASE)
+  // ФУНКЦИЯ ЗАГРУЗКИ ДАННЫХ
   const loadProfileData = async () => {
     let parsedData: any | null = null;
 
     try {
       if (user?.uid) {
-        // 1. Попытка загрузки из Firebase
         parsedData = await userService.fetchUserProfile(user.uid);
         console.log("Loaded data from Firebase:", parsedData);
       }
 
       if (!parsedData || Object.keys(parsedData).length === 0) {
-        // 2. Если Firebase данных нет, пробуем AsyncStorage
         const savedData = await AsyncStorage.getItem(PROFILE_STORAGE_KEY);
         if (savedData !== null) {
           parsedData = JSON.parse(savedData);
@@ -118,7 +120,6 @@ export default function ProfileSettings() {
       }
 
       if (parsedData) {
-        // Логика разделения объединенного поля nutritionType (dietType в БД)
         let finalNutritionType =
           parsedData.dietType || parsedData.nutritionType || "Обычное";
         let finalCustomNutritionType = "";
@@ -133,94 +134,79 @@ export default function ProfileSettings() {
           finalNutritionType = "Другое";
         }
 
-        // 🚀 FIX 1: Коррекция формата времени готовки для подсветки
         let finalCookingTime = parsedData.cookingTimeLimit || "30 минут";
-        // Проверяем, если в базе сохранено числовое значение ("30"), конвертируем его в полный формат ("30 минут")
         if (COOKING_TIME_MAP[finalCookingTime]) {
           finalCookingTime = COOKING_TIME_MAP[finalCookingTime];
         }
 
-        // Преобразуем данные обратно в формат UserData, учитывая новые поля
         const userDataWithDefaults: UserData = {
           ...userData,
-          ...parsedData, // Перезаписываем сохраненными данными
-          // Важно: берем имя из БД/Auth, если оно есть
+          ...parsedData,
           name: parsedData.name || user?.displayName || "",
           email: parsedData.email || user?.email || "",
           nutritionType: finalNutritionType,
           customNutritionType: finalCustomNutritionType,
           dislikes: parsedData.excludedIngredients || parsedData.dislikes || "",
-          isPrivate:
-            parsedData.isProfilePrivate ?? parsedData.isPrivate ?? false,
-          // 🚀 Используем скорректированное значение:
+          isPrivate: parsedData.isProfilePrivate ?? parsedData.isPrivate ?? false,
           cookingTimeLimit: finalCookingTime,
           isProfileFilled: parsedData.isProfileFilled ?? true,
+          photoURL: parsedData.photoURL || user?.photoURL || "",
+          cloudinaryPublicId: parsedData.cloudinaryPublicId || "",
         };
 
         setUserData(userDataWithDefaults);
         setOriginalData(userDataWithDefaults);
       } else {
-        // Если данных нигде нет, устанавливаем дефолты из Firebase Auth
         const defaultData = {
           ...userData,
           name: user?.displayName || "",
           email: user?.email || "",
+          photoURL: user?.photoURL || "",
         };
         setUserData(defaultData);
         setOriginalData(defaultData);
       }
     } catch (error) {
       console.error("Ошибка при загрузке данных профиля:", error);
-      // В случае ошибки все равно устанавливаем данные из Firebase Auth/дефолты
       const defaultData = {
         ...userData,
         name: user?.displayName || "",
         email: user?.email || "",
+        photoURL: user?.photoURL || "",
       };
       setUserData(defaultData);
       setOriginalData(defaultData);
     }
   };
 
-  // 🌟 ФУНКЦИЯ СОХРАНЕНИЯ ДАННЫХ (ПРИОРИТЕТ: FIREBASE)
+  // ФУНКЦИЯ СОХРАНЕНИЯ ДАННЫХ
   const saveProfileData = async (data: UserData) => {
     const dataToStore = { ...data };
 
-    // 1. Логика объединения customNutritionType в nutritionType для сохранения
     if (
       dataToStore.nutritionType === "Другое" &&
       dataToStore.customNutritionType.trim()
     ) {
       dataToStore.nutritionType = `Другое: ${dataToStore.customNutritionType.trim()}`;
     } else if (dataToStore.nutritionType !== "Другое") {
-      // Если выбран стандартный тип, очищаем кастомное поле перед сохранением
       dataToStore.customNutritionType = "";
     }
 
-    // 2. Сохранение в Firebase
     if (user?.uid) {
       try {
-        // --- 🚀 FIX 2: Обновление имени пользователя в Firebase Auth ---
-        // user.displayName - это имя из Firebase Auth, data.name - это новое имя из стейта
         if (data.name !== user.displayName) {
           console.log("Имя изменилось. Обновление профиля Firebase Auth.");
-          // Предполагается, что userService имеет метод для обновления displayName в Firebase Auth
           await userService.updateAuthProfileName(data.name);
         }
-        // -------------------------------------------------------------
 
-        // Вызов метода, который сохранит остальные данные в Firestore
         await userService.saveProfileToFirestore(dataToStore);
         Alert.alert("Успех", "Данные профиля сохранены и обновлены.");
-        // Обновляем originalData, используя данные из стейта
         setOriginalData(data);
       } catch (error) {
-        // Сообщение об ошибке уже выведено в userService.ts
         console.error("Ошибка при сохранении профиля через сервис:", error);
         Alert.alert("Ошибка", "Не удалось сохранить данные профиля.");
       }
     } else {
-      // Только локальное сохранение, если нет UID (хотя должно быть при авторизации)
       try {
         await AsyncStorage.setItem(
           PROFILE_STORAGE_KEY,
@@ -233,6 +219,192 @@ export default function ProfileSettings() {
         Alert.alert("Ошибка", "Не удалось сохранить данные профиля.");
       }
     }
+  };
+
+  // НОВАЯ ФУНКЦИЯ: Запрос разрешений
+  const requestPermissions = async () => {
+    const { status: cameraStatus } = await ImagePicker.requestCameraPermissionsAsync();
+    const { status: libraryStatus } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    
+    if (cameraStatus !== 'granted' || libraryStatus !== 'granted') {
+      Alert.alert(
+        "Нужны разрешения",
+        "Для загрузки фото нужно разрешение на доступ к камере и галерее."
+      );
+      return false;
+    }
+    return true;
+  };
+
+  // НОВАЯ ФУНКЦИЯ: Выбор фото из галереи
+  const pickImage = async () => {
+    const hasPermission = await requestPermissions();
+    if (!hasPermission) return;
+
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.9,
+        allowsMultipleSelection: false,
+      });
+
+      if (!result.canceled && result.assets[0]?.uri) {
+        await uploadProfilePhoto(result.assets[0].uri);
+      }
+    } catch (error) {
+      console.error('Error picking image:', error);
+      Alert.alert('Ошибка', 'Не удалось выбрать фото');
+    }
+  };
+
+  // НОВАЯ ФУНКЦИЯ: Сделать фото
+  const takePhoto = async () => {
+    const hasPermission = await requestPermissions();
+    if (!hasPermission) return;
+
+    try {
+      const result = await ImagePicker.launchCameraAsync({
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.9,
+      });
+
+      if (!result.canceled && result.assets[0]?.uri) {
+        await uploadProfilePhoto(result.assets[0].uri);
+      }
+    } catch (error) {
+      console.error('Error taking photo:', error);
+      Alert.alert('Ошибка', 'Не удалось сделать фото');
+    }
+  };
+
+  // НОВАЯ ФУНКЦИЯ: Загрузка фото в Cloudinary
+  const uploadProfilePhoto = async (imageUri: string) => {
+    if (!user?.uid) {
+      Alert.alert("Ошибка", "Пользователь не авторизован");
+      return;
+    }
+    
+    setIsUploading(true);
+    setUploadProgress(0);
+    
+    try {
+      console.log("Starting photo upload to Cloudinary...");
+      
+      const result = await userService.uploadProfilePhoto(imageUri, user.uid);
+      
+      if (result.success && result.url) {
+        // Обновляем состояние
+        setUserData(prev => ({ 
+          ...prev, 
+          photoURL: result.url,
+          cloudinaryPublicId: result.publicId 
+        }));
+        
+        if (originalData) {
+          setOriginalData(prev => prev ? { 
+            ...prev, 
+            photoURL: result.url,
+            cloudinaryPublicId: result.publicId 
+          } : null);
+        }
+        
+        Alert.alert("Успех", "Фото профиля обновлено");
+      } else {
+        Alert.alert("Ошибка", result.error || "Не удалось загрузить фото");
+      }
+    } catch (error: any) {
+      console.error("Error uploading photo:", error);
+      Alert.alert("Ошибка", error.message || "Не удалось загрузить фото");
+    } finally {
+      setIsUploading(false);
+      setUploadProgress(0);
+    }
+  };
+
+  // НОВАЯ ФУНКЦИЯ: Удаление фото
+  const deleteProfilePhoto = async () => {
+    if (!user?.uid) return;
+    
+    Alert.alert(
+      "Удаление фото",
+      "Вы уверены, что хотите удалить фото профиля?",
+      [
+        {
+          text: "Отмена",
+          style: "cancel"
+        },
+        {
+          text: "Удалить",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await userService.deleteProfilePhoto(user.uid, userData.cloudinaryPublicId);
+              
+              // Обновляем состояние
+              setUserData(prev => ({ 
+                ...prev, 
+                photoURL: "",
+                cloudinaryPublicId: "" 
+              }));
+              
+              if (originalData) {
+                setOriginalData(prev => prev ? { 
+                  ...prev, 
+                  photoURL: "",
+                  cloudinaryPublicId: "" 
+                } : null);
+              }
+              
+              Alert.alert("Успех", "Фото профиля удалено");
+            } catch (error) {
+              console.error("Error deleting photo:", error);
+              Alert.alert("Ошибка", "Не удалось удалить фото");
+            }
+          }
+        }
+      ]
+    );
+  };
+
+  // ИЗМЕНЕННАЯ ФУНКЦИЯ: Обработчик смены фото с прогрессом
+  const handleChangePhoto = () => {
+    if (isUploading) {
+      Alert.alert("Загрузка", "Пожалуйста, подождите, фото загружается...");
+      return;
+    }
+
+    const options = [];
+    
+    if (userData.photoURL) {
+      options.push({
+        text: "Удалить фото",
+        style: "destructive" as const,
+        onPress: deleteProfilePhoto
+      });
+    }
+    
+    Alert.alert(
+      "Сменить фото профиля",
+      "Выберите способ",
+      [
+        {
+          text: "Сделать фото",
+          onPress: takePhoto
+        },
+        {
+          text: "Выбрать из галереи",
+          onPress: pickImage
+        },
+        ...options,
+        {
+          text: "Отмена",
+          style: "cancel"
+        }
+      ]
+    );
   };
 
   const handleBack = () => {
@@ -258,13 +430,7 @@ export default function ProfileSettings() {
   };
 
   const handleSave = () => {
-    // Вызываем обновленную функцию сохранения
     saveProfileData(userData);
-  };
-
-  // Функция для смены фото профиля
-  const handleChangePhoto = () => {
-    Alert.alert("В разработке", "Функция смены фото будет реализована позже");
   };
 
   // Функция выхода из аккаунта
@@ -325,9 +491,7 @@ export default function ProfileSettings() {
     setUserData({
       ...userData,
       nutritionType: type,
-      // Сбрасываем customNutritionType, если выбран не "Другое"
-      customNutritionType:
-        type === "Другое" ? userData.customNutritionType : "",
+      customNutritionType: type === "Другое" ? userData.customNutritionType : "",
     });
   };
 
@@ -358,12 +522,29 @@ export default function ProfileSettings() {
         <View style={styles.section}>
           <View style={styles.profileHeader}>
             <View style={styles.photoContainer}>
-              <View style={styles.profilePhoto}>
-                <Ionicons name="person" size={40} color="#6A9AA9" />
-              </View>
+              {isUploading ? (
+                <View style={[styles.profilePhoto, styles.uploadingPhoto]}>
+                  <ActivityIndicator size="large" color="#6A9AA9" />
+                  {uploadProgress > 0 && (
+                    <Text style={styles.uploadProgressText}>
+                      {Math.round(uploadProgress)}%
+                    </Text>
+                  )}
+                </View>
+              ) : userData.photoURL ? (
+                <Image
+                  source={{ uri: userData.photoURL }}
+                  style={styles.profilePhotoImage}
+                />
+              ) : (
+                <View style={styles.profilePhoto}>
+                  <Ionicons name="person" size={40} color="#6A9AA9" />
+                </View>
+              )}
               <TouchableOpacity
                 style={styles.editPhotoButton}
                 onPress={handleChangePhoto}
+                disabled={isUploading}
               >
                 <Ionicons name="camera" size={16} color="#FFF" />
               </TouchableOpacity>
@@ -405,6 +586,7 @@ export default function ProfileSettings() {
                   placeholder="Введите email"
                   placeholderTextColor="#999"
                   keyboardType="email-address"
+                  editable={false}
                 />
               </View>
             </View>
@@ -432,6 +614,7 @@ export default function ProfileSettings() {
         {/* Разделитель */}
         <View style={styles.divider} />
 
+        {/* Остальные секции остаются без изменений */}
         {/* Ваши данные */}
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
@@ -590,7 +773,7 @@ export default function ProfileSettings() {
         {/* Разделитель */}
         <View style={styles.divider} />
 
-        {/* 🚀 НОВОЕ: Время приготовления (Теперь должно работать) */}
+        {/* Время приготовления */}
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
             <Ionicons name="time-outline" size={20} color="#6A9AA9" />
@@ -862,29 +1045,6 @@ export default function ProfileSettings() {
   );
 }
 
-// ⚠️ Предполагаемая реализация метода в вашем userService.ts
-// Если у вас нет такого метода, вам нужно будет его добавить, используя Firebase Auth SDK
-// import { getAuth, updateProfile } from "firebase/auth";
-
-// export const userService = {
-// // ... другие ваши методы ...
-// updateAuthProfileName: async (newName: string) => {
-// const auth = getAuth();
-// const user = auth.currentUser;
-// if (user) {
-// try {
-// // Обновление имени в основном профиле Firebase Auth
-// await updateProfile(user, { displayName: newName });
-// console.log("Firebase Auth display name updated successfully.");
-// } catch (error) {
-// console.error("Failed to update Firebase Auth display name:", error);
-// // В реальном приложении может потребоваться re-authentication
-// throw new Error("Не удалось обновить имя пользователя в Auth.");
-// }
-// }
-// },
-// };
-
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -957,6 +1117,17 @@ const styles = StyleSheet.create({
     borderWidth: 3,
     borderColor: "#6A9AA9",
   },
+  profilePhotoImage: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    borderWidth: 3,
+    borderColor: "#6A9AA9",
+  },
+  uploadingPhoto: {
+    backgroundColor: "#F0F9FF",
+    borderStyle: "dashed",
+  },
   editPhotoButton: {
     position: "absolute",
     bottom: 0,
@@ -969,6 +1140,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
     borderWidth: 2,
     borderColor: "white",
+  },
+  uploadProgressText: {
+    marginTop: 8,
+    fontSize: 12,
+    color: "#6A9AA9",
+    fontFamily: "Playfair Display Regular",
   },
   profileInfo: {
     flex: 1,
@@ -1181,11 +1358,6 @@ const styles = StyleSheet.create({
     transform: [{ translateX: 22 }],
   },
   // Стили для опасной зоны
-  dangerSectionTitle: {
-    fontSize: 18,
-    color: "#DC3545",
-    fontFamily: "Playfair Display Bold",
-  },
   dangerButton: {
     flexDirection: "row",
     alignItems: "center",

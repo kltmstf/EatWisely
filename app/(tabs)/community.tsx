@@ -1,5 +1,5 @@
 import { Feather, MaterialIcons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
+import { useRouter, useFocusEffect } from "expo-router";
 import {
   addDoc,
   arrayRemove,
@@ -14,7 +14,7 @@ import {
   updateDoc,
   where,
 } from "firebase/firestore";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef, useCallback } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -27,10 +27,32 @@ import {
   TextInput,
   TouchableOpacity,
   View,
+  Dimensions,
+  FlatList,
+  Animated,
+  RefreshControl,
 } from "react-native";
-// import ProfileMenu from "../components/ProfileMenu"; // УДАЛЕНО
 import { db } from "../firebase/config";
 import { getAuth, onAuthStateChanged } from "firebase/auth";
+import * as ImagePicker from 'expo-image-picker';
+import * as FileSystem from 'expo-file-system/legacy';
+import * as ImageManipulator from 'expo-image-manipulator';
+import { communityCloudinaryService, uploadCommunityPostImage } from "@/app/services/cloudinaryService";
+import type { UploadResult, UploadProgress } from "@/app/services/cloudinaryService";
+
+// Импортируем userService для получения фото профиля
+import { userService } from "@/app/services/userService";
+
+// Получаем размеры экрана
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+
+// Оптимальные размеры для постов
+const POST_IMAGE_SIZE = {
+  WIDTH: 1080,
+  HEIGHT: 1080,
+  MAX_FILE_SIZE: 2 * 1024 * 1024,
+  QUALITY: 0.85,
+};
 
 // Типы для постов
 interface CommunityPost {
@@ -40,6 +62,7 @@ interface CommunityPost {
   postType: string;
   title: string;
   content: string;
+  images?: string[];
   image?: any;
   likes: number;
   comments: number;
@@ -56,9 +79,159 @@ interface Comment {
   userId: string;
 }
 
+// Тип для изображений перед загрузкой
+interface PostImage {
+  id: string;
+  uri: string;
+  name: string;
+  type: string;
+  size?: number;
+  uploaded?: boolean;
+  uploadProgress?: number;
+  cloudinaryUrl?: string;
+  publicId?: string;
+  error?: string;
+}
+
+// ========== ФУНКЦИЯ ДЛЯ ОБРЕЗКИ И ОПТИМИЗАЦИИ ФОТО ==========
+
+const optimizeImageForPost = async (
+  imageUri: string,
+  originalName?: string
+): Promise<PostImage> => {
+  try {
+    console.log('Начинаем оптимизацию изображения...');
+    
+    const fileInfo = await FileSystem.getInfoAsync(imageUri);
+    if (!fileInfo.exists) {
+      throw new Error('Файл не найден');
+    }
+    
+    const originalSize = 'size' in fileInfo ? fileInfo.size as number : 0;
+    console.log(`Оригинальный размер: ${Math.round(originalSize / 1024)} KB`);
+    
+    const manipResult = await ImageManipulator.manipulateAsync(
+      imageUri,
+      [
+        {
+          resize: {
+            width: POST_IMAGE_SIZE.WIDTH,
+            height: POST_IMAGE_SIZE.HEIGHT,
+          },
+        },
+      ],
+      {
+        compress: POST_IMAGE_SIZE.QUALITY,
+        format: ImageManipulator.SaveFormat.JPEG,
+        base64: false,
+      }
+    );
+    
+    const optimizedInfo = await FileSystem.getInfoAsync(manipResult.uri);
+    const optimizedSize = 'size' in optimizedInfo ? optimizedInfo.size as number : 0;
+    
+    console.log(`Оптимизированный размер: ${Math.round(optimizedSize / 1024)} KB`);
+    console.log(`Сжатие: ${Math.round((optimizedSize / originalSize) * 100)}% от оригинала`);
+    
+    if (optimizedSize > POST_IMAGE_SIZE.MAX_FILE_SIZE) {
+      console.log('Файл все еще большой, применяем дополнительное сжатие...');
+      
+      const furtherCompressed = await ImageManipulator.manipulateAsync(
+        manipResult.uri,
+        [],
+        {
+          compress: 0.7,
+          format: ImageManipulator.SaveFormat.JPEG,
+        }
+      );
+      
+      const finalInfo = await FileSystem.getInfoAsync(furtherCompressed.uri);
+      const finalSize = 'size' in finalInfo ? finalInfo.size as number : 0;
+      
+      console.log(`Финальный размер после доп. сжатия: ${Math.round(finalSize / 1024)} KB`);
+      
+      return {
+        id: `img_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+        uri: furtherCompressed.uri,
+        name: originalName || `post_${Date.now()}.jpg`,
+        type: 'image/jpeg',
+        size: finalSize,
+        uploaded: false,
+        uploadProgress: 0,
+      };
+    }
+    
+    return {
+      id: `img_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+      uri: manipResult.uri,
+      name: originalName || `post_${Date.now()}.jpg`,
+      type: 'image/jpeg',
+      size: optimizedSize,
+      uploaded: false,
+      uploadProgress: 0,
+    };
+    
+  } catch (error) {
+    console.error('Ошибка оптимизации изображения:', error);
+    
+    const fileInfo = await FileSystem.getInfoAsync(imageUri);
+    const size = 'size' in fileInfo ? fileInfo.size as number : 0;
+    
+    return {
+      id: `img_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+      uri: imageUri,
+      name: originalName || `post_${Date.now()}.jpg`,
+      type: 'image/jpeg',
+      size: size,
+      uploaded: false,
+      uploadProgress: 0,
+    };
+  }
+};
+
+// ========== КОМПОНЕНТ АВАТАРА С ФОТО ИЛИ ЗАГЛУШКОЙ ==========
+
+interface AvatarProps {
+  photoURL?: string | null;
+  size?: number;
+}
+
+const Avatar: React.FC<AvatarProps> = ({ photoURL, size = 55 }) => {
+  if (photoURL) {
+    return (
+      <Image
+        source={{ uri: photoURL }}
+        style={{
+          width: size,
+          height: size,
+          borderRadius: size / 2,
+          borderWidth: 2,
+          borderColor: "#9BDF11",
+        }}
+        resizeMode="cover"
+      />
+    );
+  }
+  
+  // Заглушка, если фото нет (аналогично ProfileScreen)
+  return (
+    <View style={{
+      width: size,
+      height: size,
+      borderRadius: size / 2,
+      backgroundColor: "#E5F0F5",
+      justifyContent: "center",
+      alignItems: "center",
+      borderWidth: 2,
+      borderColor: "#9BDF11",
+    }}>
+      <Feather name="user" size={size * 0.4} color="#6A9AA9" />
+    </View>
+  );
+};
+
 export default function Community() {
   const router = useRouter();
-  // const [profileMenuVisible, setProfileMenuVisible] = useState(false); // УДАЛЕНО
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedFilter, setSelectedFilter] = useState("Все");
   const [communityPosts, setCommunityPosts] = useState<CommunityPost[]>([]);
@@ -77,39 +250,86 @@ export default function Community() {
   const [userData, setUserData] = useState({
     name: "Гость",
     id: null as string | null,
+    photoURL: null as string | null, // Добавляем поле для фото
   });
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [userProfileLoading, setUserProfileLoading] = useState(false);
+
+  // Состояние для работы с изображениями
+  const [postImages, setPostImages] = useState<PostImage[]>([]);
+  const [isUploadingImages, setIsUploadingImages] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [isSelectingImages, setIsSelectingImages] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   const filters = ["Все", "Рецепты", "Вопросы", "Отзывы", "Советы"];
+  
+  // Настройки для изображений
+  const IMAGE_SETTINGS = {
+    maxImagesPerPost: 10,
+    maxFileSize: 10 * 1024 * 1024,
+    allowedTypes: ['image/jpeg', 'image/png', 'image/jpg', 'image/webp'],
+  };
 
-  // Отслеживаем состояние аутентификации
+  // Функция для загрузки фото профиля пользователя
+  const loadUserProfilePhoto = useCallback(async (userId: string) => {
+    if (!userId) return null;
+    
+    try {
+      setUserProfileLoading(true);
+      
+      // 1. Пробуем загрузить из Firestore через userService
+      const profileData = await userService.fetchUserProfile(userId);
+      if (profileData?.photoURL) {
+        console.log("✅ Фото профиля загружено из Firestore");
+        return profileData.photoURL;
+      }
+      
+      // 2. Если в Firestore нет, проверяем Firebase Auth
+      const auth = getAuth();
+      if (auth.currentUser?.photoURL) {
+        console.log("✅ Фото профиля загружено из Firebase Auth");
+        return auth.currentUser.photoURL;
+      }
+      
+      console.log("❌ Фото профиля не найдено");
+      return null;
+    } catch (error) {
+      console.error("Ошибка загрузки фото профиля:", error);
+      return null;
+    } finally {
+      setUserProfileLoading(false);
+    }
+  }, []);
+
+  // Отслеживаем состояние аутентификации и загружаем фото профиля
   useEffect(() => {
     const auth = getAuth();
 
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
       if (user) {
-        // Пользователь авторизован
         setCurrentUser(user);
+        
+        // Загружаем фото профиля
+        const photoURL = await loadUserProfilePhoto(user.uid);
+        
         setUserData({
           name: user.displayName || user.email || "Пользователь",
           id: user.uid,
+          photoURL: photoURL,
         });
         setIsAuthenticated(true);
         console.log("Пользователь авторизован:", user.uid);
-
-        // Перезагружаем посты для обновления статуса лайков
         loadPosts();
       } else {
-        // Пользователь не авторизован
         setCurrentUser(null);
         setUserData({
           name: "Гость",
           id: null,
+          photoURL: null,
         });
         setIsAuthenticated(false);
         console.log("Пользователь не авторизован");
-
-        // Сбрасываем все лайки в локальном состоянии
         setCommunityPosts((prev) =>
           prev.map((post) => ({ ...post, liked: false }))
         );
@@ -117,9 +337,283 @@ export default function Community() {
     });
 
     return unsubscribe;
+  }, [loadUserProfilePhoto]);
+
+  // Автоматическое обновление при возврате на экран
+  useFocusEffect(
+    useCallback(() => {
+      loadPosts();
+    }, [])
+  );
+
+  // ========== ФУНКЦИИ ДЛЯ РАБОТЫ С ИЗОБРАЖЕНИЯМИ ==========
+
+  const checkPermissions = async () => {
+    const galleryStatus = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    const cameraStatus = await ImagePicker.requestCameraPermissionsAsync();
+    
+    if (galleryStatus.status !== 'granted' || cameraStatus.status !== 'granted') {
+      Alert.alert(
+        'Требуются разрешения',
+        'Для загрузки фото необходимы разрешения на доступ к камере и галерее'
+      );
+      return false;
+    }
+    return true;
+  };
+
+  const pickImageFromGallery = async () => {
+    if (!isAuthenticated) {
+      Alert.alert("Ошибка", "Необходимо войти в аккаунт");
+      return;
+    }
+
+    if (postImages.length >= IMAGE_SETTINGS.maxImagesPerPost) {
+      Alert.alert(
+        "Лимит фото",
+        `Можно добавить не более ${IMAGE_SETTINGS.maxImagesPerPost} фото`
+      );
+      return;
+    }
+
+    const hasPermission = await checkPermissions();
+    if (!hasPermission) return;
+
+    try {
+      setIsSelectingImages(true);
+      
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsEditing: false,
+        aspect: [1, 1],
+        quality: 0.8,
+        allowsMultipleSelection: true,
+        selectionLimit: IMAGE_SETTINGS.maxImagesPerPost - postImages.length,
+      });
+
+      if (!result.canceled && result.assets.length > 0) {
+        const newImages: PostImage[] = [];
+        let processedCount = 0;
+        
+        for (const asset of result.assets) {
+          try {
+            const optimizedImage = await optimizeImageForPost(
+              asset.uri,
+              asset.fileName || undefined
+            );
+            
+            newImages.push(optimizedImage);
+            processedCount++;
+            
+            const progress = Math.round((processedCount / result.assets.length) * 100);
+            console.log(`Обработано ${processedCount}/${result.assets.length} фото (${progress}%)`);
+            
+          } catch (error) {
+            console.error(`Ошибка обработки фото ${asset.fileName}:`, error);
+            
+            const fileInfo = await FileSystem.getInfoAsync(asset.uri);
+            let fileSize = 0;
+            
+            if (fileInfo.exists && 'size' in fileInfo) {
+              fileSize = fileInfo.size as number;
+              if (fileSize > IMAGE_SETTINGS.maxFileSize) {
+                Alert.alert(
+                  "Файл слишком большой",
+                  `Файл "${asset.fileName || 'изображение'}" превышает лимит 10MB`
+                );
+                continue;
+              }
+            }
+
+            const image: PostImage = {
+              id: `img_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+              uri: asset.uri,
+              name: asset.fileName || `image_${Date.now()}.jpg`,
+              type: asset.mimeType || 'image/jpeg',
+              size: fileSize,
+              uploaded: false,
+              uploadProgress: 0,
+            };
+            newImages.push(image);
+          }
+        }
+
+        if (newImages.length > 0) {
+          setPostImages(prev => [...prev, ...newImages]);
+        }
+      }
+    } catch (error) {
+      console.error("Ошибка выбора фото:", error);
+      Alert.alert("Ошибка", "Не удалось выбрать фото");
+    } finally {
+      setIsSelectingImages(false);
+    }
+  };
+
+  const takePhotoWithCamera = async () => {
+    if (!isAuthenticated) {
+      Alert.alert("Ошибка", "Необходимо войти в аккаунт");
+      return;
+    }
+
+    if (postImages.length >= IMAGE_SETTINGS.maxImagesPerPost) {
+      Alert.alert(
+        "Лимит фото",
+        `Можно добавить не более ${IMAGE_SETTINGS.maxImagesPerPost} фото`
+      );
+      return;
+    }
+
+    const hasPermission = await checkPermissions();
+    if (!hasPermission) return;
+
+    try {
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ['images'],
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.8,
+      });
+
+      if (!result.canceled && result.assets.length > 0) {
+        const asset = result.assets[0];
+        
+        try {
+          const optimizedImage = await optimizeImageForPost(
+            asset.uri,
+            `camera_${Date.now()}.jpg`
+          );
+          
+          setPostImages(prev => [...prev, optimizedImage]);
+          
+        } catch (optimizeError) {
+          console.error("Ошибка оптимизации фото с камеры:", optimizeError);
+          
+          const fileInfo = await FileSystem.getInfoAsync(asset.uri);
+          let fileSize = 0;
+          
+          if (fileInfo.exists && 'size' in fileInfo) {
+            fileSize = fileInfo.size as number;
+            if (fileSize > IMAGE_SETTINGS.maxFileSize) {
+              Alert.alert(
+                "Файл слишком большой",
+                "Фото превышает лимит 10MB"
+              );
+              return;
+            }
+          }
+
+          const image: PostImage = {
+            id: `img_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+            uri: asset.uri,
+            name: `camera_${Date.now()}.jpg`,
+            type: asset.mimeType || 'image/jpeg',
+            size: fileSize,
+            uploaded: false,
+            uploadProgress: 0,
+          };
+
+          setPostImages(prev => [...prev, image]);
+        }
+      }
+    } catch (error) {
+      console.error("Ошибка съемки фото:", error);
+      Alert.alert("Ошибка", "Не удалось сделать фото");
+    }
+  };
+
+  const removeImage = (imageId: string) => {
+    setPostImages(prev => prev.filter(img => img.id !== imageId));
+  };
+
+  const uploadAllImages = async (): Promise<string[]> => {
+    if (postImages.length === 0) return [];
+    
+    setIsUploadingImages(true);
+    setUploadProgress(0);
+    
+    const uploadedUrls: string[] = [];
+    
+    try {
+      for (let i = 0; i < postImages.length; i++) {
+        const image = postImages[i];
+        
+        setPostImages(prev => prev.map((img, idx) => 
+          idx === i ? { ...img, uploadProgress: 10 } : img
+        ));
+        
+        const result = await uploadCommunityPostImage(
+          image.uri,
+          (progress) => {
+            setPostImages(prev => prev.map((img, idx) => 
+              idx === i ? { ...img, uploadProgress: progress.percent } : img
+            ));
+            
+            const totalProgress = (i / postImages.length * 100) + (progress.percent / postImages.length);
+            setUploadProgress(totalProgress);
+          }
+        );
+        
+        if (result.success && result.url) {
+          setPostImages(prev => prev.map((img, idx) => 
+            idx === i ? { 
+              ...img, 
+              uploaded: true, 
+              cloudinaryUrl: result.url,
+              publicId: result.publicId,
+              uploadProgress: 100 
+            } : img
+          ));
+          
+          uploadedUrls.push(result.url);
+        } else {
+          setPostImages(prev => prev.map((img, idx) => 
+            idx === i ? { 
+              ...img, 
+              error: result.error || 'Ошибка загрузки',
+              uploadProgress: 0 
+            } : img
+          ));
+          
+          throw new Error(`Ошибка загрузки изображения ${i + 1}: ${result.error}`);
+        }
+      }
+      
+      return uploadedUrls;
+      
+    } catch (error: any) {
+      console.error("Ошибка загрузки изображений:", error);
+      throw error;
+    } finally {
+      setIsUploadingImages(false);
+      setUploadProgress(0);
+    }
+  };
+
+  const clearAllImages = () => {
+    setPostImages([]);
+  };
+
+  // Функция для полного сброса состояния модального окна
+  const resetAddPostModal = () => {
+    setNewPost({
+      title: "",
+      content: "",
+      postType: "Рецепты",
+    });
+    clearAllImages();
+    setAddPostModalVisible(false);
+  };
+
+  // ========== ОСНОВНЫЕ ФУНКЦИИ ==========
+
+  // Pull-to-refresh функция
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await loadPosts();
+    setRefreshing(false);
   }, []);
 
-  // Моковые данные для fallback
   const getMockPosts = (): CommunityPost[] => [
     {
       id: "1",
@@ -127,9 +621,8 @@ export default function Community() {
       userAvatar: require("@/assets/images/people-icon.png"),
       postType: "Рецепты",
       title: "Полезный завтрак на неделю",
-      content:
-        "Поделюсь своими любимыми рецептами полезных завтраков, которые готовлю каждое утро! 🍓🥣",
-      image: null,
+      content: "Поделюсь своими любимыми рецептами полезных завтраков, которые готовлю каждое утро! 🍓🥣",
+      images: [],
       likes: 24,
       comments: 8,
       timeAgo: "2 часа назад",
@@ -142,9 +635,8 @@ export default function Community() {
       userAvatar: require("@/assets/images/people-icon.png"),
       postType: "Вопросы",
       title: "Как разнообразить рацион?",
-      content:
-        "Ребята, подскажите идеи для разнообразия питания. Надоело есть одно и то же каждый день...",
-      image: null,
+      content: "Ребята, подскажите идеи для разнообразия питания. Надоело есть одно и то же каждый день...",
+      images: [],
       likes: 15,
       comments: 12,
       timeAgo: "5 часов назад",
@@ -157,9 +649,8 @@ export default function Community() {
       userAvatar: require("@/assets/images/people-icon.png"),
       postType: "Отзывы",
       title: "Результат за 3 месяца",
-      content:
-        "С помощью EatWisely похудела на 8 кг! Спасибо за отличные рецепты и поддержку сообщества! 💪",
-      image: null,
+      content: "С помощью EatWisely похудела на 8 кг! Спасибо за отличные рецепты и поддержку сообщества! 💪",
+      images: [],
       likes: 42,
       comments: 15,
       timeAgo: "1 день назад",
@@ -168,7 +659,6 @@ export default function Community() {
     },
   ];
 
-  // Загрузка постов из Firebase
   const loadPosts = async () => {
     try {
       setLoading(true);
@@ -180,7 +670,6 @@ export default function Community() {
       const querySnapshot = await getDocs(postsQuery);
       const posts: CommunityPost[] = [];
 
-      // Проверяем лайки только если пользователь авторизован
       let userLikedPosts: string[] = [];
       if (isAuthenticated && userData.id) {
         try {
@@ -192,7 +681,6 @@ export default function Community() {
           userLikedPosts = userLikesSnapshot.docs.map(
             (doc) => doc.data().postId
           );
-          console.log("Найдены лайки пользователя:", userLikedPosts);
         } catch (error) {
           console.error("Ошибка загрузки лайков:", error);
         }
@@ -201,6 +689,8 @@ export default function Community() {
       querySnapshot.forEach((doc) => {
         const data = doc.data();
 
+        const images = data.images || (data.image ? [data.image] : []);
+
         posts.push({
           id: doc.id,
           userName: data.userName || "Анонимный пользователь",
@@ -208,6 +698,7 @@ export default function Community() {
           postType: data.postType || "Рецепты",
           title: data.title,
           content: data.content,
+          images: images,
           image: data.image ? { uri: data.image } : null,
           likes: data.likes || 0,
           comments: data.comments || 0,
@@ -226,7 +717,6 @@ export default function Community() {
     }
   };
 
-  // Загрузка комментариев
   const loadComments = async (postId: string) => {
     try {
       const commentsQuery = query(
@@ -239,20 +729,17 @@ export default function Community() {
 
       querySnapshot.forEach((doc) => {
         const data = doc.data();
-        // Убедитесь, что userId всегда строка
         const userId = data.userId || "unknown_user";
         loadedComments.push({
           id: doc.id,
           userName: data.userName || "Аноним",
           content: data.content,
           timeAgo: formatTimeAgo(data.createdAt?.toDate() || new Date()),
-          userId: userId, // Теперь всегда string
+          userId: userId,
         });
       });
 
-      // Сортируем по времени (новые сверху) - ОСТОРОЖНО: timeAgo - это строка типа "X минут назад", сортировка по ней может быть неточной. Лучше было бы использовать orderBy("createdAt", "asc/desc") в запросе к Firebase. Для локального состояния оставим как есть, предполагая, что нам нужны самые новые сверху.
       loadedComments.sort((a, b) => {
-        // Это неточная сортировка, но оставим для демонстрации
         return new Date(b.timeAgo).getTime() - new Date(a.timeAgo).getTime();
       });
 
@@ -263,22 +750,17 @@ export default function Community() {
     }
   };
 
-  // Функция для форматирования времени
   const formatTimeAgo = (date: Date): string => {
     const now = new Date();
     const diffInSeconds = Math.floor((now.getTime() - date.getTime()) / 1000);
 
     if (diffInSeconds < 60) return "только что";
-    if (diffInSeconds < 3600)
-      return `${Math.floor(diffInSeconds / 60)} минут назад`;
-    if (diffInSeconds < 86400)
-      return `${Math.floor(diffInSeconds / 3600)} часов назад`;
+    if (diffInSeconds < 3600) return `${Math.floor(diffInSeconds / 60)} минут назад`;
+    if (diffInSeconds < 86400) return `${Math.floor(diffInSeconds / 3600)} часов назад`;
     return `${Math.floor(diffInSeconds / 86400)} дней назад`;
   };
 
-  // Добавление нового поста
   const handleAddPost = async () => {
-    // ПРОВЕРКА АВТОРИЗАЦИИ
     if (!isAuthenticated || !userData.id) {
       Alert.alert("Ошибка", "Необходимо войти в аккаунт");
       return;
@@ -290,12 +772,57 @@ export default function Community() {
     }
 
     try {
+      let imageUrls: string[] = [];
+      
+      if (postImages.length > 0) {
+        try {
+          imageUrls = await uploadAllImages();
+          
+          const failedImages = postImages.filter(img => !img.uploaded && img.error);
+          if (failedImages.length > 0) {
+            const shouldContinue = await new Promise((resolve) => {
+              Alert.alert(
+                'Некоторые фото не загрузились',
+                'Продолжить публикацию без этих фото?',
+                [
+                  { text: 'Отмена', style: 'cancel', onPress: () => resolve(false) },
+                  { text: 'Продолжить', onPress: () => resolve(true) },
+                ]
+              );
+            });
+
+            if (!shouldContinue) {
+              return;
+            }
+          }
+        } catch (uploadError) {
+          console.error("Ошибка загрузки изображений:", uploadError);
+          
+          const shouldContinue = await new Promise((resolve) => {
+            Alert.alert(
+              'Ошибка загрузки фото',
+              'Продолжить публикацию без фото?',
+              [
+                { text: 'Отмена', style: 'cancel', onPress: () => resolve(false) },
+                { text: 'Продолжить', onPress: () => resolve(true) },
+              ]
+            );
+          });
+
+          if (!shouldContinue) {
+            return;
+          }
+        }
+      }
+
       const postData = {
         title: newPost.title,
         content: newPost.content,
         postType: newPost.postType,
         userName: userData.name,
         userId: userData.id,
+        images: imageUrls,
+        image: imageUrls.length > 0 ? imageUrls[0] : null,
         likes: 0,
         comments: 0,
         verified: true,
@@ -306,19 +833,12 @@ export default function Community() {
 
       await addDoc(collection(db, "community_posts"), postData);
 
-      setNewPost({
-        title: "",
-        content: "",
-        postType: "Рецепты",
-      });
-      setAddPostModalVisible(false);
+      resetAddPostModal();
       await loadPosts();
-
-      Alert.alert("Успех", "Пост успешно опубликован!");
+      
     } catch (error: any) {
       console.error("Ошибка добавления поста:", error);
 
-      // ОБРАБОТКА ОШИБОК АВТОРИЗАЦИИ
       if (
         error.code === "auth/admin-restricted-operation" ||
         error.code === "permission-denied" ||
@@ -332,10 +852,8 @@ export default function Community() {
     }
   };
 
-  // Лайк поста - исправленная версия
   const handleLike = async (postId: string) => {
     try {
-      // ПРОВЕРКА АВТОРИЗАЦИИ ДО ЛЮБЫХ ДЕЙСТВИЙ
       if (!isAuthenticated || !userData.id) {
         Alert.alert("Ошибка", "Необходимо войти в аккаунт");
         return;
@@ -349,7 +867,6 @@ export default function Community() {
       const newLikedState = !post.liked;
       const newLikesCount = newLikedState ? post.likes + 1 : post.likes - 1;
 
-      // Обновляем локальное состояние
       setCommunityPosts((prev) =>
         prev.map((p) =>
           p.id === postId
@@ -359,7 +876,6 @@ export default function Community() {
       );
 
       if (newLikedState) {
-        // Добавляем лайк
         await Promise.all([
           updateDoc(postRef, {
             likes: newLikesCount,
@@ -371,9 +887,7 @@ export default function Community() {
             createdAt: Timestamp.now(),
           }),
         ]);
-        console.log("Лайк добавлен для пользователя:", userData.id);
       } else {
-        // Удаляем лайк
         const likesQuery = query(
           collection(db, "likes"),
           where("postId", "==", postId),
@@ -389,18 +903,15 @@ export default function Community() {
           }),
         ];
 
-        // Удаляем все найденные лайки
         likesSnapshot.forEach((likeDoc) => {
           updatePromises.push(deleteDoc(doc(db, "likes", likeDoc.id)));
         });
 
         await Promise.all(updatePromises);
-        console.log("Лайк удален для пользователя:", userData.id);
       }
     } catch (error: any) {
       console.error("Ошибка лайка:", error);
 
-      // Откатываем локальное состояние
       const post = communityPosts.find((p) => p.id === postId);
       if (post) {
         setCommunityPosts((prev) =>
@@ -410,7 +921,6 @@ export default function Community() {
         );
       }
 
-      // ОБРАБОТКА ОШИБОК АВТОРИЗАЦИИ
       if (
         error.code === "auth/admin-restricted-operation" ||
         error.code === "permission-denied" ||
@@ -424,9 +934,7 @@ export default function Community() {
     }
   };
 
-  // Добавление комментария
   const handleAddComment = async () => {
-    // ПРОВЕРКА АВТОРИЗАЦИИ
     if (!isAuthenticated || !userData.id) {
       Alert.alert("Ошибка", "Необходимо войти в аккаунт");
       return;
@@ -441,7 +949,7 @@ export default function Community() {
       const commentData = {
         postId: selectedPost.id,
         userName: userData.name,
-        userId: userData.id, // Теперь точно string, т.к. прошли проверку выше
+        userId: userData.id,
         content: newComment.trim(),
         createdAt: Timestamp.now(),
         likesCount: 0,
@@ -451,13 +959,11 @@ export default function Community() {
 
       const docRef = await addDoc(collection(db, "comments"), commentData);
 
-      // Обновляем счетчик комментариев в посте
       const postRef = doc(db, "community_posts", selectedPost.id);
       await updateDoc(postRef, {
         comments: (selectedPost.comments || 0) + 1,
       });
 
-      // Обновляем локальное состояние
       setCommunityPosts((prev) =>
         prev.map((p) =>
           p.id === selectedPost.id
@@ -466,7 +972,6 @@ export default function Community() {
         )
       );
 
-      // Добавляем комментарий в локальное состояние
       const newCommentObj: Comment = {
         id: docRef.id,
         userName: userData.name,
@@ -475,12 +980,11 @@ export default function Community() {
         userId: userData.id,
       };
 
-      setComments((prev) => [newCommentObj, ...prev]); // Добавляем новый комментарий в начало
+      setComments((prev) => [newCommentObj, ...prev]);
       setNewComment("");
     } catch (error: any) {
       console.error("Ошибка добавления комментария:", error);
 
-      // ОБРАБОТКА ОШИБОК АВТОРИЗАЦИИ
       if (
         error.code === "auth/admin-restricted-operation" ||
         error.code === "permission-denied" ||
@@ -494,7 +998,6 @@ export default function Community() {
     }
   };
 
-  // Поделиться постом
   const handleShare = async (post: CommunityPost) => {
     try {
       const shareContent = `${post.title}\n\n${post.content}\n\n- ${post.userName}`;
@@ -508,16 +1011,120 @@ export default function Community() {
     }
   };
 
-  // Открытие комментариев
   const openComments = async (post: CommunityPost) => {
     setSelectedPost(post);
     setCommentsModalVisible(true);
     await loadComments(post.id);
   };
 
+  // ========== УЛУЧШЕННЫЙ КОМПОНЕНТ СЛАЙДЕРА ==========
+  
+  interface ImageSliderProps {
+    images: string[];
+    postId: string;
+  }
+
+  const ImageSlider: React.FC<ImageSliderProps> = ({ images, postId }) => {
+    const [currentIndex, setCurrentIndex] = useState(0);
+    const flatListRef = useRef<FlatList>(null);
+    
+    if (!images || images.length === 0) return null;
+
+    const onViewRef = useRef(({ viewableItems }: any) => {
+      if (viewableItems.length > 0) {
+        setCurrentIndex(viewableItems[0].index);
+      }
+    });
+
+    const viewConfigRef = useRef({ viewAreaCoveragePercentThreshold: 50 });
+
+    const handlePrev = () => {
+      if (currentIndex > 0) {
+        flatListRef.current?.scrollToIndex({
+          index: currentIndex - 1,
+          animated: true,
+        });
+      }
+    };
+
+    const handleNext = () => {
+      if (currentIndex < images.length - 1) {
+        flatListRef.current?.scrollToIndex({
+          index: currentIndex + 1,
+          animated: true,
+        });
+      }
+    };
+
+    return (
+      <View style={styles.imageSliderContainer}>
+        {/* Кнопки навигации */}
+        {images.length > 1 && (
+          <>
+            {currentIndex > 0 && (
+              <TouchableOpacity
+                style={[styles.navButton, styles.prevButton]}
+                onPress={handlePrev}
+              >
+                <Feather 
+                  name="chevron-left" 
+                  size={16} 
+                  color="#fff" 
+                />
+              </TouchableOpacity>
+            )}
+            {currentIndex < images.length - 1 && (
+              <TouchableOpacity
+                style={[styles.navButton, styles.nextButton]}
+                onPress={handleNext}
+              >
+                <Feather 
+                  name="chevron-right" 
+                  size={16} 
+                  color="#fff" 
+                />
+              </TouchableOpacity>
+            )}
+          </>
+        )}
+
+        <FlatList
+          ref={flatListRef}
+          data={images}
+          horizontal
+          pagingEnabled
+          showsHorizontalScrollIndicator={false}
+          onViewableItemsChanged={onViewRef.current}
+          viewabilityConfig={viewConfigRef.current}
+          scrollEventThrottle={32}
+          decelerationRate="fast"
+          keyExtractor={(item, index) => `${postId}_image_${index}`}
+          renderItem={({ item }) => (
+            <View style={styles.slide}>
+              <Image 
+                source={{ uri: item }} 
+                style={styles.postImage}
+                resizeMode="cover"
+              />
+            </View>
+          )}
+        />
+        
+        {/* Счетчик */}
+        {images.length > 1 && (
+          <View style={styles.imageCounter}>
+            <Text style={styles.imageCounterText}>
+              {currentIndex + 1} / {images.length}
+            </Text>
+          </View>
+        )}
+      </View>
+    );
+  };
+
   useEffect(() => {
     loadPosts();
-  }, [isAuthenticated]); // Перезагружаем посты при изменении статуса аутентификации
+  }, [isAuthenticated]);
 
   const filteredPosts = communityPosts.filter((post) => {
     const matchesSearch =
@@ -528,11 +1135,7 @@ export default function Community() {
     return matchesSearch && matchesFilter;
   });
 
-  // const handleProfileMenu = () => { // УДАЛЕНО
-  // setProfileMenuVisible(!profileMenuVisible);
-  // };
-
-  if (loading) {
+  if (loading && !refreshing) {
     return (
       <View style={styles.background}>
         <View style={styles.loadingContainer}>
@@ -558,16 +1161,17 @@ export default function Community() {
             </Text>
           </View>
 
-          {/* Измененная секция профиля: только фото и имя */}
           <View style={styles.profileSection}>
             <TouchableOpacity
               style={styles.profileButton}
-              // onPress={() => router.push('/profile')} // Можно добавить переход на страницу профиля
             >
-              <Image
-                source={require("@/assets/images/people-icon.png")}
-                style={styles.profileImage}
-              />
+              {userProfileLoading ? (
+                <View style={styles.avatarLoading}>
+                  <ActivityIndicator size="small" color="#6A9AA9" />
+                </View>
+              ) : (
+                <Avatar photoURL={userData.photoURL} size={55} />
+              )}
               {!isAuthenticated && (
                 <View style={styles.guestBadge}>
                   <Text style={styles.guestBadgeText}>Гость</Text>
@@ -578,20 +1182,20 @@ export default function Community() {
           </View>
         </View>
 
-        {/* Компонент меню профиля УДАЛЕН */}
-        {/* <ProfileMenu
-visible={profileMenuVisible}
-onClose={() => setProfileMenuVisible(false)}
-userName={userData.name}
-/> */}
-
         <ScrollView
           style={styles.scrollView}
           showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              colors={["#6A9AA9"]}
+              tintColor="#6A9AA9"
+            />
+          }
         >
           {/* Поиск и фильтры */}
           <View style={styles.searchSection}>
-            {/* Фильтры */}
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
@@ -618,7 +1222,6 @@ userName={userData.name}
               ))}
             </ScrollView>
 
-            {/* Поле поиска с кнопкой создания поста */}
             <View style={styles.searchRow}>
               <View style={styles.searchInputContainer}>
                 <Feather
@@ -642,7 +1245,6 @@ userName={userData.name}
                   !isAuthenticated && styles.disabledButton,
                 ]}
                 onPress={() => {
-                  // ПРОВЕРКА ПРИ НАЖАТИИ НА КНОПКУ
                   if (!isAuthenticated) {
                     Alert.alert("Ошибка", "Необходимо войти в аккаунт");
                     return;
@@ -668,17 +1270,17 @@ userName={userData.name}
               {filteredPosts.length} постов найдено
             </Text>
 
-            {/* Список постов */}
             <View style={styles.postsList}>
               {filteredPosts.map((post) => (
                 <View key={post.id} style={styles.postCard}>
-                  {/* Заголовок поста и пользователь */}
                   <View style={styles.postHeader}>
                     <View style={styles.userInfo}>
-                      <Image
-                        source={post.userAvatar}
-                        style={styles.userAvatar}
-                      />
+                      <View style={styles.userAvatarContainer}>
+                        {/* Используем placeholder вместо старой иконки */}
+                        <View style={styles.placeholderAvatar}>
+                          <Feather name="user" size={20} color="#6A9AA9" />
+                        </View>
+                      </View>
                       <View style={styles.userDetails}>
                         <View style={styles.userNameContainer}>
                           <Text style={styles.userName}>{post.userName}</Text>
@@ -703,21 +1305,34 @@ userName={userData.name}
                     </View>
                   </View>
 
-                  {/* Контент поста */}
                   <TouchableOpacity
                     style={styles.postContent}
                     onPress={() => console.log("Переход к посту:", post.title)}
                   >
                     <Text style={styles.postTitle}>{post.title}</Text>
                     <Text style={styles.postText}>{post.content}</Text>
+                    
+                    {/* Улучшенный слайдер с изображениями */}
+                    {post.images && post.images.length > 0 && (
+                      <ImageSlider images={post.images} postId={post.id} />
+                    )}
+                    
+                    {/* Для обратной совместимости с одним изображением */}
+                    {post.image && (!post.images || post.images.length === 0) && (
+                      <View style={styles.singleImageContainer}>
+                        <Image 
+                          source={post.image} 
+                          style={styles.postImage}
+                          resizeMode="contain"
+                        />
+                      </View>
+                    )}
                   </TouchableOpacity>
 
-                  {/* Действия с постом */}
                   <View style={styles.postActions}>
                     <TouchableOpacity
                       style={styles.actionButton}
                       onPress={() => {
-                        // ПРОВЕРКА ПРИ НАЖАТИИ НА ЛАЙК
                         if (!isAuthenticated) {
                           Alert.alert("Ошибка", "Необходимо войти в аккаунт");
                           return;
@@ -780,13 +1395,13 @@ userName={userData.name}
           visible={addPostModalVisible}
           animationType="slide"
           transparent={true}
-          onRequestClose={() => setAddPostModalVisible(false)}
+          onRequestClose={() => resetAddPostModal()}
         >
           <View style={styles.modalOverlay}>
             <View style={styles.modalContent}>
               <View style={styles.modalHeader}>
                 <Text style={styles.modalTitle}>Создать новый пост</Text>
-                <TouchableOpacity onPress={() => setAddPostModalVisible(false)}>
+                <TouchableOpacity onPress={() => resetAddPostModal()}>
                   <Feather name="x" size={24} color="#666" />
                 </TouchableOpacity>
               </View>
@@ -847,20 +1462,176 @@ userName={userData.name}
                   numberOfLines={4}
                   textAlignVertical="top"
                 />
+
+                {/* Секция для изображений */}
+                <Text style={styles.inputLabel}>
+                  Фото ({postImages.length}/{IMAGE_SETTINGS.maxImagesPerPost})
+                </Text>
+                
+                <View style={styles.imageUploadSection}>
+                  {/* Кнопки добавления фото */}
+                  <View style={styles.imageButtonsRow}>
+                    <TouchableOpacity
+                      style={[styles.imageButton, styles.galleryButton]}
+                      onPress={pickImageFromGallery}
+                      disabled={postImages.length >= IMAGE_SETTINGS.maxImagesPerPost || isUploadingImages || isSelectingImages}
+                    >
+                      {isSelectingImages ? (
+                        <ActivityIndicator size="small" color="#6A9AA9" />
+                      ) : (
+                        <>
+                          <Feather name="image" size={20} color="#6A9AA9" />
+                          <Text style={styles.imageButtonText}>Галерея</Text>
+                        </>
+                      )}
+                    </TouchableOpacity>
+                    
+                    <TouchableOpacity
+                      style={[styles.imageButton, styles.cameraButton]}
+                      onPress={takePhotoWithCamera}
+                      disabled={postImages.length >= IMAGE_SETTINGS.maxImagesPerPost || isUploadingImages || isSelectingImages}
+                    >
+                      <Feather name="camera" size={20} color="#6A9AA9" />
+                      <Text style={styles.imageButtonText}>Камера</Text>
+                    </TouchableOpacity>
+                    
+                    {postImages.length > 0 && (
+                      <TouchableOpacity
+                        style={[styles.imageButton, styles.clearButton]}
+                        onPress={clearAllImages}
+                        disabled={isUploadingImages || isSelectingImages}
+                      >
+                        <Feather name="trash-2" size={20} color="#FF6B6B" />
+                        <Text style={[styles.imageButtonText, styles.clearButtonText]}>
+                          Очистить
+                        </Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+
+                  {/* Индикатор выбора фото */}
+                  {isSelectingImages && (
+                    <View style={styles.selectionIndicator}>
+                      <ActivityIndicator size="small" color="#6A9AA9" />
+                      <Text style={styles.selectionIndicatorText}>
+                        Загрузка выбранных фото...
+                      </Text>
+                    </View>
+                  )}
+
+                  {/* Прогресс загрузки */}
+                  {isUploadingImages && (
+                    <View style={styles.uploadProgressContainer}>
+                      <Text style={styles.uploadProgressText}>
+                        Загрузка на сервер... {Math.round(uploadProgress)}%
+                      </Text>
+                      <View style={styles.progressBar}>
+                        <View 
+                          style={[
+                            styles.progressFill, 
+                            { width: `${uploadProgress}%` }
+                          ]} 
+                        />
+                      </View>
+                      <Text style={styles.uploadInfoText}>
+                        Загружено {postImages.filter(img => img.uploaded).length} из {postImages.length} фото
+                      </Text>
+                    </View>
+                  )}
+
+                  {/* Список выбранных фото */}
+                  {postImages.length > 0 && (
+                    <View style={styles.selectedImagesContainer}>
+                      <Text style={styles.selectedImagesTitle}>
+                        Выбрано фото: {postImages.length}
+                        {postImages.some(img => img.error) && (
+                          <Text style={styles.errorCountText}> (есть ошибки)</Text>
+                        )}
+                      </Text>
+                      
+                      <ScrollView 
+                        horizontal 
+                        showsHorizontalScrollIndicator={false}
+                        style={styles.imagesPreviewScroll}
+                      >
+                        {postImages.map((image, index) => (
+                          <View key={image.id} style={styles.imagePreviewWrapper}>
+                            <Image 
+                              source={{ uri: image.uri }} 
+                              style={styles.imagePreview}
+                              resizeMode="cover"
+                            />
+                            
+                            {/* Индикатор статуса */}
+                            <View style={styles.statusIndicator}>
+                              {image.uploaded ? (
+                                <View style={[styles.statusBadge, styles.statusSuccess]}>
+                                  <Feather name="check" size={12} color="#fff" />
+                                </View>
+                              ) : image.error ? (
+                                <View style={[styles.statusBadge, styles.statusError]}>
+                                  <Feather name="alert-circle" size={12} color="#fff" />
+                                </View>
+                              ) : image.uploadProgress && image.uploadProgress > 0 ? (
+                                <View style={[styles.statusBadge, styles.statusUploading]}>
+                                  <Text style={styles.uploadProgressBadgeText}>
+                                    {Math.round(image.uploadProgress)}%
+                                  </Text>
+                                </View>
+                              ) : (
+                                <View style={[styles.statusBadge, styles.statusPending]}>
+                                  <Text style={styles.statusBadgeText}>{index + 1}</Text>
+                                </View>
+                              )}
+                            </View>
+                            
+                            <TouchableOpacity
+                              style={styles.removeImageButton}
+                              onPress={() => removeImage(image.id)}
+                              disabled={isUploadingImages || isSelectingImages}
+                            >
+                              <Feather name="x" size={14} color="#fff" />
+                            </TouchableOpacity>
+                          </View>
+                        ))}
+                      </ScrollView>
+                      
+                      {/* Информация о лимите */}
+                      {postImages.length >= IMAGE_SETTINGS.maxImagesPerPost ? (
+                        <Text style={styles.maxImagesWarning}>
+                          ✅ Достигнут лимит {IMAGE_SETTINGS.maxImagesPerPost} фото
+                        </Text>
+                      ) : (
+                        <Text style={styles.imagesInfoText}>
+                          Можно добавить еще {IMAGE_SETTINGS.maxImagesPerPost - postImages.length} фото
+                        </Text>
+                      )}
+                    </View>
+                  )}
+                </View>
               </ScrollView>
 
               <View style={styles.modalFooter}>
                 <TouchableOpacity
                   style={styles.cancelButton}
-                  onPress={() => setAddPostModalVisible(false)}
+                  onPress={() => resetAddPostModal()}
+                  disabled={isUploadingImages}
                 >
                   <Text style={styles.cancelButtonText}>Отмена</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
-                  style={styles.submitButton}
+                  style={[
+                    styles.submitButton,
+                    isUploadingImages && styles.submitButtonDisabled
+                  ]}
                   onPress={handleAddPost}
+                  disabled={isUploadingImages}
                 >
-                  <Text style={styles.submitButtonText}>Опубликовать</Text>
+                  {isUploadingImages ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <Text style={styles.submitButtonText}>Опубликовать</Text>
+                  )}
                 </TouchableOpacity>
               </View>
             </View>
@@ -977,9 +1748,8 @@ const getPostTypeColor = (postType: string) => {
   }
 };
 
-// Стили (остаются без изменений)
 const styles = StyleSheet.create({
-  // ... все стили остаются такими же как в предыдущем коде
+  // Базовые стили (остаются без изменений)
   background: {
     flex: 1,
     backgroundColor: "#f8f9fa",
@@ -1046,15 +1816,11 @@ const styles = StyleSheet.create({
     marginLeft: 15,
   },
   profileButton: {
-    width: 55,
-    height: 55,
-    borderRadius: 25,
     justifyContent: "center",
     alignItems: "center",
-
     position: "relative",
   },
-  profileName: { // НОВЫЙ СТИЛЬ ДЛЯ ИМЕНИ
+  profileName: {
     fontSize: 12,
     color: '#666',
     marginTop: 4,
@@ -1074,11 +1840,6 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontSize: 10,
     fontFamily: "Playfair Display Bold",
-  },
-  profileImage: {
-    width: "100%",
-    height: "100%",
-    borderRadius: 20,
   },
   scrollView: {
     flex: 1,
@@ -1201,11 +1962,23 @@ const styles = StyleSheet.create({
     alignItems: "center",
     flex: 1,
   },
-  userAvatar: {
+  userAvatarContainer: {
     width: 45,
     height: 45,
     borderRadius: 22.5,
     marginRight: 12,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  placeholderAvatar: {
+    width: 45,
+    height: 45,
+    borderRadius: 22.5,
+    backgroundColor: "#E5F0F5",
+    justifyContent: "center",
+    alignItems: "center",
+    borderWidth: 2,
+    borderColor: "#9BDF11",
   },
   userDetails: {
     flex: 1,
@@ -1287,7 +2060,7 @@ const styles = StyleSheet.create({
     backgroundColor: "white",
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
-    maxHeight: "80%",
+    maxHeight: "90%",
   },
   commentsModal: {
     maxHeight: "85%",
@@ -1391,6 +2164,10 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: "#6A9AA9",
   },
+  submitButtonDisabled: {
+    backgroundColor: "#ccc",
+    borderColor: "#ccc",
+  },
   submitButtonText: {
     color: "#000",
     fontSize: 14,
@@ -1480,5 +2257,264 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: "#6C757D",
     fontFamily: "Playfair Display Regular",
+  },
+  
+  // ========== ИЗМЕНЕННЫЕ СТИЛИ ДЛЯ УЛУЧШЕННОГО СЛАЙДЕРА ==========
+  imageSliderContainer: {
+    marginTop: 12,
+    borderRadius: 8,
+    overflow: 'hidden',
+    height: 300,
+    position: 'relative',
+    backgroundColor: '#000',
+  },
+  slide: {
+    width: SCREEN_WIDTH - 62,
+    height: 300,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  postImage: {
+    width: '100%',
+    height: '100%',
+  },
+  singleImageContainer: {
+    marginTop: 12,
+    borderRadius: 8,
+    overflow: 'hidden',
+    height: 200,
+    backgroundColor: '#000',
+  },
+  
+  navButton: {
+    position: 'absolute',
+    top: '50%',
+    marginTop: -20,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 10,
+  },
+  prevButton: {
+    left: 8,
+  },
+  nextButton: {
+    right: 8,
+  },
+   
+  imageCounter: {
+    position: 'absolute',
+    top: 10,
+    right: 10,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  imageCounterText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  
+  // ========== СТИЛИ ДЛЯ МОДАЛЬНОГО ОКНА ==========
+  imageUploadSection: {
+    marginTop: 8,
+  },
+  imageButtonsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+  },
+  imageButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    borderRadius: 8,
+    marginHorizontal: 4,
+    borderWidth: 2,
+  },
+  galleryButton: {
+    backgroundColor: '#f8f9fa',
+    borderColor: '#6A9AA9',
+  },
+  cameraButton: {
+    backgroundColor: '#f8f9fa',
+    borderColor: '#6A9AA9',
+  },
+  clearButton: {
+    backgroundColor: '#fff5f5',
+    borderColor: '#FF6B6B',
+  },
+  imageButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
+    marginLeft: 6,
+    fontFamily: "Playfair Display Regular",
+  },
+  clearButtonText: {
+    color: '#FF6B6B',
+  },
+  
+  selectionIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#f0f7ff',
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 12,
+  },
+  selectionIndicatorText: {
+    fontSize: 14,
+    color: '#6A9AA9',
+    marginLeft: 8,
+    fontFamily: "Playfair Display Regular",
+  },
+  
+  uploadProgressContainer: {
+    backgroundColor: '#f0f7ff',
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 12,
+  },
+  uploadProgressText: {
+    fontSize: 14,
+    color: '#6A9AA9',
+    marginBottom: 6,
+    fontFamily: "Playfair Display Regular",
+    textAlign: 'center',
+  },
+  progressBar: {
+    height: 6,
+    backgroundColor: '#e0e0e0',
+    borderRadius: 3,
+    overflow: 'hidden',
+  },
+  progressFill: {
+    height: '100%',
+    backgroundColor: '#9BDF11',
+    borderRadius: 3,
+  },
+  uploadInfoText: {
+    fontSize: 12,
+    color: '#666',
+    textAlign: 'center',
+    marginTop: 4,
+    fontFamily: "Playfair Display Regular",
+  },
+  
+  selectedImagesContainer: {
+    backgroundColor: '#f8f9fa',
+    padding: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#e9ecef',
+  },
+  selectedImagesTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#1a1a1a',
+    marginBottom: 8,
+    fontFamily: "Playfair Display Regular",
+  },
+  errorCountText: {
+    color: '#e74c3c',
+  },
+  imagesPreviewScroll: {
+    flexDirection: 'row',
+    marginBottom: 8,
+  },
+  imagePreviewWrapper: {
+    position: 'relative',
+    marginRight: 8,
+  },
+  imagePreview: {
+    width: 80,
+    height: 80,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+  },
+  
+  statusIndicator: {
+    position: 'absolute',
+    top: 5,
+    left: 5,
+  },
+  statusBadge: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  statusSuccess: {
+    backgroundColor: '#27ae60',
+  },
+  statusError: {
+    backgroundColor: '#e74c3c',
+  },
+  statusUploading: {
+    backgroundColor: '#6A9AA9',
+  },
+  statusPending: {
+    backgroundColor: '#6A9AA9',
+  },
+  statusBadgeText: {
+    color: '#fff',
+    fontSize: 10,
+    fontWeight: '600',
+  },
+  uploadProgressBadgeText: {
+    color: '#fff',
+    fontSize: 8,
+    fontWeight: '600',
+  },
+  
+  removeImageButton: {
+    position: 'absolute',
+    top: -6,
+    right: -6,
+    backgroundColor: '#FF6B6B',
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#fff',
+  },
+  
+  maxImagesWarning: {
+    fontSize: 12,
+    color: '#27ae60',
+    textAlign: 'center',
+    fontFamily: "Playfair Display Regular",
+    marginTop: 4,
+  },
+  imagesInfoText: {
+    fontSize: 12,
+    color: '#666',
+    textAlign: 'center',
+    fontFamily: "Playfair Display Regular",
+    marginTop: 4,
+  },
+
+  // Новые стили для загрузки аватара
+  avatarLoading: {
+    width: 55,
+    height: 55,
+    borderRadius: 27.5,
+    backgroundColor: '#E5F0F5',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: '#9BDF11',
   },
 });

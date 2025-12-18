@@ -1,6 +1,5 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useRouter } from "expo-router";
-// ⭐️ Импортируем authService вместо заглушки useAuthInfo и userService (для auth info)
 import { authService } from "../app/services/authService"; 
 import React, { useState, useCallback, useRef, useMemo, useEffect } from "react";
 import {
@@ -15,21 +14,17 @@ import {
   Keyboard,
   Platform,
   ActivityIndicator,
+  Image, // НОВЫЙ ИМПОРТ
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-
-// ⭐️ НОВЫЙ ИМПОРТ: Импортируем наш сервис для работы с пользователями и БД
-// Предполагаем, что этот сервис будет отвечать за сохранение данных профиля (saveProfileToFirestore)
 import { userService } from "../app/services/userService";
+import * as ImagePicker from 'expo-image-picker'; // НОВЫЙ ИМПОРТ
 
 // --- ТИПЫ ДАННЫХ ---
 
-// 💡 НОВЫЙ ТИП: Соответствует данным, которые компонент ProfileSetup собирает
-// Поля gender, goal, activity, nutritionType теперь будут использоваться для 
-// расчета КБЖУ, которые сохранит userService.
 export type LocalProfileData = {
   name: string;
-  email: string; // Email пользователя
+  email: string;
   description: string;
   age: string;
   height: string;
@@ -37,18 +32,18 @@ export type LocalProfileData = {
   weight: string;
   goal: string;
   activity: string;
-  // Мы используем nutritionType в UI, но в БД он сохраняется как dietType. 
-  // userService должен это преобразовать или принять 'nutritionType'.
-  nutritionType: string; 
+  nutritionType: string;
   customNutritionType: string;
   allergies: string;
-  dislikes: string; // Соответствует excludedIngredients в БД
-  isPrivate: boolean; // Соответствует isProfilePrivate в БД
+  dislikes: string;
+  isPrivate: boolean;
   cookingTimeLimit: string;
   isProfileFilled: boolean;
+  photoURL?: string; // НОВОЕ ПОЛЕ
+  cloudinaryPublicId?: string; // НОВОЕ ПОЛЕ
 };
 
-// Тип для выбранных опций, которые требуют немедленного обновления UI
+// Тип для выбранных опций
 type SelectedOptions = Pick<
   LocalProfileData,
   "gender" | "goal" | "activity" | "nutritionType" | "cookingTimeLimit"
@@ -56,31 +51,31 @@ type SelectedOptions = Pick<
 
 const PROFILE_STORAGE_KEY = "user_profile_data";
 
-// ✅ ОБНОВЛЕННЫЙ ХУК: Для получения реальных данных аутентификации из authService
+// ✅ ОБНОВЛЕННЫЙ ХУК: Для получения реальных данных аутентификации
 const useAuthInfo = () => {
-  const [authData, setAuthData] = useState<{ name: string; email: string } | null>(null);
+  const [authData, setAuthData] = useState<{ 
+    name: string; 
+    email: string;
+    photoURL?: string; // НОВОЕ ПОЛЕ
+  } | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     const fetchAuthData = () => {
-      // ⭐️ ИСПОЛЬЗУЕМ authService
       const user = authService.getCurrentUser();
 
       if (user) {
-        // Устанавливаем данные из объекта Firebase User
         setAuthData({
-          // Берем displayName из Auth, если он есть, иначе берем email или пустую строку
           name: user.displayName || user.email?.split('@')[0] || "Пользователь",
           email: user.email || "email_not_found@example.com",
+          photoURL: user.photoURL || undefined, // НОВОЕ ПОЛЕ
         });
       } else {
-        // Если пользователя нет, это может быть ошибка или переход до логина
         setAuthData({ name: "", email: "" });
       }
       setIsLoading(false);
     };
 
-    // Слушатель Firebase Auth state (обеспечивает получение данных после логина)
     const unsubscribe = authService.onAuthStateChange(user => {
         if (user) {
             fetchAuthData();
@@ -90,7 +85,6 @@ const useAuthInfo = () => {
         }
     });
     
-    // Также пробуем загрузить сразу
     fetchAuthData();
     
     return () => unsubscribe();
@@ -99,6 +93,7 @@ const useAuthInfo = () => {
   return {
     name: authData?.name || "",
     email: authData?.email || "",
+    photoURL: authData?.photoURL || "", // НОВОЕ ПОЛЕ
     isLoading: isLoading,
   };
 };
@@ -108,15 +103,20 @@ export default function ProfileSetup() {
   const [currentStep, setCurrentStep] = useState(0);
 
   // Получаем реальные данные аутентификации пользователя
-  const { name: authName, email: authEmail, isLoading: isAuthLoading } = useAuthInfo();
+  const { 
+    name: authName, 
+    email: authEmail, 
+    photoURL: authPhotoURL,
+    isLoading: isAuthLoading 
+  } = useAuthInfo();
 
   // useRef для основных данных
   const profileDataRef = useRef<LocalProfileData>({
-    // ✅ ИНИЦИАЛИЗИРУЕМ ДАННЫМИ ИЗ AUTH (пока пустые, будут заполнены в useEffect)
+    // ✅ ИНИЦИАЛИЗИРУЕМ ДАННЫМИ ИЗ AUTH
     name: "",
     email: "",
+    photoURL: "", // НОВОЕ ПОЛЕ
     customNutritionType: "",
-    // ------------------------------------------------------------------------
     description: "",
     age: "",
     height: "",
@@ -130,32 +130,40 @@ export default function ProfileSetup() {
     isPrivate: false,
     cookingTimeLimit: "60",
     isProfileFilled: false,
+    cloudinaryPublicId: "", // НОВОЕ ПОЛЕ
   });
 
-  // ⭐️ ДОБАВЛЕНИЕ useEffect для синхронизации authName/authEmail
+  // Состояние для отображения фото
+  const [profilePhoto, setProfilePhoto] = useState<string | null>(null);
+  const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
+
+  // ⭐️ ДОБАВЛЕНИЕ useEffect для синхронизации auth данных
   useEffect(() => {
     if (!isAuthLoading) {
-        // Устанавливаем имя и email из Auth в Ref, только если они пустые
+        // Устанавливаем данные из Auth в Ref, только если они пустые
         if (profileDataRef.current.name === "") {
             profileDataRef.current.name = authName;
         }
         if (profileDataRef.current.email === "") {
             profileDataRef.current.email = authEmail;
         }
+        if (profileDataRef.current.photoURL === "" && authPhotoURL) {
+            profileDataRef.current.photoURL = authPhotoURL;
+            setProfilePhoto(authPhotoURL);
+        }
     }
-  }, [isAuthLoading, authName, authEmail]);
-
+  }, [isAuthLoading, authName, authEmail, authPhotoURL]);
 
   // useRef для пользовательского ввода "Другое"
   const customNutritionRef = useRef("");
 
-  // useState для опций, чтобы обеспечить мгновенное визуальное обновление выбора
+  // useState для опций
   const [selectedOptions, setSelectedOptions] = useState<SelectedOptions>({
     gender: "Муж",
     goal: "Поддержание веса",
     activity: "Низкий (0-1 тренировка в неделю)",
     nutritionType: "Обычное",
-    cookingTimeLimit: "60", // ЗНАЧЕНИЕ ПО УМОЛЧАНИЮ
+    cookingTimeLimit: "60",
   });
 
   const goals = ["Похудение", "Поддержание веса", "Набор веса"];
@@ -185,8 +193,7 @@ export default function ProfileSetup() {
   ];
 
   /**
-   * Сохраняет данные профиля в AsyncStorage и устанавливает статус заполнения.
-   * @param isFilled - true, если пользователь нажал "Завершить".
+   * Сохраняет данные профиля в AsyncStorage и Firestore
    */
   const saveProfileData = async (isFilled: boolean) => {
     try {
@@ -213,9 +220,7 @@ export default function ProfileSetup() {
         JSON.stringify(profileDataRef.current)
       );
 
-      // 3. ⭐️ СОХРАНЕНИЕ В FIREBASE через userService
-      // userService.saveProfileToFirestore должен принять LocalProfileData 
-      // и правильно сопоставить поля с FirestoreProfile (например, nutritionType -> dietType)
+      // 3. СОХРАНЕНИЕ В FIREBASE через userService
       await userService.saveProfileToFirestore(profileDataRef.current);
 
       return true;
@@ -229,25 +234,151 @@ export default function ProfileSetup() {
     }
   };
 
-  /** * Обновляет данные в useRef и при необходимости обновляет состояние для перерисовки UI. */
+  /**
+   * Запрашивает разрешения для камеры и галереи
+   */
+  const requestPermissions = async () => {
+    const { status: cameraStatus } = await ImagePicker.requestCameraPermissionsAsync();
+    const { status: libraryStatus } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    
+    if (cameraStatus !== 'granted' || libraryStatus !== 'granted') {
+      Alert.alert(
+        "Нужны разрешения",
+        "Для загрузки фото нужно разрешение на доступ к камере и галерее."
+      );
+      return false;
+    }
+    return true;
+  };
+
+  /**
+   * Выбор фото из галереи
+   */
+  const pickImage = async () => {
+    const hasPermission = await requestPermissions();
+    if (!hasPermission) return;
+
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.9,
+        allowsMultipleSelection: false,
+      });
+
+      if (!result.canceled && result.assets[0]?.uri) {
+        await uploadProfilePhoto(result.assets[0].uri);
+      }
+    } catch (error) {
+      console.error('Error picking image:', error);
+      Alert.alert('Ошибка', 'Не удалось выбрать фото');
+    }
+  };
+
+  /**
+   * Сделать фото
+   */
+  const takePhoto = async () => {
+    const hasPermission = await requestPermissions();
+    if (!hasPermission) return;
+
+    try {
+      const result = await ImagePicker.launchCameraAsync({
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.9,
+      });
+
+      if (!result.canceled && result.assets[0]?.uri) {
+        await uploadProfilePhoto(result.assets[0].uri);
+      }
+    } catch (error) {
+      console.error('Error taking photo:', error);
+      Alert.alert('Ошибка', 'Не удалось сделать фото');
+    }
+  };
+
+  /**
+   * Загрузка фото в Cloudinary
+   */
+  const uploadProfilePhoto = async (imageUri: string) => {
+    const user = authService.getCurrentUser();
+    if (!user?.uid) {
+      Alert.alert("Ошибка", "Пользователь не авторизован");
+      return;
+    }
+    
+    setIsUploadingPhoto(true);
+    
+    try {
+      console.log("Starting photo upload to Cloudinary from ProfileSetup...");
+      
+      const result = await userService.uploadProfilePhoto(imageUri, user.uid);
+      
+      if (result.success && result.url) {
+        // Обновляем состояние и Ref
+        setProfilePhoto(result.url);
+        profileDataRef.current.photoURL = result.url;
+        profileDataRef.current.cloudinaryPublicId = result.publicId;
+        
+        console.log("Photo uploaded successfully from ProfileSetup");
+      } else {
+        Alert.alert("Ошибка", result.error || "Не удалось загрузить фото");
+      }
+    } catch (error: any) {
+      console.error("Error uploading photo from ProfileSetup:", error);
+      Alert.alert("Ошибка", error.message || "Не удалось загрузить фото");
+    } finally {
+      setIsUploadingPhoto(false);
+    }
+  };
+
+  /**
+   * Обработчик смены фото
+   */
+  const handleChangePhoto = () => {
+    if (isUploadingPhoto) {
+      Alert.alert("Загрузка", "Пожалуйста, подождите, фото загружается...");
+      return;
+    }
+
+    Alert.alert(
+      "Сменить фото профиля",
+      "Выберите способ",
+      [
+        {
+          text: "Сделать фото",
+          onPress: takePhoto
+        },
+        {
+          text: "Выбрать из галереи",
+          onPress: pickImage
+        },
+        {
+          text: "Отмена",
+          style: "cancel"
+        }
+      ]
+    );
+  };
+
+  /** * Обновляет данные в useRef */
   const updateProfileData = useCallback(
     <K extends keyof LocalProfileData>(field: K, value: LocalProfileData[K]) => {
       profileDataRef.current[field] = value;
 
-      // Обновляем состояние, если поле входит в SelectedOptions
       if (field in selectedOptions) {
         setSelectedOptions((prev) => ({
           ...prev,
           [field]: value as SelectedOptions[keyof SelectedOptions],
         }));
 
-        // Логика для типа питания: управление customNutritionRef и общим nutritionType
         if (field === "nutritionType") {
           if (value !== "Другое") {
             customNutritionRef.current = "";
             profileDataRef.current.customNutritionType = "";
           }
-          // profileDataRef.current.nutritionType уже обновлен выше
         }
       }
     },
@@ -268,17 +399,15 @@ export default function ProfileSetup() {
       }
     }
 
-    // Финальная синхронизация Ref перед переходом/завершением (для "Другое" на последнем шаге)
+    // Финальная синхронизация Ref перед переходом/завершением
     if (currentStep === steps.length - 1) {
         const customValue = customNutritionRef.current;
-        // Обновляем Ref перед сохранением
         if (selectedOptions.nutritionType === "Другое" && customValue.trim()) {
             profileDataRef.current.customNutritionType = customValue.trim();
         } else if (selectedOptions.nutritionType === "Другое") {
              profileDataRef.current.customNutritionType = "";
         }
     }
-
 
     if (currentStep < steps.length - 1) {
       setCurrentStep(currentStep + 1);
@@ -309,9 +438,10 @@ export default function ProfileSetup() {
   const Step1 = useCallback(() => {
     const data = profileDataRef.current;
     
-    // ⭐️ ИСПОЛЬЗУЕМ ЗНАЧЕНИЯ ИЗ AUTH/REF
+    // Используем значения из Ref или Auth
     const currentName = data.name || authName;
     const currentEmail = data.email || authEmail;
+    const currentPhoto = profilePhoto || data.photoURL || authPhotoURL;
 
     return (
       <View style={styles.stepContent}>
@@ -319,21 +449,41 @@ export default function ProfileSetup() {
             <ActivityIndicator size="large" color="#6A9AA9" style={{ marginBottom: 32 }} />
         ) : (
           <View style={styles.photoContainer}>
-            <View style={styles.placeholderPhoto}>
-              <Ionicons name="person" size={60} color="#6A9AA9" />
-            </View>
-            <TouchableOpacity style={styles.editPhotoButton}>
-              <Ionicons name="pencil" size={16} color="#FFF" />
+            {isUploadingPhoto ? (
+              <View style={[styles.photoWrapper, styles.uploadingPhoto]}>
+                <ActivityIndicator size="large" color="#6A9AA9" />
+              </View>
+            ) : currentPhoto ? (
+              <View style={styles.photoWrapper}>
+                <Image
+                  source={{ uri: currentPhoto }}
+                  style={styles.profilePhotoImage}
+                />
+              </View>
+            ) : (
+              <View style={styles.placeholderPhoto}>
+                <Ionicons name="person" size={60} color="#6A9AA9" />
+              </View>
+            )}
+            <TouchableOpacity 
+              style={styles.editPhotoButton}
+              onPress={handleChangePhoto}
+              disabled={isUploadingPhoto}
+            >
+              <Ionicons 
+                name="camera" 
+                size={16} 
+                color="#FFF" 
+              />
             </TouchableOpacity>
           </View>
         )}
         
-        {/* Поля Имя и Email - Только для чтения */}
+        {/* Поля Имя и Email */}
         <View style={styles.inputGroup}>
           <Text style={styles.label}>Имя</Text>
           <TextInput
             style={[styles.input, styles.readOnlyInput]}
-            // ✅ ИСПОЛЬЗУЕМ ЗНАЧЕНИЕ ИЗ AUTH
             value={currentName || "Не указано"}
             editable={false} 
             placeholderTextColor="#999"
@@ -343,7 +493,6 @@ export default function ProfileSetup() {
           <Text style={styles.label}>Email</Text>
           <TextInput
             style={[styles.input, styles.readOnlyInput]}
-            // ✅ ИСПОЛЬЗУЕМ ЗНАЧЕНИЕ ИЗ AUTH
             value={currentEmail || "Не указано"}
             editable={false} 
             placeholderTextColor="#999"
@@ -365,7 +514,7 @@ export default function ProfileSetup() {
         </View>
       </View>
     );
-  }, [updateProfileData, authName, authEmail, isAuthLoading]);
+  }, [updateProfileData, authName, authEmail, authPhotoURL, isAuthLoading, profilePhoto, isUploadingPhoto, handleChangePhoto]);
 
   const Step2 = useCallback(() => {
     const data = profileDataRef.current;
@@ -544,7 +693,7 @@ export default function ProfileSetup() {
           </View>
         </View>
 
-        {/* Поле для ввода пользовательского типа питания: НЕКОНТРОЛИРУЕМЫЙ КОМПОНЕНТ */}
+        {/* Поле для ввода пользовательского типа питания */}
         {isCustomNutrition && (
           <View style={styles.inputGroup}>
             <Text style={styles.label}>Укажите свой тип питания</Text>
@@ -643,7 +792,7 @@ export default function ProfileSetup() {
       {/* Шапка */}
       <SafeAreaView style={styles.safeAreaHeader}>
         <View style={styles.headerContent}>
-          {/* Кнопка "Назад" - Скрыта/отключена на первом шаге */}
+          {/* Кнопка "Назад" */}
           <TouchableOpacity
             style={[styles.backButton, currentStep === 0 && { opacity: 0 }]}
             onPress={handleBack}
@@ -661,12 +810,11 @@ export default function ProfileSetup() {
             </Text>
           </View>
 
-          {/* ❌ ЗАГЛУШКА ДЛЯ СИММЕТРИИ (заменяет кнопку "Пропустить") */}
+          {/* Заглушка для симметрии */}
           <TouchableOpacity
             style={[styles.backButton, { opacity: 0 }]}
             disabled={true}
           >
-            {/* Пустая иконка, чтобы занять место */}
             <Ionicons name="arrow-back" size={24} color="#000" />
           </TouchableOpacity>
         </View>
@@ -690,8 +838,12 @@ export default function ProfileSetup() {
 
       {/* Кнопка продолжения */}
       <View style={styles.footer}>
-        <TouchableOpacity style={styles.nextButton} onPress={handleNext} disabled={isAuthLoading}>
-          {isAuthLoading ? (
+        <TouchableOpacity 
+          style={styles.nextButton} 
+          onPress={handleNext} 
+          disabled={isAuthLoading || isUploadingPhoto}
+        >
+          {isAuthLoading || isUploadingPhoto ? (
              <ActivityIndicator size="small" color="#000" />
           ) : (
             <>
@@ -785,11 +937,23 @@ const styles = StyleSheet.create({
   stepContent: {
     flex: 1,
   },
+  // Обновленные стили для фото профиля
   photoContainer: {
     alignItems: "center",
     marginBottom: 32,
     position: "relative",
     alignSelf: "center",
+  },
+  photoWrapper: {
+    width: 120,
+    height: 120,
+    borderRadius: 60,
+    justifyContent: "center",
+    alignItems: "center",
+    borderWidth: 2,
+    borderColor: "#6A9AA9",
+    overflow: 'hidden',
+    backgroundColor: "#E1F0F5",
   },
   placeholderPhoto: {
     width: 120,
@@ -800,6 +964,15 @@ const styles = StyleSheet.create({
     alignItems: "center",
     borderWidth: 2,
     borderColor: "#6A9AA9",
+  },
+  profilePhotoImage: {
+    width: 120,
+    height: 120,
+    borderRadius: 60,
+  },
+  uploadingPhoto: {
+    backgroundColor: "#F0F9FF",
+    borderStyle: "dashed",
   },
   editPhotoButton: {
     position: "absolute",

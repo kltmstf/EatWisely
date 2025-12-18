@@ -144,13 +144,17 @@ export default function CreateRecipeModal() {
       setUploadProgress(0);
       setUploadStage('Подготовка изображения...');
 
+      // Создаем обработчик прогресса
+      const onProgress = (progress: UploadProgress) => {
+        setUploadProgress(progress.percent);
+        setUploadStage(`Загрузка: ${Math.round(progress.percent)}%`);
+        console.log(`📊 Прогресс загрузки: ${progress.percent.toFixed(1)}%`);
+      };
+
+      // Передаем обработчик прогресса в options
       const result = await cloudinaryService.uploadImage(
         image,
-        (progress: UploadProgress) => {
-          setUploadProgress(progress.percent);
-          setUploadStage(`Загрузка: ${Math.round(progress.percent)}%`);
-          console.log(`📊 Прогресс загрузки: ${progress.percent.toFixed(1)}%`);
-        }
+        { onProgress } // Исправлено: передаем объект options с onProgress
       );
 
       if (result.success && result.url && result.publicId) {
@@ -303,7 +307,7 @@ export default function CreateRecipeModal() {
         }
       }
 
-      // Подготавливаем данные для рецепта
+      // Подготавливаем данные для рецепта (используем первую структуру ингредиентов)
       const recipeData = {
         title: form.title.trim(),
         description: form.description.trim(),
@@ -322,14 +326,14 @@ export default function CreateRecipeModal() {
           `${ing.amount} ${ing.unit} ${ing.name}`
         ).join('\n'),
         
-        // Структурированные данные
-        ingredients: ingredients.map((ing, index) => ({
-          order: index + 1,
+        // ИСПРАВЛЕНО: Используем первую структуру (без order, с полем name вместо text)
+        ingredients: ingredients.map((ing) => ({
           amount: parseFloat(ing.amount) || 0,
           unit: ing.unit || 'гр',
-          text: ing.name
+          name: ing.name.trim() // Используем name вместо text
         })),
         
+        // Шаги приготовления (сохраняем как было)
         steps: steps.map((step, index) => ({
           order: index + 1,
           text: step.text.trim()
@@ -357,6 +361,7 @@ export default function CreateRecipeModal() {
       };
 
       console.log('💾 Сохранение рецепта в базу данных...');
+      console.log('Структура ингредиентов:', recipeData.ingredients);
       
       // Сохраняем рецепт
       const createdRecipe = await recipeService.createRecipe(recipeData);
@@ -1100,7 +1105,6 @@ const styles = StyleSheet.create({
     color: '#4CAF50',
     fontFamily: 'Playfair Display Regular',
   },
-  // Удалены: cloudinaryHint
   nutritionGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
