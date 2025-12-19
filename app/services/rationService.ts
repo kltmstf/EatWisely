@@ -8,7 +8,8 @@ import {
   query,
   where,
   getDocs,
-  Timestamp
+  arrayUnion,
+  arrayRemove
 } from 'firebase/firestore';
 import { db } from '@/app/firebase/config';
 import { recipeService } from './recipeService';
@@ -31,20 +32,14 @@ interface UserData {
 interface Recipe {
   id: string;
   title?: string;
-  name?: string;
   calories: number;
   proteins: number;
   fats: number;
   carbohydrates: number;
-  carbs?: number;
-  weight?: string;
   cookingTime: number;
-  difficultyLevel: string;
-  rating?: number;
+  difficultyLevel?: string;
   imageUrl?: string;
   mealType?: string;
-  category?: string;
-  dietType?: string;
 }
 
 interface Meal {
@@ -63,6 +58,9 @@ interface Meal {
   imageUrl: string | null;
   marked: boolean;
   bookmarked: boolean;
+  isCustom?: boolean;
+  canBeRemoved?: boolean;
+  addedAt?: string;
 }
 
 interface Plan {
@@ -75,6 +73,7 @@ interface Plan {
     dietType: string;
   };
   meals: Meal[];
+  customMeals?: Meal[];
   stats: {
     totalCalories: number;
     totalProteins: number;
@@ -104,6 +103,23 @@ const getDayOfWeek = (date: Date): string => {
   return days[date.getDay()];
 };
 
+// Генерация уникального ID
+const generateUniqueId = (): string => {
+  return `custom-${Date.now()}-${Math.random().toString(36).substr(2, 9)}-${Math.random().toString(36).substr(2, 9)}`;
+};
+
+// Преобразование cookingTime в число
+const parseCookingTime = (time: any): number => {
+  if (typeof time === 'number') {
+    return time;
+  }
+  if (typeof time === 'string') {
+    const match = time.match(/\d+/);
+    return match ? parseInt(match[0], 10) : 20;
+  }
+  return 20;
+};
+
 class DailyRationService {
   private cachedPlans: Map<string, Plan>;
   
@@ -124,7 +140,8 @@ class DailyRationService {
       
       // Проверяем кэш
       if (this.cachedPlans.has(planId)) {
-        return this.cachedPlans.get(planId)!;
+        const cachedPlan = this.cachedPlans.get(planId)!;
+        return cachedPlan;
       }
       
       // 1. Проверяем существующий план
@@ -134,14 +151,25 @@ class DailyRationService {
       if (!plan) {
         console.log('🔄 Generating new plan for today');
         plan = await this.generateNewPlan(userId, date);
-        plan.id = planId; // Устанавливаем id для плана
+        plan.id = planId;
         await this.savePlan(plan);
       }
       
-      // 3. Кэшируем
-      this.cachedPlans.set(planId, plan);
+      // 3. Объединяем meals и customMeals для отображения
+      const allMeals = [
+        ...(plan.meals || []),
+        ...(plan.customMeals || [])
+      ];
       
-      return plan;
+      const finalPlan: Plan = {
+        ...plan,
+        meals: allMeals
+      };
+      
+      // 4. Кэшируем (сохраняем с объединенными meals)
+      this.cachedPlans.set(planId, finalPlan);
+      
+      return finalPlan;
       
     } catch (error) {
       console.error('❌ Error in getOrGenerateDailyPlan:', error);
@@ -160,17 +188,22 @@ class DailyRationService {
       
       console.log('🔄 Creating new plan with current user settings');
       
-      // Генерируем новый план
       const plan = await this.generateNewPlan(userId, date);
-      plan.id = planId; // Устанавливаем id
+      plan.id = planId;
       
-      // Сохраняем и перезаписываем старый
       await this.savePlan(plan);
       
-      // Обновляем кэш
-      this.cachedPlans.set(planId, plan);
+      const finalPlan: Plan = {
+        ...plan,
+        meals: [
+          ...(plan.meals || []),
+          ...(plan.customMeals || [])
+        ]
+      };
       
-      return plan;
+      this.cachedPlans.set(planId, finalPlan);
+      
+      return finalPlan;
       
     } catch (error) {
       console.error('❌ Error creating new plan with settings:', error);
@@ -188,21 +221,27 @@ class DailyRationService {
       
       if (planSnap.exists()) {
         const data = planSnap.data();
+        
+        const meals = data.meals || [];
+        const customMeals = data.customMeals || [];
+        const allMeals = [...meals, ...customMeals];
+        
         return {
           id: planSnap.id,
           userId: data.userId || '',
           date: data.date || '',
           dayOfWeek: data.dayOfWeek || '',
           userTargets: data.userTargets || { dailyCalories: 2000, dietType: 'Обычное' },
-          meals: data.meals || [],
+          meals: meals, // Только обычные meals
+          customMeals: customMeals, // Отдельно customMeals
           stats: data.stats || {
-            totalCalories: 0,
-            totalProteins: 0,
-            totalFats: 0,
-            totalCarbs: 0,
-            totalCookingTime: 0,
-            completedMeals: 0,
-            totalMeals: 0
+            totalCalories: allMeals.reduce((sum: number, meal: Meal) => sum + (meal.calories || 0), 0),
+            totalProteins: allMeals.reduce((sum: number, meal: Meal) => sum + (meal.proteins || 0), 0),
+            totalFats: allMeals.reduce((sum: number, meal: Meal) => sum + (meal.fats || 0), 0),
+            totalCarbs: allMeals.reduce((sum: number, meal: Meal) => sum + (meal.carbohydrates || 0), 0),
+            totalCookingTime: allMeals.reduce((sum: number, meal: Meal) => sum + (meal.cookingTime || 0), 0),
+            completedMeals: allMeals.filter((meal: Meal) => meal.marked).length,
+            totalMeals: allMeals.length
           },
           timestamps: data.timestamps || {
             createdAt: new Date().toISOString(),
@@ -218,20 +257,202 @@ class DailyRationService {
   }
   
   /**
+   * Добавить кастомный рецепт в план
+   */
+  async addCustomMealToPlan(userId: string, date: Date, mealData: Omit<Meal, 'id'> & { id?: string }): Promise<string> {
+    try {
+      const dateStr = formatDate(date);
+      const planId = `${userId}_${dateStr}`;
+      
+      const mealId = mealData.id || generateUniqueId();
+      const meal: Meal = {
+        ...mealData,
+        id: mealId,
+        isCustom: true,
+        canBeRemoved: true,
+        addedAt: new Date().toISOString()
+      };
+      
+      const planRef = doc(db, 'ration_plan_days', planId);
+      const planSnap = await getDoc(planRef);
+      
+      if (!planSnap.exists()) {
+        const newPlan: Omit<Plan, 'id'> & { id?: string } = {
+          userId,
+          date: dateStr,
+          dayOfWeek: getDayOfWeek(date),
+          userTargets: {
+            dailyCalories: 2000,
+            dietType: 'Обычное'
+          },
+          meals: [],
+          customMeals: [meal],
+          stats: {
+            totalCalories: meal.calories || 0,
+            totalProteins: meal.proteins || 0,
+            totalFats: meal.fats || 0,
+            totalCarbs: meal.carbohydrates || 0,
+            totalCookingTime: meal.cookingTime || 0,
+            completedMeals: 0,
+            totalMeals: 1
+          },
+          timestamps: {
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          }
+        };
+        
+        await setDoc(planRef, newPlan);
+      } else {
+        const existingPlan = planSnap.data();
+        const existingCustomMeals = existingPlan.customMeals || [];
+        
+        // Проверяем, не добавлен ли уже этот рецепт
+        const existingMealIndex = existingCustomMeals.findIndex((m: Meal) => 
+          m.id === meal.id || m.recipeId === meal.recipeId
+        );
+        
+        if (existingMealIndex !== -1) {
+          const updatedCustomMeals = [...existingCustomMeals];
+          updatedCustomMeals[existingMealIndex] = meal;
+          
+          await updateDoc(planRef, {
+            customMeals: updatedCustomMeals,
+            'timestamps.updatedAt': new Date().toISOString()
+          });
+        } else {
+          await updateDoc(planRef, {
+            customMeals: arrayUnion(meal),
+            'timestamps.updatedAt': new Date().toISOString()
+          });
+        }
+        
+        const allMeals = [
+          ...(existingPlan.meals || []),
+          ...(existingPlan.customMeals || []),
+          ...(existingMealIndex === -1 ? [meal] : [])
+        ];
+        
+        const stats = this.calculatePlanStats(allMeals);
+        
+        await updateDoc(planRef, {
+          'stats.totalCalories': stats.totalCalories,
+          'stats.totalProteins': stats.totalProteins,
+          'stats.totalFats': stats.totalFats,
+          'stats.totalCarbs': stats.totalCarbs,
+          'stats.totalCookingTime': stats.totalCookingTime,
+          'stats.totalMeals': allMeals.length,
+          'stats.completedMeals': allMeals.filter((m: Meal) => m.marked).length
+        });
+      }
+      
+      // Обновляем кэш
+      if (this.cachedPlans.has(planId)) {
+        const cachedPlan = this.cachedPlans.get(planId)!;
+        const existingMealIndex = cachedPlan.meals.findIndex(m => m.id === mealId);
+        
+        if (existingMealIndex !== -1) {
+          const updatedMeals = [...cachedPlan.meals];
+          updatedMeals[existingMealIndex] = meal;
+          cachedPlan.meals = updatedMeals;
+        } else {
+          cachedPlan.meals.push(meal);
+        }
+        
+        const stats = this.calculatePlanStats(cachedPlan.meals);
+        cachedPlan.stats = {
+          ...stats,
+          completedMeals: cachedPlan.meals.filter(m => m.marked).length,
+          totalMeals: cachedPlan.meals.length
+        };
+        
+        this.cachedPlans.set(planId, cachedPlan);
+      }
+      
+      console.log('✅ Custom meal added to plan:', meal.id);
+      return mealId;
+      
+    } catch (error) {
+      console.error('❌ Error adding custom meal to plan:', error);
+      throw error;
+    }
+  }
+  
+  /**
+   * Удалить кастомный рецепт из плана
+   */
+  async removeCustomMealFromPlan(userId: string, date: Date, mealId: string): Promise<void> {
+    try {
+      const dateStr = formatDate(date);
+      const planId = `${userId}_${dateStr}`;
+      
+      const planRef = doc(db, 'ration_plan_days', planId);
+      const planSnap = await getDoc(planRef);
+      
+      if (!planSnap.exists()) return;
+      
+      const planData = planSnap.data();
+      const customMeals = planData.customMeals || [];
+      
+      const mealToRemove = customMeals.find((meal: Meal) => meal.id === mealId);
+      if (!mealToRemove) return;
+      
+      const updatedCustomMeals = customMeals.filter((meal: Meal) => meal.id !== mealId);
+      
+      const allMeals = [
+        ...(planData.meals || []),
+        ...updatedCustomMeals
+      ];
+      
+      const stats = this.calculatePlanStats(allMeals);
+      
+      await updateDoc(planRef, {
+        customMeals: updatedCustomMeals,
+        'stats.totalCalories': stats.totalCalories,
+        'stats.totalProteins': stats.totalProteins,
+        'stats.totalFats': stats.totalFats,
+        'stats.totalCarbs': stats.totalCarbs,
+        'stats.totalCookingTime': stats.totalCookingTime,
+        'stats.totalMeals': allMeals.length,
+        'stats.completedMeals': allMeals.filter((m: Meal) => m.marked).length,
+        'timestamps.updatedAt': new Date().toISOString()
+      });
+      
+      // Обновляем кэш
+      if (this.cachedPlans.has(planId)) {
+        const cachedPlan = this.cachedPlans.get(planId)!;
+        const allMealsFiltered = cachedPlan.meals.filter(meal => meal.id !== mealId);
+        const statsFiltered = this.calculatePlanStats(allMealsFiltered);
+        
+        cachedPlan.meals = allMealsFiltered;
+        cachedPlan.stats = {
+          ...statsFiltered,
+          completedMeals: allMealsFiltered.filter(m => m.marked).length,
+          totalMeals: allMealsFiltered.length
+        };
+        
+        this.cachedPlans.set(planId, cachedPlan);
+      }
+      
+      console.log('✅ Custom meal removed from plan:', mealId);
+      
+    } catch (error) {
+      console.error('❌ Error removing custom meal from plan:', error);
+      throw error;
+    }
+  }
+  
+  /**
    * ГЕНЕРАЦИЯ НОВОГО ПЛАНА
    */
   async generateNewPlan(userId: string, date: Date): Promise<Plan> {
     try {
-      // 1. Получаем данные пользователя
       const userData = await this.getUserData(userId);
       
-      // 2. Получаем рецепты с учетом настроек
       const availableRecipes = await this.getRecipesWithFilters(userData);
       
-      // 3. Группируем по категориям
       const recipesByCategory = this.groupRecipesByCategory(availableRecipes);
       
-      // 4. Выбираем по 1 рецепту для каждой категории
       const categories = ['Завтрак', 'Обед', 'Ужин', 'Перекусы'];
       const meals: Meal[] = [];
       
@@ -239,53 +460,45 @@ class DailyRationService {
         const categoryRecipes = recipesByCategory[category] || [];
         
         if (categoryRecipes.length > 0) {
-          // Берем случайный рецепт из категории
           const randomIndex = Math.floor(Math.random() * categoryRecipes.length);
           const recipe = categoryRecipes[randomIndex];
           meals.push(this.createMealFromRecipe(recipe, category));
         } else {
-          // Если нет рецептов для категории
           meals.push(this.createFallbackMeal(category));
         }
       }
       
-      // 5. Рассчитываем статистику
       const stats = this.calculatePlanStats(meals);
       
-      // 6. Формируем план (без id, он будет установлен позже)
-      const plan: Omit<Plan, 'id'> & { id?: string } = {
+      const plan: Omit<Plan, 'id'> = {
         userId,
         date: formatDate(date),
         dayOfWeek: getDayOfWeek(date),
         
-        // Цели пользователя
         userTargets: {
           dailyCalories: userData.dailyCalories,
           dietType: userData.dietType
         },
         
-        // Приемы пищи
         meals,
+        customMeals: [],
         
-        // Статистика
         stats: {
           ...stats,
           completedMeals: 0,
           totalMeals: meals.length
         },
         
-        // Таймстемпы
         timestamps: {
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString()
         }
       };
       
-      return plan as Plan; // Приводим к типу Plan
+      return plan as Plan;
       
     } catch (error) {
       console.error('❌ Error generating new plan:', error);
-      // Возвращаем план с пустыми данными в случае ошибки
       return this.createEmptyPlan(userId, date);
     }
   }
@@ -301,7 +514,6 @@ class DailyRationService {
       if (userSnap.exists()) {
         const data = userSnap.data();
         
-        // Возвращаем только базовые данные
         return {
           dailyCalories: data.dailyCalories || data.targetCalories || 2000,
           targetCalories: data.targetCalories,
@@ -317,7 +529,6 @@ class DailyRationService {
         };
       }
       
-      // Данные по умолчанию
       return {
         dailyCalories: 2000,
         targetProteinGrams: 0,
@@ -351,40 +562,35 @@ class DailyRationService {
    */
   async getRecipesWithFilters(userData: UserData): Promise<Recipe[]> {
     try {
-      // Получаем ВСЕ рецепты
-      const allRecipes = await recipeService.getRecipesForPlanner();
+      const allExternalRecipes = await recipeService.getRecipesForPlanner();
       
-      if (!allRecipes || allRecipes.length === 0) {
+      if (!allExternalRecipes || allExternalRecipes.length === 0) {
         return [];
       }
       
-      // Фильтруем по типу питания
-      const dietFiltered = allRecipes.filter(recipe => {
-        if (!userData.dietType || userData.dietType === 'Обычное') {
-          return true;
-        }
-        
-        // Простая проверка совместимости
-        if (userData.dietType === 'Веганское') {
-          return recipe.dietType === 'Веганское';
-        }
-        
-        if (userData.dietType === 'Вегетарианское') {
-          return recipe.dietType === 'Вегетарианское' || recipe.dietType === 'Веганское';
-        }
-        
-        return true;
+      const allRecipes = allExternalRecipes.map(externalRecipe => {
+        const cookingTime = parseCookingTime(externalRecipe.cookingTime);
+
+        return {
+          id: externalRecipe.id,
+          title: externalRecipe.title || 'Без названия',
+          calories: externalRecipe.calories || 0,
+          proteins: externalRecipe.proteins || 0,
+          fats: externalRecipe.fats || 0,
+          carbohydrates: externalRecipe.carbohydrates || 0,
+          cookingTime: cookingTime,
+          difficultyLevel: externalRecipe.difficultyLevel || 'Легко',
+          imageUrl: externalRecipe.imageUrl || null,
+          mealType: externalRecipe.mealType || 'Обед',
+        } as Recipe;
       });
       
-      // Фильтруем по времени готовки
       const timeLimit = userData.cookingTimeLimit || 45;
-      const timeFiltered = dietFiltered.filter(recipe => {
-        const cookingTime = parseInt(recipe.cookingTime?.toString()) || 30;
-        return cookingTime <= timeLimit;
+      const timeFiltered = allRecipes.filter(recipe => {
+        return recipe.cookingTime <= timeLimit;
       });
       
-      // Если после фильтрации мало рецептов, возвращаем хотя бы часть
-      return timeFiltered.length > 0 ? timeFiltered : dietFiltered.slice(0, 20);
+      return timeFiltered.length > 0 ? timeFiltered : allRecipes.slice(0, 20);
       
     } catch (error) {
       console.error('❌ Error filtering recipes:', error);
@@ -404,9 +610,11 @@ class DailyRationService {
     };
     
     recipes.forEach(recipe => {
-      const category = recipe.mealType || recipe.category || 'Обед';
+      const category = recipe.mealType || 'Обед';
       if (grouped[category]) {
         grouped[category].push(recipe);
+      } else {
+        grouped['Обед'].push(recipe);
       }
     });
     
@@ -420,19 +628,21 @@ class DailyRationService {
     return {
       id: recipe.id,
       recipeId: recipe.id,
-      category,
-      name: recipe.title || recipe.name || 'Рецепт',
+      category: category,
+      name: recipe.title || 'Рецепт',
       calories: Math.round(recipe.calories || 0),
       proteins: Math.round(recipe.proteins || 0),
       fats: Math.round(recipe.fats || 0),
-      carbohydrates: Math.round(recipe.carbohydrates || recipe.carbs || 0),
-      weight: recipe.weight || '300 гр',
+      carbohydrates: Math.round(recipe.carbohydrates || 0),
+      weight: '300 гр',
       cookingTime: recipe.cookingTime || 20,
       difficultyLevel: recipe.difficultyLevel || 'Легко',
-      rating: recipe.rating || 0,
+      rating: 0,
       imageUrl: recipe.imageUrl || null,
       marked: false,
-      bookmarked: false
+      bookmarked: false,
+      isCustom: false,
+      canBeRemoved: false
     };
   }
   
@@ -441,7 +651,7 @@ class DailyRationService {
    */
   createFallbackMeal(category: string): Meal {
     return {
-      id: `fallback-${category}-${Date.now()}`,
+      id: `fallback-${category}-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
       recipeId: null,
       category,
       name: 'Рецепты не найдены',
@@ -455,7 +665,9 @@ class DailyRationService {
       rating: 0,
       imageUrl: null,
       marked: false,
-      bookmarked: false
+      bookmarked: false,
+      isCustom: false,
+      canBeRemoved: false
     };
   }
   
@@ -481,6 +693,7 @@ class DailyRationService {
         this.createFallbackMeal('Ужин'),
         this.createFallbackMeal('Перекусы')
       ],
+      customMeals: [],
       stats: {
         totalCalories: 0,
         totalProteins: 0,
@@ -501,19 +714,13 @@ class DailyRationService {
    * Рассчитать статистику
    */
   calculatePlanStats(meals: Meal[]) {
-    return meals.reduce((stats, meal) => ({
-      totalCalories: stats.totalCalories + (meal.calories || 0),
-      totalProteins: stats.totalProteins + (meal.proteins || 0),
-      totalFats: stats.totalFats + (meal.fats || 0),
-      totalCarbs: stats.totalCarbs + (meal.carbohydrates || 0),
-      totalCookingTime: stats.totalCookingTime + (meal.cookingTime || 0)
-    }), {
-      totalCalories: 0,
-      totalProteins: 0,
-      totalFats: 0,
-      totalCarbs: 0,
-      totalCookingTime: 0
-    });
+    return {
+      totalCalories: meals.reduce((sum, meal) => sum + (meal.calories || 0), 0),
+      totalProteins: meals.reduce((sum, meal) => sum + (meal.proteins || 0), 0),
+      totalFats: meals.reduce((sum, meal) => sum + (meal.fats || 0), 0),
+      totalCarbs: meals.reduce((sum, meal) => sum + (meal.carbohydrates || 0), 0),
+      totalCookingTime: meals.reduce((sum, meal) => sum + (meal.cookingTime || 0), 0)
+    };
   }
   
   /**
@@ -522,7 +729,23 @@ class DailyRationService {
   async savePlan(plan: Plan) {
     try {
       const planRef = doc(db, 'ration_plan_days', plan.id);
-      await setDoc(planRef, plan);
+      
+      // Разделяем meals на обычные и кастомные
+      const regularMeals = plan.meals.filter(meal => !meal.isCustom);
+      const customMeals = plan.meals.filter(meal => meal.isCustom);
+      
+      const planData = {
+        userId: plan.userId,
+        date: plan.date,
+        dayOfWeek: plan.dayOfWeek,
+        userTargets: plan.userTargets,
+        meals: regularMeals,
+        customMeals: customMeals,
+        stats: plan.stats,
+        timestamps: plan.timestamps
+      };
+      
+      await setDoc(planRef, planData);
       console.log('✅ Plan saved:', plan.id);
       
     } catch (error) {
@@ -546,26 +769,48 @@ class DailyRationService {
         return;
       }
       
-      const plan = planSnap.data() as Plan;
-      const mealIndex = plan.meals.findIndex((meal: Meal) => meal.id === mealId);
+      const planData = planSnap.data();
+      const meals = planData.meals || [];
+      const customMeals = planData.customMeals || [];
+      const allMeals = [...meals, ...customMeals];
+      
+      const mealIndex = allMeals.findIndex((meal: Meal) => meal.id === mealId);
       
       if (mealIndex === -1) {
         return;
       }
       
-      const updatedMeals = [...plan.meals];
-      updatedMeals[mealIndex] = { ...updatedMeals[mealIndex], ...updates };
+      const isCustom = mealIndex >= meals.length;
+      const targetArray = isCustom ? 'customMeals' : 'meals';
+      const targetIndex = isCustom ? mealIndex - meals.length : mealIndex;
+      
+      const updatedArray = [...planData[targetArray]];
+      updatedArray[targetIndex] = { ...updatedArray[targetIndex], ...updates };
       
       await updateDoc(planRef, {
-        meals: updatedMeals,
+        [targetArray]: updatedArray,
         'timestamps.updatedAt': new Date().toISOString()
       });
       
       // Обновляем кэш
       if (this.cachedPlans.has(planId)) {
-        const cachedPlan = { ...this.cachedPlans.get(planId)! };
-        cachedPlan.meals = updatedMeals;
-        this.cachedPlans.set(planId, cachedPlan);
+        const cachedPlan = this.cachedPlans.get(planId)!;
+        
+        const allCachedMeals = cachedPlan.meals;
+        const cachedMealIndex = allCachedMeals.findIndex(m => m.id === mealId);
+        
+        if (cachedMealIndex !== -1) {
+          const updatedMeals = [...allCachedMeals];
+          updatedMeals[cachedMealIndex] = { 
+            ...updatedMeals[cachedMealIndex], 
+            ...updates 
+          };
+          cachedPlan.meals = updatedMeals;
+          
+          cachedPlan.stats.completedMeals = updatedMeals.filter(m => m.marked).length;
+          
+          this.cachedPlans.set(planId, cachedPlan);
+        }
       }
       
     } catch (error) {
@@ -574,88 +819,11 @@ class DailyRationService {
   }
   
   /**
-   * Обновить избранное
-   */
-  async toggleBookmark(userId: string, recipeId: string, isBookmarked: boolean) {
-    try {
-      // Просто обновляем в пользовательских данных
-      const userRef = doc(db, 'users', userId);
-      
-      // Получаем текущие избранные
-      const userSnap = await getDoc(userRef);
-      if (userSnap.exists()) {
-        const userData = userSnap.data();
-        const favorites = userData.favoriteRecipes || [];
-        
-        let updatedFavorites: string[];
-        if (isBookmarked) {
-          updatedFavorites = [...new Set([...favorites, recipeId])];
-        } else {
-          updatedFavorites = favorites.filter((id: string) => id !== recipeId);
-        }
-        
-        await updateDoc(userRef, {
-          favoriteRecipes: updatedFavorites
-        });
-      }
-      
-    } catch (error) {
-      console.error('❌ Error toggling bookmark:', error);
-    }
-  }
-  
-  /**
-   * Получить недавние планы
-   */
-  async getRecentPlans(userId: string, days: number = 7): Promise<Plan[]> {
-    try {
-      const endDate = new Date();
-      const startDate = new Date();
-      startDate.setDate(startDate.getDate() - days);
-      
-      const plansQuery = query(
-        collection(db, 'ration_plan_days'),
-        where('userId', '==', userId),
-        where('date', '>=', formatDate(startDate)),
-        where('date', '<=', formatDate(endDate))
-      );
-      
-      const snapshot = await getDocs(plansQuery);
-      return snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      } as Plan));
-      
-    } catch (error) {
-      console.error('❌ Error getting recent plans:', error);
-      return [];
-    }
-  }
-  
-  /**
-   * Извлечь использованные ID рецептов
-   */
-  extractUsedRecipeIds(plans: Plan[]): string[] {
-    const usedIds = new Set<string>();
-    
-    plans.forEach(plan => {
-      if (plan.meals) {
-        plan.meals.forEach(meal => {
-          if (meal.recipeId) {
-            usedIds.add(meal.recipeId);
-          }
-        });
-      }
-    });
-    
-    return Array.from(usedIds);
-  }
-  
-  /**
    * Очистить кэш
    */
   clearCache() {
     this.cachedPlans.clear();
+    console.log('🧹 Cache cleared');
   }
 }
 

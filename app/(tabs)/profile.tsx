@@ -1,7 +1,8 @@
+// app/(tabs)/profile/index.tsx
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useFocusEffect, useRouter } from "expo-router";
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useMemo, useState, useEffect } from "react";
 import {
   ActivityIndicator,
   Image,
@@ -11,10 +12,15 @@ import {
   TouchableOpacity,
   View,
   Dimensions,
+  Alert,
 } from "react-native";
 import { favoriteService } from "@/app/services/favoriteService";
+import { rationPlanService } from "@/app/services/rationPlanService";
+import { recipeService } from "@/app/services/recipeService";
 import { auth } from "@/app/firebase/config";
 import { FontAwesome } from "@expo/vector-icons";
+import { followService } from "@/app/services/followService";
+import { userService } from "@/app/services/userService";
 
 // --- ТИПЫ ДАННЫХ ---
 type ProfileData = {
@@ -34,8 +40,8 @@ type ProfileData = {
   customNutritionType: string;
   cookingTimeLimit: string;
   isProfileFilled: boolean;
-  photoURL?: string | null; // Изменено: теперь photoURL вместо avatarUri
-  cloudinaryPublicId?: string; // Добавлено для Cloudinary
+  photoURL?: string | null;
+  cloudinaryPublicId?: string;
 };
 
 type Recipe = {
@@ -59,6 +65,7 @@ type Plan = {
   mealsCount: number;
   image: any;
   savedDate: string;
+  createdAt?: number;
 };
 
 const PROFILE_STORAGE_KEY = "user_profile_data";
@@ -83,9 +90,9 @@ const formatMinutes = (minutes: number): string => {
 // Функция для получения названия категории по mealType
 const getCategoryName = (mealType: string) => {
   if (!mealType) return "Другое";
-  
+
   const normalizedMealType = String(mealType).trim().toLowerCase();
-  
+
   switch (normalizedMealType) {
     case "breakfast":
     case "завтрак":
@@ -126,72 +133,149 @@ const defaultProfileData: ProfileData = {
 
 export default function ProfileScreen() {
   const router = useRouter();
-  const [profileData, setProfileData] = useState<ProfileData>(defaultProfileData);
+  const [profileData, setProfileData] =
+    useState<ProfileData>(defaultProfileData);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<"profile" | "saved">("profile");
   const [favoriteRecipes, setFavoriteRecipes] = useState<Recipe[]>([]);
   const [savedPlans, setSavedPlans] = useState<Plan[]>([]);
+  const [myRecipesCount, setMyRecipesCount] = useState<number>(0);
   const [favoritesLoading, setFavoritesLoading] = useState(false);
+  const [plansLoading, setPlansLoading] = useState(false);
   const [profileCompleted, setProfileCompleted] = useState(false);
+  // Добавляем состояние для статистики подписок
+  const [followStats, setFollowStats] = useState({
+    followersCount: 0,
+    followingCount: 0
+  });
+  const [postsCount, setPostsCount] = useState(0);
+  const [followStatsLoading, setFollowStatsLoading] = useState(false);
 
-  // --- ФУНКЦИЯ ЗАГРУЗКИ ИЗБРАННОГО ИЗ БД ---
+  // Функция для получения текущего userId
+  const getCurrentUserId = useCallback((): string | null => {
+    return auth.currentUser?.uid || null;
+  }, []);
+
+  // --- ФУНКЦИЯ ЗАГРУЗКИ СТАТИСТИКИ ПОДПИСОК ---
+  const loadFollowStats = useCallback(async () => {
+    const userId = getCurrentUserId();
+    if (!userId) return;
+
+    try {
+      setFollowStatsLoading(true);
+      console.log("Загрузка статистики подписок...");
+
+      const [followersCount, followingCount] = await Promise.all([
+        followService.getFollowersCount(userId),
+        followService.getFollowingCount(userId)
+      ]);
+
+      setFollowStats({
+        followersCount,
+        followingCount
+      });
+
+      console.log(`Подписчики: ${followersCount}, Подписки: ${followingCount}`);
+    } catch (error) {
+      console.error("Ошибка загрузки статистики подписок:", error);
+    } finally {
+      setFollowStatsLoading(false);
+    }
+  }, [getCurrentUserId]);
+
+  // --- ФУНКЦИЯ ЗАГРУЗКИ КОЛИЧЕСТВА ПОСТОВ ---
+  const loadPostsCount = useCallback(async () => {
+    const userId = getCurrentUserId();
+    if (!userId) return;
+
+    try {
+      console.log("Загрузка количества постов...");
+      // TODO: Реализовать метод для получения количества постов пользователя
+      // Пока используем заглушку
+      setPostsCount(0);
+    } catch (error) {
+      console.error("Ошибка загрузки количества постов:", error);
+      setPostsCount(0);
+    }
+  }, [getCurrentUserId]);
+
+  // --- ФУНКЦИЯ ЗАГРУЗКИ ИЗБРАННЫХ РЕЦЕПТОВ ---
   const loadFavoritesFromDB = useCallback(async () => {
-    if (!auth.currentUser) {
-      console.log("Пользователь не авторизован, пропускаем загрузку избранного");
+    const userId = getCurrentUserId();
+    if (!userId) {
+      console.log(
+        "Пользователь не авторизован, пропускаем загрузку избранного"
+      );
       setFavoriteRecipes([]);
-      setSavedPlans([]);
       return;
     }
 
     setFavoritesLoading(true);
     try {
-      console.log("Загрузка избранного для профиля...");
-      
-      const allFavorites = await favoriteService.getUserFavorites();
-      console.log("Получено избранных:", allFavorites?.length || 0);
+      console.log("Загрузка избранных рецептов для профиля...");
+
+      // Используем userId при загрузке избранного
+      const allFavorites = await favoriteService.getUserFavorites(userId);
+      console.log("Получено избранных элементов:", allFavorites?.length || 0);
 
       if (!allFavorites || allFavorites.length === 0) {
         console.log("Избранное пустое");
         setFavoriteRecipes([]);
-        setSavedPlans([]);
         return;
       }
 
       const recipes: Recipe[] = [];
-      const plans: Plan[] = [];
+
+      // Добавляем уникальный счётчик
+      let recipeCounter = 0;
 
       allFavorites.forEach((fav: any) => {
-        if (fav.favoriteType === 'recipe' && fav.item) {
+        if (fav.favoriteType === "recipe" && fav.item) {
           const recipeData = fav.item;
-          
+
           // Название рецепта
-          const title = recipeData.title || recipeData.fields?.title || recipeData.name || "Рецепт без названия";
-          
+          const title =
+            recipeData.title ||
+            recipeData.fields?.title ||
+            recipeData.name ||
+            "Рецепт без названия";
+
           // Категория - получаем из mealType или fields
-          const rawCategory = recipeData.mealType || recipeData.fields?.mealType || "other";
+          const rawCategory =
+            recipeData.mealType || recipeData.fields?.mealType || "other";
           const category = getCategoryName(rawCategory);
-          
+
           // Калории
           let calories = 0;
-          if (recipeData.fields?.calories !== undefined) calories = recipeData.fields.calories;
-          else if (recipeData.calories !== undefined) calories = recipeData.calories;
-          else if (recipeData.fields?.fscts !== undefined) calories = recipeData.fields.fscts;
-          
+          if (recipeData.fields?.calories !== undefined)
+            calories = recipeData.fields.calories;
+          else if (recipeData.calories !== undefined)
+            calories = recipeData.calories;
+          else if (recipeData.fields?.fscts !== undefined)
+            calories = recipeData.fields.fscts;
+
           // Время приготовления - безопасное получение и форматирование
           let cookingTime = "20 минут";
-          
+
           // Пробуем получить время из разных источников
-          const rawTime = recipeData.fields?.cookingTime || recipeData.cookingTime || recipeData.time;
-          
+          const rawTime =
+            recipeData.fields?.cookingTime ||
+            recipeData.cookingTime ||
+            recipeData.time;
+
           if (rawTime) {
             // Если это число, форматируем его
-            if (typeof rawTime === 'number') {
+            if (typeof rawTime === "number") {
               cookingTime = formatMinutes(rawTime);
             } else {
               // Если это строка, используем как есть
               cookingTime = String(rawTime);
               // Добавляем "минут" если нужно
-              if (cookingTime && !cookingTime.includes("мин") && !cookingTime.includes("минут")) {
+              if (
+                cookingTime &&
+                !cookingTime.includes("мин") &&
+                !cookingTime.includes("минут")
+              ) {
                 // Пытаемся извлечь только число из строки
                 const timeMatch = cookingTime.match(/\d+/);
                 if (timeMatch) {
@@ -202,87 +286,211 @@ export default function ProfileScreen() {
               }
             }
           }
-          
+
           // Рейтинг
-          const rating = recipeData.rating || recipeData.fields?.rating || recipeData.ratingCount || 0;
-          
+          const rating =
+            recipeData.rating ||
+            recipeData.fields?.rating ||
+            recipeData.ratingCount ||
+            0;
+
           // Сложность приготовления - из разных полей
           let difficulty = "Легко";
-          const rawDifficulty = recipeData.difficulty || recipeData.fields?.difficulty || recipeData.complexity || recipeData.difficultyLevel;
-          
+          const rawDifficulty =
+            recipeData.difficulty ||
+            recipeData.fields?.difficulty ||
+            recipeData.complexity ||
+            recipeData.difficultyLevel;
+
           if (rawDifficulty) {
             const normalizedDifficulty = String(rawDifficulty).trim();
             // Проверяем разные варианты написания
-            if (normalizedDifficulty.toLowerCase().includes("легк") || normalizedDifficulty === "Easy") {
+            if (
+              normalizedDifficulty.toLowerCase().includes("легк") ||
+              normalizedDifficulty === "Easy"
+            ) {
               difficulty = "Легко";
-            } else if (normalizedDifficulty.toLowerCase().includes("средн") || normalizedDifficulty === "Medium") {
+            } else if (
+              normalizedDifficulty.toLowerCase().includes("средн") ||
+              normalizedDifficulty === "Medium"
+            ) {
               difficulty = "Средне";
-            } else if (normalizedDifficulty.toLowerCase().includes("сложн") || normalizedDifficulty === "Hard") {
+            } else if (
+              normalizedDifficulty.toLowerCase().includes("сложн") ||
+              normalizedDifficulty === "Hard"
+            ) {
               difficulty = "Сложно";
             } else {
               difficulty = normalizedDifficulty;
             }
           }
-          
+
           // Изображение
           let imageUri = null;
           if (recipeData.fields?.image) imageUri = recipeData.fields.image;
           else if (recipeData.image) imageUri = recipeData.image;
           else if (recipeData.imageUrl) imageUri = recipeData.imageUrl;
-          else if (recipeData.fields?.langdir1) imageUri = recipeData.fields.langdir1;
-          
+          else if (recipeData.fields?.langdir1)
+            imageUri = recipeData.fields.langdir1;
+
+          // ФИКС: Генерируем уникальный ID
+          recipeCounter++;
+          const uniqueId =
+            recipeData.id ||
+            fav.id ||
+            `recipe-${userId}-${recipeCounter}-${Date.now()}-${Math.random()
+              .toString(36)
+              .substr(2, 9)}`;
+
           const recipe: Recipe = {
-            id: recipeData.id || `recipe-${Date.now()}`,
+            id: uniqueId, // ✅ Теперь всегда уникальный
             name: title,
             category: category,
             calories: calories,
             cookingTime: cookingTime,
-            image: imageUri 
+            image: imageUri
               ? { uri: imageUri }
               : require("@/assets/images/dinner-rice.png"),
             bookmarked: true,
             rating: rating,
-            difficulty: difficulty
+            difficulty: difficulty,
           };
-          
+
           recipes.push(recipe);
-          
-        } else if (fav.favoriteType === 'ration' && fav.item) {
-          const planData = fav.item;
-          const plan: Plan = {
-            id: planData.id || `plan-${Date.now()}`,
-            name: planData.name || planData.title || "План без названия",
-            description: planData.description || planData.fields?.description || "Описание отсутствует",
-            totalCalories: planData.totalCalories || planData.fields?.totalCalories || 0,
-            duration: planData.duration || planData.fields?.duration || "0 дней",
-            mealsCount: planData.mealsCount || planData.fields?.mealsCount || 0,
-            image: planData.image || planData.fields?.image 
-              ? { uri: planData.image || planData.fields?.image }
-              : require("@/assets/images/dinner-rice.png"),
-            savedDate: fav.createdAt && fav.createdAt.seconds
-              ? new Date(fav.createdAt.seconds * 1000).toLocaleDateString("ru-RU")
-              : new Date().toLocaleDateString("ru-RU")
-          };
-          plans.push(plan);
         }
       });
 
-      console.log(`Загружено ${recipes.length} рецептов и ${plans.length} планов`);
-      setFavoriteRecipes(recipes);
-      setSavedPlans(plans);
+      console.log(`Загружено ${recipes.length} избранных рецептов`);
+
+      // Дополнительная проверка на уникальность ID
+      const duplicateIds = recipes
+        .map((r) => r.id)
+        .filter((id, index, self) => self.indexOf(id) !== index);
+
+      if (duplicateIds.length > 0) {
+        console.warn("⚠️ Обнаружены дублирующиеся ID:", duplicateIds);
+        // Исправляем дубликаты
+        const fixedRecipes = recipes.map((recipe, index) => ({
+          ...recipe,
+          id: duplicateIds.includes(recipe.id)
+            ? `${recipe.id}-dup-${index}`
+            : recipe.id,
+        }));
+        setFavoriteRecipes(fixedRecipes);
+      } else {
+        setFavoriteRecipes(recipes);
+      }
     } catch (error) {
-      console.error("Ошибка при загрузке избранного:", error);
+      console.error("Ошибка при загрузке избранных рецептов:", error);
       setFavoriteRecipes([]);
-      setSavedPlans([]);
     } finally {
       setFavoritesLoading(false);
     }
-  }, []);
+  }, [getCurrentUserId]);
+
+  // --- ФУНКЦИЯ ЗАГРУЗКИ ПЛАНОВ ПОЛЬЗОВАТЕЛЯ ---
+  const loadUserPlans = useCallback(async () => {
+    const userId = getCurrentUserId();
+    if (!userId) {
+      console.log("Пользователь не авторизован, пропускаем загрузку планов");
+      setSavedPlans([]);
+      return;
+    }
+
+    setPlansLoading(true);
+    try {
+      console.log("Загрузка планов пользователя...");
+
+      // Загружаем все планы пользователя
+      const userPlans = await rationPlanService.getUserRationPlans(userId);
+      console.log("Получено планов пользователя:", userPlans?.length || 0);
+
+      if (!userPlans || userPlans.length === 0) {
+        console.log("Планы пользователя пустые");
+        setSavedPlans([]);
+        return;
+      }
+
+      // Преобразуем данные планов в нужный формат
+      const formattedPlans: Plan[] = userPlans.map((plan: any) => {
+        // Определяем дату создания плана
+        let createdAt = Date.now();
+        if (plan.createdAt) {
+          // Если createdAt - это строка даты
+          if (typeof plan.createdAt === "string") {
+            createdAt = new Date(plan.createdAt).getTime();
+          }
+          // Если createdAt - это объект Firestore Timestamp
+          else if (plan.createdAt.seconds) {
+            createdAt = plan.createdAt.seconds * 1000;
+          }
+          // Если createdAt - это число (timestamp)
+          else if (typeof plan.createdAt === "number") {
+            createdAt = plan.createdAt;
+          }
+        }
+
+        // Форматируем дату сохранения
+        const savedDate = new Date(createdAt).toLocaleDateString("ru-RU");
+
+        return {
+          id: plan.id || `plan-${Date.now()}`,
+          name: plan.title || plan.name || "План без названия",
+          description: plan.description || "Описание отсутствует",
+          totalCalories: plan.totalCalories || 0,
+          duration: plan.totalDuration || "0 дней",
+          mealsCount: plan.mealsCount || 0,
+          image: null, // УБИРАЕМ ИЗОБРАЖЕНИЕ
+          savedDate: savedDate,
+          createdAt: createdAt,
+        };
+      });
+
+      // Сортируем планы по дате создания (от новых к старым)
+      const sortedPlans = formattedPlans.sort(
+        (a, b) => (b.createdAt || 0) - (a.createdAt || 0)
+      );
+
+      // Берем только последние 3 плана
+      const latestPlans = sortedPlans.slice(0, 3);
+
+      console.log(
+        `Загружено ${userPlans.length} планов пользователя (показываем 3 последних)`
+      );
+      setSavedPlans(latestPlans);
+    } catch (error) {
+      console.error("Ошибка при загрузке планов пользователя:", error);
+      setSavedPlans([]);
+    } finally {
+      setPlansLoading(false);
+    }
+  }, [getCurrentUserId]);
+
+  // --- ФУНКЦИЯ ЗАГРУЗКИ МОИХ РЕЦЕПТОВ (КОЛИЧЕСТВО) ---
+  const loadMyRecipesCount = useCallback(async () => {
+    const userId = getCurrentUserId();
+
+    try {
+      console.log("Загрузка количества моих рецептов...");
+
+      // Если метод принимает string | null | undefined
+      const userRecipes = await recipeService.getUserRecipes(userId || null);
+
+      const count = userRecipes?.length || 0;
+      console.log(`Получено ${count} моих рецептов`);
+      setMyRecipesCount(count);
+    } catch (error) {
+      console.error("Ошибка при загрузке моих рецептов:", error);
+      setMyRecipesCount(0);
+    }
+  }, [getCurrentUserId]);
 
   // --- ЛОГИКА ЗАГРУЗКИ ПРОФИЛЯ ---
   const loadProfileData = useCallback(async () => {
     setLoading(true);
     try {
+      const userId = getCurrentUserId();
+
       // 1. Загружаем данные из AsyncStorage
       const [storedProfile, setupStatus] = await Promise.all([
         AsyncStorage.getItem(PROFILE_STORAGE_KEY),
@@ -290,7 +498,7 @@ export default function ProfileScreen() {
       ]);
 
       let profileFromStorage: ProfileData = defaultProfileData;
-      
+
       if (storedProfile) {
         try {
           const parsedData = JSON.parse(storedProfile);
@@ -301,78 +509,111 @@ export default function ProfileScreen() {
       }
 
       // 2. Пробуем загрузить фото из Firebase Auth (если пользователь авторизован)
-      if (auth.currentUser) {
+      if (userId && auth.currentUser) {
         const authUser = auth.currentUser;
-        
+
         // Получаем имя из Auth, если его нет в хранилище
-        if (!profileFromStorage.name || profileFromStorage.name === "Пользователь") {
-          profileFromStorage.name = authUser.displayName || 
-                                   authUser.email?.split('@')[0] || 
-                                   "Пользователь";
+        if (
+          !profileFromStorage.name ||
+          profileFromStorage.name === "Пользователь"
+        ) {
+          profileFromStorage.name =
+            authUser.displayName ||
+            authUser.email?.split("@")[0] ||
+            "Пользователь";
         }
-        
+
         // Получаем email из Auth, если его нет в хранилище
         if (!profileFromStorage.email) {
           profileFromStorage.email = authUser.email || "";
         }
-        
+
         // Получаем фото из Firebase Auth (приоритет 1)
         if (authUser.photoURL && !profileFromStorage.photoURL) {
           profileFromStorage.photoURL = authUser.photoURL;
         }
-        
+
         // 3. Пробуем загрузить из Firestore через userService (приоритет 2)
         try {
-          // Импортируем userService внутри функции
-          const { userService } = require("@/app/services/userService");
-          const firestoreData = await userService.fetchUserProfile(authUser.uid);
-          
+          // Используем импортированный userService
+          const firestoreData = await userService.fetchUserProfile(userId);
+
           if (firestoreData) {
             // Обновляем фото из Firestore, если есть
             if (firestoreData.photoURL && !profileFromStorage.photoURL) {
               profileFromStorage.photoURL = firestoreData.photoURL;
             }
-            
+
             // Обновляем другие данные из Firestore
             profileFromStorage = {
               ...profileFromStorage,
               name: firestoreData.name || profileFromStorage.name,
               email: firestoreData.email || profileFromStorage.email,
-              description: firestoreData.description || profileFromStorage.description,
+              description:
+                firestoreData.description || profileFromStorage.description,
               age: firestoreData.age || profileFromStorage.age,
               height: firestoreData.height || profileFromStorage.height,
               gender: firestoreData.gender || profileFromStorage.gender,
               weight: firestoreData.weight || profileFromStorage.weight,
               goal: firestoreData.goal || profileFromStorage.goal,
               activity: firestoreData.activity || profileFromStorage.activity,
-              nutritionType: firestoreData.dietType || firestoreData.nutritionType || profileFromStorage.nutritionType,
-              allergies: firestoreData.allergies || profileFromStorage.allergies,
-              dislikes: firestoreData.excludedIngredients || firestoreData.dislikes || profileFromStorage.dislikes,
-              isPrivate: firestoreData.isProfilePrivate ?? profileFromStorage.isPrivate,
-              cookingTimeLimit: firestoreData.cookingTimeLimit || profileFromStorage.cookingTimeLimit,
-              isProfileFilled: firestoreData.isProfileFilled ?? profileFromStorage.isProfileFilled,
-              cloudinaryPublicId: firestoreData.cloudinaryPublicId || profileFromStorage.cloudinaryPublicId,
+              nutritionType:
+                firestoreData.dietType ||
+                firestoreData.nutritionType ||
+                profileFromStorage.nutritionType,
+              allergies:
+                firestoreData.allergies || profileFromStorage.allergies,
+              dislikes:
+                firestoreData.excludedIngredients ||
+                firestoreData.dislikes ||
+                profileFromStorage.dislikes,
+              isPrivate:
+                firestoreData.isProfilePrivate ?? profileFromStorage.isPrivate,
+              cookingTimeLimit:
+                firestoreData.cookingTimeLimit ||
+                profileFromStorage.cookingTimeLimit,
+              isProfileFilled:
+                firestoreData.isProfileFilled ??
+                profileFromStorage.isProfileFilled,
+              cloudinaryPublicId:
+                firestoreData.cloudinaryPublicId ||
+                profileFromStorage.cloudinaryPublicId,
             };
           }
         } catch (firestoreError) {
-          console.error("Ошибка загрузки профиля из Firestore:", firestoreError);
+          console.error(
+            "Ошибка загрузки профиля из Firestore:",
+            firestoreError
+          );
           // Продолжаем с данными из AsyncStorage
         }
       }
 
       setProfileData(profileFromStorage);
       setProfileCompleted(setupStatus === "true");
-      
-      // 4. Загружаем избранное
-      await loadFavoritesFromDB();
-      
+
+      // 4. Загружаем все данные параллельно
+      await Promise.all([
+        loadFavoritesFromDB(),
+        loadUserPlans(),
+        loadMyRecipesCount(),
+        loadFollowStats(),
+        loadPostsCount(),
+      ]);
     } catch (error) {
       console.error("Не удалось загрузить профиль:", error);
       setProfileData(defaultProfileData);
     } finally {
       setLoading(false);
     }
-  }, [loadFavoritesFromDB]);
+  }, [
+    getCurrentUserId,
+    loadFavoritesFromDB,
+    loadUserPlans,
+    loadMyRecipesCount,
+    loadFollowStats,
+    loadPostsCount,
+  ]);
 
   useFocusEffect(
     useCallback(() => {
@@ -436,19 +677,49 @@ export default function ProfileScreen() {
     router.push("/profile-settings");
   };
 
-  const handleNavigationStub = (path: string) => {
-    console.log(`Navigating to: ${path}`);
-  };
+  // ОБНОВЛЕННЫЕ ПЕРЕХОДЫ
+  const handleNavigation = useCallback((path: string) => {
+    switch (path) {
+      case "/user-recipes":
+        router.push("/user-recipes");
+        break;
+      case "/following":
+        router.push("/following");
+        break;
+      case "/followers":
+        router.push("/followers");
+        break;
+      case "/posts":
+        console.log("Переход к публикациям");
+        // TODO: Создать страницу постов
+        // router.push("/posts");
+        Alert.alert("Информация", "Страница публикаций в разработке");
+        break;
+      default:
+        console.log(`Переход на: ${path}`);
+    }
+  }, [router]);
 
   const toggleBookmark = async (recipeId: string) => {
     try {
+      const userId = getCurrentUserId();
+      if (!userId) {
+        Alert.alert("Ошибка", "Вы не авторизованы");
+        return;
+      }
+
       console.log(`Удаление рецепта ${recipeId} из избранного...`);
-      await favoriteService.removeFromFavorites(recipeId, 'recipe');
-      
-      setFavoriteRecipes(prev => prev.filter(recipe => recipe.id !== recipeId));
+
+      // Используем правильный вызов с userId
+      await favoriteService.removeFromFavorites(recipeId, "recipe", userId);
+
+      setFavoriteRecipes((prev) =>
+        prev.filter((recipe) => recipe.id !== recipeId)
+      );
       console.log(`Рецепт ${recipeId} удален из избранного`);
     } catch (error) {
       console.error("Ошибка при удалении из избранного:", error);
+      Alert.alert("Ошибка", "Не удалось удалить из избранного");
     }
   };
 
@@ -473,9 +744,36 @@ export default function ProfileScreen() {
     router.push("/saved-plans");
   };
 
+  const handlePlanPress = (plan: Plan) => {
+    console.log(`Открытие плана: ${plan.name}`);
+    // Переход к деталям плана или редактированию
+    router.push({
+      pathname: "/create-ration",
+      params: { planId: plan.id },
+    });
+  };
+
+  const handleUsePlan = (plan: Plan) => {
+    Alert.alert(
+      "Использовать план",
+      `Хотите начать использовать план "${plan.name}"?`,
+      [
+        { text: "Отмена", style: "cancel" },
+        {
+          text: "Использовать",
+          onPress: () => {
+            console.log(`Начало использования плана ${plan.id}`);
+            // Здесь можно добавить логику применения плана
+            Alert.alert("Успешно", `План "${plan.name}" теперь активен!`);
+          },
+        },
+      ]
+    );
+  };
+
   const getDifficultyColor = (difficulty: string) => {
     if (!difficulty) return "#6A9AA9";
-    
+
     const lowerDifficulty = difficulty.toLowerCase();
     if (lowerDifficulty.includes("легк")) return "#4CAF50";
     if (lowerDifficulty.includes("средн")) return "#FF9800";
@@ -484,7 +782,7 @@ export default function ProfileScreen() {
   };
 
   // --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
-  const renderMenuItem = (
+  const renderMenuItem = useCallback((
     iconName: string,
     label: string,
     onPress: () => void
@@ -496,7 +794,7 @@ export default function ProfileScreen() {
       <Text style={styles.menuItemText}>{label}</Text>
       <Ionicons name="chevron-forward" size={20} color="#ccc" />
     </TouchableOpacity>
-  );
+  ), []);
 
   // --- КОМПОНЕНТ АВАТАРА С ФОТО ИЛИ ЗАГЛУШКОЙ ---
   const AvatarComponent = () => {
@@ -509,11 +807,9 @@ export default function ProfileScreen() {
         />
       );
     }
-    
+
     // Заглушка, если фото нет
-    return (
-      <Ionicons name="person" size={48} color="#6A9AA9" />
-    );
+    return <Ionicons name="person" size={48} color="#6A9AA9" />;
   };
 
   // --- РЕНДЕР КАРТОЧКИ РЕЦЕПТА ---
@@ -547,9 +843,7 @@ export default function ProfileScreen() {
                 },
               ]}
             >
-              <Text style={styles.difficultyText}>
-                {recipe.difficulty}
-              </Text>
+              <Text style={styles.difficultyText}>{recipe.difficulty}</Text>
             </View>
           </View>
           {/* Кнопка закладки */}
@@ -557,11 +851,7 @@ export default function ProfileScreen() {
             style={styles.bookmarkButton}
             onPress={() => toggleBookmark(recipe.id)}
           >
-            <Ionicons
-              name="bookmark"
-              size={18}
-              color="#6A9AA9"
-            />
+            <Ionicons name="bookmark" size={18} color="#6A9AA9" />
           </TouchableOpacity>
         </View>
         <View style={styles.recipeContent}>
@@ -574,9 +864,7 @@ export default function ProfileScreen() {
               {recipe.name}
             </Text>
             {/* Категория */}
-            <Text style={styles.recipeCategory}>
-              {recipe.category}
-            </Text>
+            <Text style={styles.recipeCategory}>{recipe.category}</Text>
             <View style={styles.recipeDetails}>
               {/* Калории */}
               {recipe.calories && recipe.calories > 0 ? (
@@ -590,9 +878,7 @@ export default function ProfileScreen() {
                 color="#6A9AA9"
                 style={styles.timeIcon}
               />
-              <Text style={styles.recipeTime}>
-                {recipe.cookingTime}
-              </Text>
+              <Text style={styles.recipeTime}>{recipe.cookingTime}</Text>
             </View>
           </View>
           <TouchableOpacity
@@ -604,6 +890,51 @@ export default function ProfileScreen() {
         </View>
       </TouchableOpacity>
     </View>
+  );
+
+  // --- РЕНДЕР КАРТОЧКИ ПЛАНА ---
+  const renderPlanCard = (plan: Plan) => (
+    <TouchableOpacity
+      key={plan.id}
+      style={styles.planCard}
+      onPress={() => handlePlanPress(plan)}
+    >
+      {/* УБИРАЕМ ИЗОБРАЖЕНИЕ ПЛАНА */}
+      <View style={styles.planIconContainer}>
+        <Ionicons name="calendar-outline" size={32} color="#6A9AA9" />
+      </View>
+      <View style={styles.planContent}>
+        <Text style={styles.planName}>{plan.name}</Text>
+        <Text style={styles.planDescription} numberOfLines={2}>
+          {plan.description}
+        </Text>
+        <View style={styles.planDetails}>
+          <View style={styles.planDetail}>
+            <Ionicons name="flame-outline" size={14} color="#FF6B6B" />
+            <Text style={styles.planDetailText}>
+              {plan.totalCalories} ккал/день
+            </Text>
+          </View>
+          <View style={styles.planDetail}>
+            <Ionicons name="time-outline" size={14} color="#6A9AA9" />
+            <Text style={styles.planDetailText}>{plan.duration}</Text>
+          </View>
+          <View style={styles.planDetail}>
+            <Ionicons name="restaurant-outline" size={14} color="#9BDF11" />
+            <Text style={styles.planDetailText}>{plan.mealsCount} приёмов</Text>
+          </View>
+        </View>
+        <View style={styles.planFooter}>
+          <Text style={styles.planDate}>Создан: {plan.savedDate}</Text>
+          <TouchableOpacity
+            style={styles.usePlanButton}
+            onPress={() => handleUsePlan(plan)}
+          >
+            <Text style={styles.usePlanButtonText}>Использовать</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </TouchableOpacity>
   );
 
   // --- РЕНДЕР ВКЛАДКИ "ПРОФИЛЬ" ---
@@ -651,17 +982,23 @@ export default function ProfileScreen() {
         <View style={styles.communityMenu}>
           {renderMenuItem(
             "restaurant-outline",
-            "Опубликованные рецепты (12)",
-            () => handleNavigationStub("/my-recipes")
+            `Опубликованные рецепты (${myRecipesCount})`,
+            () => handleNavigation("/user-recipes")
           )}
-          {renderMenuItem("people-outline", "Подписки (8)", () =>
-            handleNavigationStub("/following")
+          {renderMenuItem(
+            "person-add-outline", 
+            `Подписки (${followStats.followingCount})`, 
+            () => handleNavigation("/following")
           )}
-          {renderMenuItem("person-add-outline", "Подписчики (55)", () =>
-            handleNavigationStub("/followers")
+          {renderMenuItem(
+            "people-outline", 
+            `Подписчики (${followStats.followersCount})`, 
+            () => handleNavigation("/followers")
           )}
-          {renderMenuItem("grid-outline", "Публикации (4)", () =>
-            handleNavigationStub("/posts")
+          {renderMenuItem(
+            "grid-outline", 
+            `Публикации (${postsCount})`, 
+            () => handleNavigation("/posts")
           )}
         </View>
       </View>
@@ -705,10 +1042,10 @@ export default function ProfileScreen() {
       contentContainerStyle={styles.savedContentContainer}
       showsVerticalScrollIndicator={false}
     >
-      {favoritesLoading ? (
+      {favoritesLoading || plansLoading ? (
         <View style={styles.loaderContainer}>
           <ActivityIndicator size="large" color="#6A9AA9" />
-          <Text style={styles.loaderText}>Загружаем избранное...</Text>
+          <Text style={styles.loaderText}>Загружаем данные...</Text>
         </View>
       ) : (
         <>
@@ -726,14 +1063,16 @@ export default function ProfileScreen() {
             {favoriteRecipes.length === 0 ? (
               <View style={styles.emptyState}>
                 <Ionicons name="bookmark-outline" size={48} color="#C2DAE2" />
-                <Text style={styles.emptyTitle}>В сохраненных пока пусто</Text>
+                <Text style={styles.emptyTitle}>В избранном пока пусто</Text>
                 <Text style={styles.emptyText}>
                   Сохраняйте рецепты, нажимая на значок закладки
                 </Text>
               </View>
             ) : (
               <View style={styles.recipesGrid}>
-                {favoriteRecipes.slice(0, 4).map((recipe) => renderRecipeCard(recipe))}
+                {favoriteRecipes
+                  .slice(0, 4)
+                  .map((recipe) => renderRecipeCard(recipe))}
               </View>
             )}
           </View>
@@ -743,65 +1082,34 @@ export default function ProfileScreen() {
               style={styles.sectionHeader}
               onPress={navigateToAllPlans}
             >
-              <Text style={styles.sectionTitle}>Рационы ({savedPlans.length})</Text>
+              <View style={styles.plansHeader}>
+                <Text style={styles.sectionTitle}>
+                  Последние рационы ({savedPlans.length})
+                </Text>
+                <Text style={styles.subtitle}>
+                  Показаны последние 3 созданных плана
+                </Text>
+              </View>
               <Ionicons name="chevron-forward" size={20} color="#000" />
             </TouchableOpacity>
 
             {savedPlans.length === 0 ? (
               <View style={styles.emptyState}>
                 <Ionicons name="calendar-outline" size={48} color="#C2DAE2" />
-                <Text style={styles.emptyTitle}>Нет сохраненных планов</Text>
+                <Text style={styles.emptyTitle}>Нет созданных планов</Text>
                 <Text style={styles.emptyText}>
-                  Сохраняйте понравившиеся планы питания
+                  Создайте свой первый план питания!
                 </Text>
+                <TouchableOpacity
+                  style={styles.createPlanButton}
+                  onPress={() => router.push("/create-ration")}
+                >
+                  <Text style={styles.createPlanButtonText}>Создать план</Text>
+                </TouchableOpacity>
               </View>
             ) : (
               <View style={styles.plansList}>
-                {savedPlans.slice(0, 2).map((plan) => (
-                  <TouchableOpacity
-                    key={plan.id}
-                    style={styles.planCard}
-                    onPress={() => console.log("View Plan")}
-                  >
-                    <Image
-                      source={plan.image}
-                      style={styles.planImage}
-                      resizeMode="cover"
-                    />
-                    <View style={styles.planContent}>
-                      <Text style={styles.planName}>{plan.name}</Text>
-                      <Text style={styles.planDescription}>{plan.description}</Text>
-                      <View style={styles.planDetails}>
-                        <View style={styles.planDetail}>
-                          <Ionicons
-                            name="flame-outline"
-                            size={14}
-                            color="#FF6B6B"
-                          />
-                          <Text style={styles.planDetailText}>
-                            {plan.totalCalories} ккал/день
-                          </Text>
-                        </View>
-                        <View style={styles.planDetail}>
-                          <Ionicons name="time-outline" size={14} color="#6A9AA9" />
-                          <Text style={styles.planDetailText}>{plan.duration}</Text>
-                        </View>
-                        <View style={styles.planDetail}>
-                          <Ionicons name="restaurant-outline" size={14} color="#9BDF11" />
-                          <Text style={styles.planDetailText}>{plan.mealsCount} приёмов</Text>
-                        </View>
-                      </View>
-                      <View style={styles.planFooter}>
-                        <Text style={styles.planDate}>
-                          Сохранено: {plan.savedDate}
-                        </Text>
-                        <TouchableOpacity style={styles.usePlanButton}>
-                          <Text style={styles.usePlanButtonText}>Использовать</Text>
-                        </TouchableOpacity>
-                      </View>
-                    </View>
-                  </TouchableOpacity>
-                ))}
+                {savedPlans.map((plan) => renderPlanCard(plan))}
               </View>
             )}
           </View>
@@ -923,6 +1231,15 @@ const styles = StyleSheet.create({
     fontSize: 20,
     color: "#212529",
     fontFamily: "Playfair Display Bold",
+  },
+  plansHeader: {
+    flex: 1,
+  },
+  subtitle: {
+    fontSize: 12,
+    color: "#6A9AA9",
+    fontFamily: "Playfair Display Regular",
+    marginTop: 2,
   },
 
   // СТИЛИ ДЛЯ РЕЦЕПТОВ
@@ -1086,9 +1403,12 @@ const styles = StyleSheet.create({
     elevation: 5,
     height: 140,
   },
-  planImage: {
-    width: 120,
+  planIconContainer: {
+    width: 80,
     height: "100%",
+    backgroundColor: "#C2DAE2",
+    justifyContent: "center",
+    alignItems: "center",
   },
   planContent: {
     flex: 1,
@@ -1107,6 +1427,7 @@ const styles = StyleSheet.create({
     color: "#6A9AA9",
     fontFamily: "Playfair Display Regular",
     marginBottom: 8,
+    lineHeight: 14,
   },
   planDetails: {
     flexDirection: "row",
@@ -1142,6 +1463,21 @@ const styles = StyleSheet.create({
   usePlanButtonText: {
     color: "#000000",
     fontSize: 12,
+    fontWeight: "600",
+    fontFamily: "Playfair Display Regular",
+  },
+
+  // КНОПКА СОЗДАНИЯ ПЛАНА
+  createPlanButton: {
+    backgroundColor: "#6A9AA9",
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 25,
+    marginTop: 16,
+  },
+  createPlanButtonText: {
+    color: "#FFFFFF",
+    fontSize: 14,
     fontWeight: "600",
     fontFamily: "Playfair Display Regular",
   },

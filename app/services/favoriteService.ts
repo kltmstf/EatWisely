@@ -1,4 +1,4 @@
-// services/favoriteService.js
+// app/services/favoriteService.ts
 import { 
   collection, 
   addDoc, 
@@ -9,24 +9,66 @@ import {
   query,
   where,
   orderBy,
-  updateDoc
+  updateDoc,
+  Timestamp,
+  DocumentData
 } from 'firebase/firestore';
-import { db, auth } from '../firebase/config';
+import { db, auth } from '@/app/firebase/config';
+
+type FavoriteType = 'recipe' | 'ration';
+
+interface FavoriteItem {
+  id: string;
+  userId: string;
+  favoriteType: FavoriteType;
+  recipeId?: string;
+  rationPlanId?: string;
+  active?: boolean;
+  createdAt: Date | Timestamp;
+  item?: any;
+}
+
+interface RecipeData {
+  id: string;
+  title?: string;
+  name?: string;
+  category?: string;
+  calories?: number;
+  proteins?: number;
+  fats?: number;
+  carbohydrates?: number;
+  cookingTime?: string;
+  difficultyLevel?: string;
+  rating?: number;
+  imageUrl?: string;
+}
+
+interface RationPlanData {
+  id: string;
+  name?: string;
+  description?: string;
+  totalCalories?: number;
+  totalProteins?: number;
+  totalFats?: number;
+  totalCarbs?: number;
+  meals?: any[];
+  createdAt?: Date;
+}
 
 class FavoriteService {
   // Получить ID текущего пользователя
-  getCurrentUserId() {
+  getCurrentUserId(): string | null {
     return auth.currentUser ? auth.currentUser.uid : null;
   }
 
   // Проверить авторизацию
-  isAuthenticated() {
+  isAuthenticated(): boolean {
     return !!auth.currentUser;
   }
 
   // Проверить валидность ID
-  isValidId(id) {
-    return id && 
+  isValidId(id: string | null | undefined): boolean {
+    return !!id && 
            typeof id === 'string' && 
            id.trim() !== '' && 
            id !== 'undefined' && 
@@ -35,7 +77,7 @@ class FavoriteService {
   }
 
   // Получить все избранное пользователя
-  async getUserFavorites(userId = null) {
+  async getUserFavorites(userId?: string | null): Promise<FavoriteItem[]> {
     try {
       const currentUserId = userId || this.getCurrentUserId();
       if (!currentUserId) {
@@ -55,16 +97,16 @@ class FavoriteService {
       const snapshot = await getDocs(favoritesQuery);
       console.log("✅ Запрос выполнен, документов:", snapshot.docs.length);
 
-      const favorites = snapshot.docs.map(doc => ({
+      const favorites: FavoriteItem[] = snapshot.docs.map(doc => ({
         id: doc.id,
         ...doc.data()
-      }));
+      } as FavoriteItem));
 
       console.log("📊 Найдено избранных:", favorites.length);
 
       // Определяем favoriteType для каждого элемента
-      favorites.forEach((fav, index) => {
-        if (!fav.favoriteType || fav.favoriteType === 'undefined') {
+      favorites.forEach((fav) => {
+        if (!fav.favoriteType || fav.favoriteType === 'undefined' as any) { // ИСПРАВЛЕНО: приведение типа
           if (fav.recipeId) {
             fav.favoriteType = 'recipe';
           } else if (fav.rationPlanId) {
@@ -104,21 +146,21 @@ class FavoriteService {
               console.log(`  🔍 Поиск рецепта с ID: ${favorite.recipeId}`);
               
               try {
-                const recipeDoc = await getDoc(doc(db, 'recipes', favorite.recipeId));
+                const recipeDoc = await getDoc(doc(db, 'recipes', favorite.recipeId!));
                 
                 if (recipeDoc.exists()) {
-                  const recipeData = recipeDoc.data();
+                  const recipeData = recipeDoc.data() as RecipeData;
                   console.log(`  ✅ Рецепт найден: ${recipeData.title || recipeData.name || 'Без названия'}`);
                   
+                  // ИСПРАВЛЕНО: не дублируем id
                   favorite.item = { 
-                    id: recipeDoc.id, 
-                    ...recipeData 
+                    ...recipeData, // id уже включен в recipeData
                   };
                 } else {
                   console.log(`  ❌ Рецепт ${favorite.recipeId} не найден`);
-                  return null; // Пропускаем этот элемент
+                  return null;
                 }
-              } catch (docError) {
+              } catch (docError: any) {
                 console.error(`  💥 Ошибка загрузки рецепта ${favorite.recipeId}:`, docError.message);
                 return null;
               }
@@ -127,26 +169,26 @@ class FavoriteService {
               console.log(`  🔍 Поиск плана с ID: ${favorite.rationPlanId}`);
               
               try {
-                const rationDoc = await getDoc(doc(db, 'ration_plans', favorite.rationPlanId));
+                const rationDoc = await getDoc(doc(db, 'ration_plans', favorite.rationPlanId!));
                 
                 if (rationDoc.exists()) {
-                  const rationData = rationDoc.data();
+                  const rationData = rationDoc.data() as RationPlanData;
                   console.log(`  ✅ План найден: ${rationData.name || 'Без названия'}`);
                   
+                  // ИСПРАВЛЕНО: не дублируем id
                   favorite.item = { 
-                    id: rationDoc.id, 
-                    ...rationData 
+                    ...rationData, // id уже включен в rationData
                   };
                 } else {
                   console.log(`  ❌ План ${favorite.rationPlanId} не найден`);
                   return null;
                 }
-              } catch (docError) {
+              } catch (docError: any) {
                 console.error(`  💥 Ошибка загрузки плана ${favorite.rationPlanId}:`, docError.message);
                 return null;
               }
             }
-          } catch (error) {
+          } catch (error: any) {
             console.error(`  💥 Общая ошибка загрузки данных:`, error.message);
             return null;
           }
@@ -156,11 +198,11 @@ class FavoriteService {
       );
 
       // Фильтруем только валидные записи (не null)
-      const validFavorites = enrichedFavorites.filter(fav => fav !== null);
+      const validFavorites = enrichedFavorites.filter((fav): fav is FavoriteItem => fav !== null);
       console.log("🎯 Валидных избранных с данными:", validFavorites.length);
 
       return validFavorites;
-    } catch (error) {
+    } catch (error: any) {
       console.error('💥 Ошибка при получении избранного:', error);
       console.error('Код ошибки:', error.code);
       console.error('Сообщение:', error.message);
@@ -182,12 +224,15 @@ class FavoriteService {
     }
   }
 
-  // Добавить в избранное
-  async addToFavorites(itemId, favoriteType, userId = null) {
+  // Добавить в избранное (userId теперь обязательный)
+  async addToFavorites(
+    itemId: string, 
+    favoriteType: FavoriteType, 
+    userId: string // Обязательный параметр
+  ): Promise<FavoriteItem> {
     try {
-      const currentUserId = userId || this.getCurrentUserId();
-      if (!currentUserId) {
-        throw new Error('Пользователь не аутентифицирован');
+      if (!userId) {
+        throw new Error('User ID is required');
       }
 
       if (!this.isValidId(itemId)) {
@@ -197,7 +242,7 @@ class FavoriteService {
       console.log(`➕ Добавление в избранное: ${favoriteType} ${itemId}`);
 
       // Проверяем, не добавлено ли уже
-      const existing = await this.isInFavorites(itemId, favoriteType, currentUserId);
+      const existing = await this.isInFavorites(itemId, favoriteType, userId);
       if (existing) {
         console.log("⚠️ Уже в избранном, активируем запись");
         
@@ -206,13 +251,13 @@ class FavoriteService {
         if (favoriteType === 'recipe') {
           favoritesQuery = query(
             collection(db, 'user_favorites'),
-            where('userId', '==', currentUserId),
+            where('userId', '==', userId),
             where('recipeId', '==', itemId)
           );
         } else {
           favoritesQuery = query(
             collection(db, 'user_favorites'),
-            where('userId', '==', currentUserId),
+            where('userId', '==', userId),
             where('rationPlanId', '==', itemId)
           );
         }
@@ -220,44 +265,52 @@ class FavoriteService {
         const snapshot = await getDocs(favoritesQuery);
         if (!snapshot.empty) {
           const docToUpdate = snapshot.docs[0];
+          const docData = docToUpdate.data();
           await updateDoc(docToUpdate.ref, { 
             active: true,
             favoriteType: favoriteType 
           });
-          return { id: docToUpdate.id, ...docToUpdate.data() };
+          // ИСПРАВЛЕНО: возвращаем данные без дублирования id
+          return { 
+            id: docToUpdate.id, 
+            ...docData 
+          } as FavoriteItem;
         }
       }
 
-      const favoriteData = {
-        userId: currentUserId,
+      const favoriteData: Omit<FavoriteItem, 'id'> = {
+        userId: userId,
         favoriteType: favoriteType,
-        createdAt: new Date(),
+        createdAt: Timestamp.now(),
         active: true
       };
 
       if (favoriteType === 'recipe') {
-        favoriteData.recipeId = itemId;
+        (favoriteData as any).recipeId = itemId;
       } else {
-        favoriteData.rationPlanId = itemId;
+        (favoriteData as any).rationPlanId = itemId;
       }
 
       console.log(`  📤 Сохранение в Firestore...`);
       const docRef = await addDoc(collection(db, 'user_favorites'), favoriteData);
       console.log(`  ✅ Добавлено в избранное с ID: ${docRef.id}`);
       
-      return { id: docRef.id, ...favoriteData };
-    } catch (error) {
+      return { id: docRef.id, ...favoriteData } as FavoriteItem;
+    } catch (error: any) {
       console.error('💥 Ошибка добавления в избранное:', error);
       throw error;
     }
   }
 
-  // Удалить из избранного
-  async removeFromFavorites(itemId, favoriteType, userId = null) {
+  // Удалить из избранного (userId теперь обязательный)
+  async removeFromFavorites(
+    itemId: string, 
+    favoriteType: FavoriteType, 
+    userId: string // Обязательный параметр
+  ): Promise<boolean> {
     try {
-      const currentUserId = userId || this.getCurrentUserId();
-      if (!currentUserId) {
-        throw new Error('Пользователь не аутентифицирован');
+      if (!userId) {
+        throw new Error('User ID is required');
       }
 
       if (!this.isValidId(itemId)) {
@@ -270,13 +323,13 @@ class FavoriteService {
       if (favoriteType === 'recipe') {
         favoritesQuery = query(
           collection(db, 'user_favorites'),
-          where('userId', '==', currentUserId),
+          where('userId', '==', userId),
           where('recipeId', '==', itemId)
         );
       } else {
         favoritesQuery = query(
           collection(db, 'user_favorites'),
-          where('userId', '==', currentUserId),
+          where('userId', '==', userId),
           where('rationPlanId', '==', itemId)
         );
       }
@@ -298,14 +351,18 @@ class FavoriteService {
       console.log(`  ✅ Деактивировано ${snapshot.docs.length} записей`);
       
       return true;
-    } catch (error) {
+    } catch (error: any) {
       console.error('💥 Ошибка удаления из избранного:', error);
       throw error;
     }
   }
 
-  // Проверить, находится ли в избранном
-  async isInFavorites(itemId, favoriteType, userId = null) {
+  // Проверить, находится ли в избранном (userId опциональный)
+  async isInFavorites(
+    itemId: string, 
+    favoriteType: FavoriteType, 
+    userId?: string | null
+  ): Promise<boolean> {
     try {
       const currentUserId = userId || this.getCurrentUserId();
       if (!currentUserId || !this.isValidId(itemId)) {
@@ -340,42 +397,47 @@ class FavoriteService {
       }
       
       return false;
-    } catch (error) {
+    } catch (error: any) {
       console.error('💥 Ошибка проверки избранного:', error);
       return false;
     }
   }
 
   // Получить только избранные рецепты
-  async getFavoriteRecipes(userId = null) {
+  async getFavoriteRecipes(userId?: string | null): Promise<FavoriteItem[]> {
     try {
       console.log("🍳 Загрузка только избранных рецептов...");
       const allFavorites = await this.getUserFavorites(userId);
       const recipes = allFavorites.filter(fav => fav.favoriteType === 'recipe');
       console.log(`  📊 Найдено рецептов: ${recipes.length}`);
       return recipes;
-    } catch (error) {
+    } catch (error: any) {
       console.error('💥 Ошибка получения избранных рецептов:', error);
       return [];
     }
   }
 
   // Получить только избранные планы
-  async getFavoriteRations(userId = null) {
+  async getFavoriteRations(userId?: string | null): Promise<FavoriteItem[]> {
     try {
       console.log("📅 Загрузка только избранных планов...");
       const allFavorites = await this.getUserFavorites(userId);
       const rations = allFavorites.filter(fav => fav.favoriteType === 'ration');
       console.log(`  📊 Найдено планов: ${rations.length}`);
       return rations;
-    } catch (error) {
+    } catch (error: any) {
       console.error('💥 Ошибка получения избранных планов:', error);
       return [];
     }
   }
 
   // Обновить активность записи
-  async setFavoriteActive(itemId, favoriteType, active = true, userId = null) {
+  async setFavoriteActive(
+    itemId: string, 
+    favoriteType: FavoriteType, 
+    active = true, 
+    userId?: string | null
+  ): Promise<boolean> {
     try {
       const currentUserId = userId || this.getCurrentUserId();
       if (!currentUserId) {
@@ -415,13 +477,13 @@ class FavoriteService {
       console.log(`  📝 Обновление документа ${docToUpdate.id}...`);
       await updateDoc(docToUpdate.ref, { 
         active: active,
-        favoriteType: favoriteType // Обновляем тип для совместимости
+        favoriteType: favoriteType
       });
       
       console.log(`  ✅ Активность записи ${docToUpdate.id} обновлена на ${active}`);
       
       return true;
-    } catch (error) {
+    } catch (error: any) {
       console.error('💥 Ошибка обновления избранного:', error);
       throw error;
     }

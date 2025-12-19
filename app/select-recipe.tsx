@@ -1,5 +1,4 @@
-// app/recipes.tsx
-import { useRouter } from "expo-router";
+import { useRouter, useLocalSearchParams } from "expo-router";
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   Image,
@@ -13,6 +12,7 @@ import {
   ActivityIndicator,
   Dimensions,
   RefreshControl,
+  Alert,
 } from "react-native";
 import {
   getFirestore,
@@ -44,7 +44,7 @@ import { getAuth, onAuthStateChanged } from "firebase/auth";
 // --- Константы ---
 const { width } = Dimensions.get("window");
 const CARD_WIDTH = (width - 48) / 2;
-const RECIPES_PER_PAGE = 10; // Уменьшили для тестирования
+const RECIPES_PER_PAGE = 10;
 
 // --- Интерфейс данных ---
 interface Recipe {
@@ -63,6 +63,7 @@ interface Recipe {
   bookmarked: boolean;
   rating?: number;
   difficultyLevel?: string;
+  difficulty?: string; 
   createdAt?: any;
 }
 
@@ -130,6 +131,7 @@ const FooterLoader: React.FC<{ loading: boolean }> = ({ loading }) => {
     </View>
   );
 };
+
 const getCategoryIcon = (mealType: string) => {
   const normalizedMealType = mealType.trim().toLowerCase();
 
@@ -152,8 +154,11 @@ const getCategoryIcon = (mealType: string) => {
 };
 
 // --- Основной компонент ---
-export default function Recipes() {
+export default function SelectRecipeScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams();
+  const { fromScreen = "home", replaceMealId } = params;
+  
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("Все");
   const [db, setDb] = useState<Firestore | null>(null);
@@ -272,7 +277,6 @@ export default function Recipes() {
         return;
       }
 
-      // Защита от дублирования запросов
       if (loadMore && loadingMore) {
         console.log("Пропускаем: уже загружается больше");
         return;
@@ -297,7 +301,6 @@ export default function Recipes() {
           `Загрузка рецептов: loadMore=${loadMore}, lastVisible=${!!lastVisible}`
         );
 
-        // Создаем базовый запрос
         let recipesQuery = query(
           collection(db, "recipes"),
           where("isPublic", "==", true),
@@ -305,12 +308,10 @@ export default function Recipes() {
           limit(RECIPES_PER_PAGE)
         );
 
-        // Добавляем курсор для пагинации
         if (loadMore && lastVisible) {
           recipesQuery = query(recipesQuery, startAfter(lastVisible));
         }
 
-        // Загружаем рецепты и избранное параллельно
         const [recipesSnapshot, favoritesSnapshot] = await Promise.all([
           getDocs(recipesQuery),
           userId
@@ -324,12 +325,10 @@ export default function Recipes() {
             : { docs: [] },
         ]);
 
-        // Обновляем курсор
         const newLastVisible =
           recipesSnapshot.docs[recipesSnapshot.docs.length - 1] || null;
         setLastVisible(newLastVisible);
 
-        // Проверяем, есть ли еще данные
         if (recipesSnapshot.docs.length < RECIPES_PER_PAGE) {
           console.log("Больше данных нет");
           setHasMore(false);
@@ -337,12 +336,10 @@ export default function Recipes() {
           console.log("Еще есть данные для загрузки");
         }
 
-        // Получаем список избранных рецептов пользователя
         const userFavorites = favoritesSnapshot.docs.map(
           (doc) => doc.data().recipeId
         );
 
-        // Преобразуем данные
         const loadedRecipes: Recipe[] = recipesSnapshot.docs.map((doc) => {
           const data = doc.data();
           const recipeId = doc.id;
@@ -369,7 +366,6 @@ export default function Recipes() {
 
         console.log(`Загружено рецептов: ${loadedRecipes.length}`);
 
-        // Обновляем состояние
         if (loadMore) {
           setRecipes((prev) => [...prev, ...loadedRecipes]);
         } else {
@@ -377,7 +373,6 @@ export default function Recipes() {
           isInitialLoadDone.current = true;
         }
 
-        // Загружаем общее количество только при первой загрузке
         if (!loadMore) {
           try {
             const countQuery = query(
@@ -478,7 +473,6 @@ export default function Recipes() {
 
       const isCurrentlyBookmarked = recipe.bookmarked;
 
-      // Оптимистичное обновление UI
       setRecipes((prev) =>
         prev.map((r) =>
           r.id === recipeId ? { ...r, bookmarked: !isCurrentlyBookmarked } : r
@@ -486,7 +480,6 @@ export default function Recipes() {
       );
 
       if (isCurrentlyBookmarked) {
-        // Удаляем из избранного
         const favoriteQuery = query(
           collection(db, "user_favorites"),
           where("userId", "==", userId),
@@ -497,7 +490,6 @@ export default function Recipes() {
           await updateDoc(doc.ref, { active: false });
         });
       } else {
-        // Добавляем в избранное
         await setDoc(
           doc(db, "user_favorites", `${userId}_${recipeId}`),
           {
@@ -511,7 +503,6 @@ export default function Recipes() {
       }
     } catch (error) {
       console.error("Ошибка обновления закладки:", error);
-      // Откатываем изменения при ошибке
       setRecipes((prev) =>
         prev.map((r) =>
           r.id === recipeId ? { ...r, bookmarked: !r.bookmarked } : r
@@ -523,25 +514,9 @@ export default function Recipes() {
   };
 
   // --- Навигация ---
-  const navigateToRecipe = (recipe: Recipe) => {
-    router.push({
-      pathname: "/meal",
-      params: {
-        mealId: recipe.id,
-        mealName: recipe.title,
-        mealType: recipe.mealType,
-        initialBookmarked: recipe.bookmarked.toString(),
-      },
-    });
-  };
-
-  const navigateToCreateRecipe = () => {
-    router.push("/create-recipe");
-  };
-
   const navigateToProfile = () => {
     if (userId) {
-      router.push("/profile");
+      router.back();
     }
   };
 
@@ -563,6 +538,43 @@ export default function Recipes() {
     }
   };
 
+  // --- Функция выбора рецепта ---
+const handleSelectRecipe = (recipe: Recipe) => {
+  Alert.alert(
+    "Добавить рецепт",
+    `Добавить "${recipe.title}" в дневной рацион?`,
+    [
+      { text: "Отмена", style: "cancel" },
+      { 
+        text: "Добавить", 
+        style: "default",
+        onPress: () => {
+          // Передаем данные через параметры роутера
+          router.push({
+            pathname: "/(tabs)/home",
+            params: {
+              selectedRecipe: JSON.stringify({
+                id: recipe.id,
+                title: recipe.title,
+                calories: recipe.calories || 300,
+                proteins: 0,
+                fats: 0,
+                carbohydrates: 0,
+                cookingTime: recipe.cookingTime || 20,
+                difficultyLevel: recipe.difficultyLevel || recipe.difficulty || "Легко",
+                imageUrl: recipe.imageUrl,
+                mealType: recipe.mealType,
+                weight: "250г",
+                rating: recipe.rating || 0
+              })
+            }
+          });
+        }
+      }
+    ]
+  );
+};
+
   if (loading && !refreshing) {
     return (
       <View style={styles.loadingContainer}>
@@ -578,17 +590,21 @@ export default function Recipes() {
 
       {/* Верхнее меню */}
       <View style={styles.header}>
+        <TouchableOpacity 
+          style={styles.backButton}
+          onPress={() => router.back()}
+        >
+          <Ionicons name="arrow-back" size={24} color="#1a1a1a" />
+        </TouchableOpacity>
+        
         <View style={styles.headerTextContainer}>
-          <Text style={styles.greetingText}>Рецепты</Text>
-          <Text style={styles.dietText}>Найдите идеальное блюдо для себя</Text>
+          <Text style={styles.greetingText}>Выберите рецепт</Text>
+          <Text style={styles.dietText}>Добавьте в дневной рацион</Text>
         </View>
 
-        <TouchableOpacity style={styles.userInfo} onPress={navigateToProfile}>
+        <View style={styles.userInfo}>
           <Avatar photoURL={userPhotoURL} size={55} />
-          <Text style={styles.userName} numberOfLines={1}>
-            {userName}
-          </Text>
-        </TouchableOpacity>
+        </View>
       </View>
 
       <ScrollView
@@ -681,7 +697,7 @@ export default function Recipes() {
               <View key={recipe.id} style={styles.recipeColumn}>
                 <TouchableOpacity
                   style={styles.recipeCard}
-                  onPress={() => navigateToRecipe(recipe)}
+                  onPress={() => handleSelectRecipe(recipe)}
                 >
                   <View style={styles.imageContainer}>
                     {recipe.imageUrl && recipe.imageUrl.length > 5 ? (
@@ -725,7 +741,10 @@ export default function Recipes() {
                     </View>
                     <TouchableOpacity
                       style={styles.bookmarkButton}
-                      onPress={() => toggleBookmark(recipe.id)}
+                      onPress={(e) => {
+                        e.stopPropagation();
+                        toggleBookmark(recipe.id);
+                      }}
                       disabled={isUpdating}
                     >
                       <Ionicons
@@ -767,10 +786,10 @@ export default function Recipes() {
                       </View>
                     </View>
                     <TouchableOpacity
-                      style={styles.viewButton}
-                      onPress={() => navigateToRecipe(recipe)}
+                      style={styles.selectButton}
+                      onPress={() => handleSelectRecipe(recipe)}
                     >
-                      <Text style={styles.viewButtonText}>Посмотреть</Text>
+                      <Text style={styles.selectButtonText}>Выбрать</Text>
                     </TouchableOpacity>
                   </View>
                 </TouchableOpacity>
@@ -789,42 +808,12 @@ export default function Recipes() {
               <Text style={styles.emptyStateSubtext}>
                 {searchQuery || selectedCategory !== "Все"
                   ? "Попробуйте изменить параметры поиска"
-                  : "Будьте первым, кто создаст рецепт!"}
+                  : "Публичных рецептов пока нет"}
               </Text>
-              <TouchableOpacity
-                style={styles.emptyStateButton}
-                onPress={navigateToCreateRecipe}
-              >
-                <Ionicons name="add-circle" size={20} color="#000000" />
-                <Text style={styles.emptyStateButtonText}>Создать рецепт</Text>
-              </TouchableOpacity>
             </View>
           )}
         </View>
       </ScrollView>
-
-      {/* Кнопка создания рецепта */}
-      <TouchableOpacity
-        style={styles.fab}
-        onPress={navigateToCreateRecipe}
-        activeOpacity={0.8}
-      >
-        <View style={styles.fabContent}>
-          <Ionicons name="add" size={28} color="#FFFFFF" />
-        </View>
-      </TouchableOpacity>
-
-      {/* Кнопка для скролла наверх */}
-      {filteredRecipes.length > 8 && (
-        <TouchableOpacity
-          style={styles.scrollToTopButton}
-          onPress={() =>
-            scrollViewRef.current?.scrollTo({ y: 0, animated: true })
-          }
-        >
-          <Ionicons name="chevron-up" size={20} color="#FFFFFF" />
-        </TouchableOpacity>
-      )}
     </View>
   );
 }
@@ -851,7 +840,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   scrollContent: {
-    paddingBottom: 120,
+    paddingBottom: 40,
   },
   emptyState: {
     alignItems: "center",
@@ -872,22 +861,6 @@ const styles = StyleSheet.create({
     textAlign: "center",
     marginBottom: 24,
   },
-  emptyStateButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#9BDF11",
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    borderRadius: 25,
-    borderWidth: 2,
-    borderColor: "#C2DAE2",
-    gap: 8,
-  },
-  emptyStateButtonText: {
-    color: "#000000",
-    fontSize: 14,
-    fontFamily: "Playfair Display Bold",
-  },
   header: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -898,6 +871,10 @@ const styles = StyleSheet.create({
     backgroundColor: "#FFFFFF",
     borderBottomWidth: 2,
     borderBottomColor: "#6A9AA9",
+  },
+  backButton: {
+    padding: 8,
+    marginRight: 10,
   },
   headerTextContainer: {
     flex: 1,
@@ -1142,7 +1119,7 @@ const styles = StyleSheet.create({
     color: "#6C757D",
     fontFamily: "Playfair Display Regular",
   },
-  viewButton: {
+  selectButton: {
     backgroundColor: "#9BDF11",
     paddingHorizontal: 16,
     paddingVertical: 8,
@@ -1152,35 +1129,11 @@ const styles = StyleSheet.create({
     minHeight: 36,
     marginTop: 8,
   },
-  viewButtonText: {
+  selectButtonText: {
     color: "#000000ff",
     fontSize: 12,
     fontWeight: "normal",
     fontFamily: "Playfair Display Regular",
-  },
-  fab: {
-    position: "absolute",
-    bottom: 30,
-    right: 20,
-    zIndex: 1000,
-  },
-  fabContent: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: "#9BDF11",
-    justifyContent: "center",
-    alignItems: "center",
-    borderWidth: 3,
-    borderColor: "#FFFFFF",
-    shadowColor: "#000",
-    shadowOffset: {
-      width: 0,
-      height: 4,
-    },
-    shadowOpacity: 0.3,
-    shadowRadius: 4.65,
-    elevation: 12,
   },
   footerLoader: {
     flexDirection: "row",
@@ -1193,26 +1146,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: "#6A9AA9",
     fontFamily: "Playfair Display Regular",
-  },
-  scrollToTopButton: {
-    position: "absolute",
-    bottom: 110, // Под кнопкой создания рецепта
-    right: 28,
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: "#6A9AA9",
-    justifyContent: "center",
-    alignItems: "center",
-    shadowColor: "#000",
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-    shadowOpacity: 0.25,
-    shadowRadius: 3.84,
-    elevation: 5,
-    zIndex: 999,
   },
   recipeImagePlaceholder: {
     width: "100%",

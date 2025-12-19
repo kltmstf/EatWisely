@@ -10,6 +10,7 @@ import {
   TouchableOpacity,
   View,
   ActivityIndicator,
+  Alert,
 } from "react-native";
 import { Ionicons, Feather, MaterialCommunityIcons } from "@expo/vector-icons";
 import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
@@ -20,6 +21,7 @@ import {
   onAuthStateChanged,
 } from "firebase/auth";
 import { getApps, getApp, initializeApp } from "firebase/app";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 // 💡 Убедитесь, что путь к сервису правильный
 import recipeService from "../app/services/recipeService";
@@ -89,11 +91,13 @@ export default function Meal() {
     mealIndex = "0",
     initialBookmarked = "false",
     mealId = "",
-    fromScreen = "", // получаем параметр fromScreen
+    fromScreen = "",
+    isCustom = "false",
   } = params;
 
   // Определяем, пришли ли мы с домашней страницы
   const isFromHome = fromScreen === "home";
+  const isCustomMeal = isCustom === "true";
 
   // Лог для проверки переданного ID
   useEffect(() => {
@@ -102,7 +106,8 @@ export default function Meal() {
     console.log(`Meal Name: ${mealName}`);
     console.log(`From Screen: ${fromScreen || "N/A"}`);
     console.log(`Is from Home: ${isFromHome}`);
-  }, [mealId, mealName, fromScreen, isFromHome]);
+    console.log(`Is Custom: ${isCustomMeal}`);
+  }, [mealId, mealName, fromScreen, isFromHome, isCustomMeal]);
 
   // --- СОСТОЯНИЕ ---
   const [db, setDb] = useState<any>(null);
@@ -170,11 +175,9 @@ export default function Meal() {
   // --- 3. ЛОГИКА ЗАГРУЗКИ ДЕТАЛЕЙ РЕЦЕПТА (FIRESTORE) ---
 
   const loadRecipeDetails = useCallback(async () => {
-    if (!isAuthReady || !db || !mealId) {
+    if (!isAuthReady || !db) {
       console.log(
-        `🟡 MEAL.JS - Load Skipped. Auth Ready: ${isAuthReady}, DB: ${!!db}, Meal ID: ${
-          mealId || "N/A"
-        }`
+        `🟡 MEAL.JS - Load Skipped. Auth Ready: ${isAuthReady}, DB: ${!!db}`
       );
       setLoading(false);
       return;
@@ -183,15 +186,39 @@ export default function Meal() {
     console.log(`🚀 MEAL.JS - Starting load for ID: ${mealId}`);
     setLoading(true);
     try {
+      // Для кастомных рецептов используем параметры
+      if (isCustomMeal) {
+        console.log("📝 MEAL.JS - Custom recipe, using params data");
+        setRecipeDetails({
+          id: mealId as string,
+          title: mealName as string,
+          mealType: mealTypeParam as string,
+          description: "Этот рецепт был добавлен вами в дневной рацион.",
+          calories: Number(params.calories) || 300,
+          proteins: Number(params.proteins) || 20,
+          fats: Number(params.fats) || 10,
+          carbohydrates: Number(params.carbohydrates) || 30,
+          weight: (params.weight as string) || "250г",
+          imageUrl: undefined,
+          cookingTime: (params.cookingTime as string) || "20 минут",
+          servings: "1 порция",
+          difficulty: (params.difficultyLevel as string) || "Легко",
+          averageRating: 0,
+          totalRatings: 0,
+          ingredients: ["Ингредиенты не указаны"],
+          instructions: ["Инструкции не указаны"],
+        } as FullRecipeData);
+        setLoading(false);
+        return;
+      }
+
       const docRef = doc(db, "recipes", mealId as string);
       const docSnap = await getDoc(docRef);
 
       if (docSnap.exists()) {
         const data = docSnap.data() as any;
 
-        // Лог успешной загрузки
         console.log("✅ MEAL.JS - Recipe data loaded successfully.");
-        // console.log("Loaded Data:", data);
 
         const formattedIngredients = Array.isArray(data.ingredients)
           ? data.ingredients.map(
@@ -223,7 +250,6 @@ export default function Meal() {
           instructions: formattedInstructions,
         } as FullRecipeData);
       } else {
-        // Лог ошибки: документ не найден
         console.warn(
           `❌ MEAL.JS - Document with ID ${mealId} NOT FOUND in /recipes collection.`
         );
@@ -235,11 +261,14 @@ export default function Meal() {
     } finally {
       setLoading(false);
     }
-  }, [isAuthReady, db, mealId, mealName, mealTypeParam]);
+  }, [isAuthReady, db, mealId, mealName, mealTypeParam, isCustomMeal, params]);
 
-  // --- 2. ЛОГИКА ЗАГРУЗКИ ОЦЕНКИ (FIRESTORE) (без изменений) ---
+  // --- 2. ЛОГИКА ЗАГРУЗКИ ОЦЕНКИ (FIRESTORE) ---
   const loadRating = useCallback(async () => {
     if (!isAuthReady || !db || !userId || !currentMealData?.id) return;
+
+    // Для кастомных рецептов не загружаем оценки
+    if (isCustomMeal) return;
 
     try {
       const docRef = doc(db, ratingDocPath);
@@ -254,28 +283,39 @@ export default function Meal() {
     } catch (error) {
       console.error("Ошибка при загрузке оценки из Firestore:", error);
     }
-  }, [isAuthReady, db, userId, ratingDocPath, currentMealData?.id]);
+  }, [
+    isAuthReady,
+    db,
+    userId,
+    ratingDocPath,
+    currentMealData?.id,
+    isCustomMeal,
+  ]);
 
-  // --- ЛОГИКА СОХРАНЕНИЯ ОЦЕНКИ (без изменений) ---
+  // --- ЛОГИКА СОХРАНЕНИЯ ОЦЕНКИ ---
   const saveRating = useCallback(
     async (rating: boolean) => {
       if (!isAuthReady || !db || !userId || !currentMealData?.id) return;
+
+      // Для кастомных рецептов не сохраняем оценки
+      if (isCustomMeal) {
+        setLiked(rating);
+        Alert.alert("Информация", "Оценка сохранена локально");
+        return;
+      }
 
       const ratingDocRef = doc(db, ratingDocPath);
       const docSnap = await getDoc(ratingDocRef);
       const previousLikedState = docSnap.exists() ? docSnap.data().liked : null;
 
-      // Если оценка не меняется, выходим.
       if (previousLikedState === rating) {
         return;
       }
 
       const isFirstVote = previousLikedState === null;
-      // Если это первый голос, увеличиваем общее число оценок на 1. Иначе (смена голоса), дельта = 0.
       const totalRatingsDelta = isFirstVote ? 1 : 0;
 
       try {
-        // 1. Сохраняем оценку пользователя
         await setDoc(
           ratingDocRef,
           { liked: rating, timestamp: new Date() },
@@ -283,13 +323,11 @@ export default function Meal() {
         );
         setLiked(rating);
 
-        // 2. Обновляем глобальные счетчики через сервис
         await recipeService.updateRecipeRatingStats(
           currentMealData.id,
           totalRatingsDelta
         );
 
-        // 3. Перезагружаем данные для получения актуального среднего рейтинга
         await loadRecipeDetails();
       } catch (error) {
         console.error("Ошибка при сохранении оценки:", error);
@@ -302,12 +340,19 @@ export default function Meal() {
       ratingDocPath,
       currentMealData?.id,
       loadRecipeDetails,
+      isCustomMeal,
     ]
   );
 
-  // --- ЛОГИКА СБРОСА ОЦЕНКИ (без изменений) ---
+  // --- ЛОГИКА СБРОСА ОЦЕНКИ ---
   const handleResetRating = async () => {
     if (!isAuthReady || !db || !userId || !currentMealData?.id) return;
+
+    // Для кастомных рецептов просто сбрасываем локально
+    if (isCustomMeal) {
+      setLiked(null);
+      return;
+    }
 
     const ratingDocRef = doc(db, ratingDocPath);
     const docSnap = await getDoc(ratingDocRef);
@@ -315,7 +360,6 @@ export default function Meal() {
     const hadRating = previousLikedState !== null;
 
     try {
-      // 1. Сброс оценки пользователя (liked = null)
       await setDoc(
         ratingDocRef,
         { liked: null, timestamp: new Date() },
@@ -323,14 +367,9 @@ export default function Meal() {
       );
       setLiked(null);
 
-      // 2. Если оценка существовала, уменьшаем общий счетчик
       if (hadRating) {
-        await recipeService.updateRecipeRatingStats(
-          currentMealData.id,
-          -1 // Дельта -1, так как голос удален
-        );
+        await recipeService.updateRecipeRatingStats(currentMealData.id, -1);
 
-        // 3. Перезагружаем данные для получения актуального среднего рейтинга
         await loadRecipeDetails();
       }
     } catch (error) {
@@ -340,28 +379,35 @@ export default function Meal() {
 
   // --- ЭФФЕКТЫ ---
   useEffect(() => {
-    if (isAuthReady && db && userId && mealId) {
+    if (isAuthReady && db && userId) {
       loadRecipeDetails();
-      loadRating();
+      if (!isCustomMeal) {
+        loadRating();
+      }
     } else if (isAuthReady && !mealId) {
       setLoading(false);
       setRecipeDetails(
         fallbackMealData(mealName as string, mealTypeParam as string)
       );
     }
-  }, [isAuthReady, db, userId, mealId, loadRecipeDetails, loadRating]);
+  }, [
+    isAuthReady,
+    db,
+    userId,
+    mealId,
+    loadRecipeDetails,
+    loadRating,
+    isCustomMeal,
+  ]);
 
   // --- ФУНКЦИИ УПРАВЛЕНИЯ СОСТОЯНИЕМ И НАВИГАЦИИ ---
 
-  // 💡 [ИЗМЕНЕНИЕ 2]: Используем router.replace для навигации назад на Главную,
-  // чтобы форсировать обновление (rerender) на Главной странице.
   const handleNavigationBack = useCallback(
     (
       shouldRerender: boolean = false,
       newBookmarkedState: boolean = isBookmarked
     ) => {
       router.replace({
-        // <-- ИЗМЕНЕНО с push на REPLACE
         pathname: "/",
         params: {
           rerenderDailyPlan: shouldRerender ? "true" : "false",
@@ -381,29 +427,70 @@ export default function Meal() {
     await saveRating(false);
   };
 
-  // 💡 [ИЗМЕНЕНИЕ 1]: Используем router.back() для корректного возврата
-  // на предыдущий экран (Главная страница ИЛИ Страница Рецептов).
+  // Функция выбора рецепта из списка
+  const handleChooseFromList = async () => {
+    if (isFromHome) {
+      // Сохраняем текущий mealId в AsyncStorage для возврата
+      await AsyncStorage.setItem("currentMealId", mealId as string);
+      await AsyncStorage.setItem("currentMealIndex", mealIndex as string);
+      router.push("/select-recipe");
+    }
+  };
+
+  // Функция смены рецепта
+  const handleChangeMeal = async () => {
+    if (isFromHome) {
+      // Для кастомных рецептов показываем предупреждение
+      if (isCustomMeal) {
+        Alert.alert(
+          "Смена рецепта",
+          "Вы хотите заменить этот добавленный рецепт на другой?",
+          [
+            { text: "Отмена", style: "cancel" },
+            {
+              text: "Заменить",
+              style: "destructive",
+              onPress: async () => {
+                await AsyncStorage.setItem("currentMealId", mealId as string);
+                await AsyncStorage.setItem(
+                  "currentMealIndex",
+                  mealIndex as string
+                );
+                router.push("/select-recipe");
+              },
+            },
+          ]
+        );
+      } else {
+        Alert.alert(
+          "Смена рецепта",
+          "Этот рецепт был сгенерирован системой. Вы можете добавить новый рецепт, не заменяя этот.",
+          [
+            { text: "Отмена", style: "cancel" },
+            {
+              text: "Добавить новый",
+              style: "default",
+              onPress: async () => {
+                await AsyncStorage.setItem(
+                  "currentMealIndex",
+                  mealIndex as string
+                );
+                router.push("/select-recipe");
+              },
+            },
+          ]
+        );
+      }
+    }
+  };
+
   const handleBack = () => {
-    router.back(); // <-- ИЗМЕНЕНО: используем back()
+    router.back();
   };
 
   const handleBookmark = () => {
     const newBookmarkState = !isBookmarked;
     setIsBookmarked(newBookmarkState);
-    // В реальном приложении здесь также должна быть логика сохранения закладки в Firestore.
-  };
-
-  // Смена блюда - использует handleNavigationBack (теперь с replace)
-  const handleChangeMeal = () => {
-    if (isFromHome) {
-      handleNavigationBack(true, isBookmarked);
-    }
-  };
-
-  const handleChooseFromList = () => {
-    if (isFromHome) {
-      router.push("/recipes");
-    }
   };
 
   const getMealImage = () => {
@@ -480,6 +567,7 @@ export default function Meal() {
         <View style={styles.headerTitleContainer}>
           <Text style={styles.headerTitle}>
             Ваш {currentMealData.mealType.toLowerCase()} на сегодня
+            {isCustomMeal && " (Добавлен вами)"}
           </Text>
         </View>
         <View style={styles.placeholder} />
@@ -519,7 +607,9 @@ export default function Meal() {
               style={styles.changeMealButton}
               onPress={handleChangeMeal}
             >
-              <Text style={styles.changeMealText}>Сменить блюдо</Text>
+              <Text style={styles.changeMealText}>
+                {isCustomMeal ? "Заменить рецепт" : "Сменить блюдо"}
+              </Text>
             </TouchableOpacity>
 
             <TouchableOpacity
@@ -839,7 +929,6 @@ const styles = StyleSheet.create({
   content: {
     padding: 20,
   },
-  // === СТИЛИ ДЛЯ РЕЙТИНГА ===
   ratingRow: {
     flexDirection: "row",
     justifyContent: "center",
@@ -859,7 +948,6 @@ const styles = StyleSheet.create({
     marginLeft: 8,
     fontFamily: "Playfair Display Regular",
   },
-  // =========================
   mealName: {
     fontSize: 24,
     fontWeight: "600",
@@ -888,21 +976,12 @@ const styles = StyleSheet.create({
     fontFamily: "Playfair Display Regular",
     marginBottom: 4,
   },
-  detailTextDificult: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: "#000000",
-    fontFamily: "Playfair Display Regular",
-    marginBottom: 4,
-    alignContent: "center",
-  },
   detailLabel: {
     fontSize: 12,
     color: "#6C757D",
     fontFamily: "Playfair Display Regular",
     textAlign: "center",
   },
-  // === СТИЛИ ДЛЯ КБЖУ ===
   nutritionRow: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -933,7 +1012,6 @@ const styles = StyleSheet.create({
     fontFamily: "Playfair Display Regular",
     textTransform: "uppercase",
   },
-  // =========================
   section: {
     marginBottom: 30,
   },
@@ -952,7 +1030,6 @@ const styles = StyleSheet.create({
     fontFamily: "Playfair Display Regular",
   },
   descriptionText: {
-    // ✨ СТИЛЬ ДЛЯ ОПИСАНИЯ
     fontSize: 16,
     color: "#212529",
     fontFamily: "Playfair Display Regular",

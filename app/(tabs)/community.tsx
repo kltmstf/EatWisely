@@ -58,7 +58,8 @@ const POST_IMAGE_SIZE = {
 interface CommunityPost {
   id: string;
   userName: string;
-  userAvatar: any;
+  userAvatar: string | null; // Изменено на string | null для хранения URL фото
+  userId: string; // Добавлено поле для ID пользователя
   postType: string;
   title: string;
   content: string;
@@ -194,40 +195,53 @@ const optimizeImageForPost = async (
 interface AvatarProps {
   photoURL?: string | null;
   size?: number;
+  onPress?: () => void;
 }
 
-const Avatar: React.FC<AvatarProps> = ({ photoURL, size = 55 }) => {
-  if (photoURL) {
+const Avatar: React.FC<AvatarProps> = ({ photoURL, size = 55, onPress }) => {
+  const AvatarContent = () => {
+    if (photoURL) {
+      return (
+        <Image
+          source={{ uri: photoURL }}
+          style={{
+            width: size,
+            height: size,
+            borderRadius: size / 2,
+            borderWidth: 2,
+            borderColor: "#9BDF11",
+          }}
+          resizeMode="cover"
+        />
+      );
+    }
+    
+    // Заглушка, если фото нет (аналогично ProfileScreen)
     return (
-      <Image
-        source={{ uri: photoURL }}
-        style={{
-          width: size,
-          height: size,
-          borderRadius: size / 2,
-          borderWidth: 2,
-          borderColor: "#9BDF11",
-        }}
-        resizeMode="cover"
-      />
+      <View style={{
+        width: size,
+        height: size,
+        borderRadius: size / 2,
+        backgroundColor: "#E5F0F5",
+        justifyContent: "center",
+        alignItems: "center",
+        borderWidth: 2,
+        borderColor: "#9BDF11",
+      }}>
+        <Feather name="user" size={size * 0.4} color="#6A9AA9" />
+      </View>
+    );
+  };
+
+  if (onPress) {
+    return (
+      <TouchableOpacity onPress={onPress}>
+        <AvatarContent />
+      </TouchableOpacity>
     );
   }
-  
-  // Заглушка, если фото нет (аналогично ProfileScreen)
-  return (
-    <View style={{
-      width: size,
-      height: size,
-      borderRadius: size / 2,
-      backgroundColor: "#E5F0F5",
-      justifyContent: "center",
-      alignItems: "center",
-      borderWidth: 2,
-      borderColor: "#9BDF11",
-    }}>
-      <Feather name="user" size={size * 0.4} color="#6A9AA9" />
-    </View>
-  );
+
+  return <AvatarContent />;
 };
 
 export default function Community() {
@@ -250,10 +264,11 @@ export default function Community() {
   const [userData, setUserData] = useState({
     name: "Гость",
     id: null as string | null,
-    photoURL: null as string | null, // Добавляем поле для фото
+    photoURL: null as string | null,
   });
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [userProfileLoading, setUserProfileLoading] = useState(false);
+  const [userAvatars, setUserAvatars] = useState<Record<string, string | null>>({});
 
   // Состояние для работы с изображениями
   const [postImages, setPostImages] = useState<PostImage[]>([]);
@@ -301,6 +316,35 @@ export default function Community() {
       setUserProfileLoading(false);
     }
   }, []);
+
+  // Функция для загрузки фото профиля для списка пользователей
+  const loadUserAvatarForPost = useCallback(async (userId: string, userName: string) => {
+    if (!userId) return null;
+    
+    try {
+      // Проверяем, есть ли уже аватар в кэше
+      if (userAvatars[userId]) {
+        return userAvatars[userId];
+      }
+      
+      // Загружаем из Firestore
+      const profileData = await userService.fetchUserProfile(userId);
+      if (profileData?.photoURL) {
+        setUserAvatars(prev => ({ ...prev, [userId]: profileData.photoURL }));
+        return profileData.photoURL;
+      }
+      
+      return null;
+    } catch (error) {
+      console.error(`Ошибка загрузки аватара для пользователя ${userName}:`, error);
+      return null;
+    }
+  }, [userAvatars]);
+
+  // Обработчик нажатия на иконку профиля
+  const handleProfilePress = () => {
+    router.push('/profile');
+  };
 
   // Отслеживаем состояние аутентификации и загружаем фото профиля
   useEffect(() => {
@@ -618,7 +662,8 @@ export default function Community() {
     {
       id: "1",
       userName: "Анна Петрова",
-      userAvatar: require("@/assets/images/people-icon.png"),
+      userAvatar: null,
+      userId: "mock1",
       postType: "Рецепты",
       title: "Полезный завтрак на неделю",
       content: "Поделюсь своими любимыми рецептами полезных завтраков, которые готовлю каждое утро! 🍓🥣",
@@ -632,7 +677,8 @@ export default function Community() {
     {
       id: "2",
       userName: "Максим Иванов",
-      userAvatar: require("@/assets/images/people-icon.png"),
+      userAvatar: null,
+      userId: "mock2",
       postType: "Вопросы",
       title: "Как разнообразить рацион?",
       content: "Ребята, подскажите идеи для разнообразия питания. Надоело есть одно и то же каждый день...",
@@ -646,7 +692,8 @@ export default function Community() {
     {
       id: "3",
       userName: "Елена Сидорова",
-      userAvatar: require("@/assets/images/people-icon.png"),
+      userAvatar: null,
+      userId: "mock3",
       postType: "Отзывы",
       title: "Результат за 3 месяца",
       content: "С помощью EatWisely похудела на 8 кг! Спасибо за отличные рецепты и поддержку сообщества! 💪",
@@ -686,15 +733,40 @@ export default function Community() {
         }
       }
 
+      // Собираем ID пользователей для загрузки аватаров
+      const userIds: string[] = [];
+
       querySnapshot.forEach((doc) => {
         const data = doc.data();
+        const userId = data.userId || "unknown_user";
+        if (userId && !userIds.includes(userId)) {
+          userIds.push(userId);
+        }
+      });
+
+      // Загружаем аватары для всех пользователей
+      const avatarPromises = userIds.map(async (userId) => {
+        const avatar = await loadUserAvatarForPost(userId, "unknown");
+        return { userId, avatar };
+      });
+
+      const avatarResults = await Promise.all(avatarPromises);
+      const avatarMap: Record<string, string | null> = {};
+      avatarResults.forEach(({ userId, avatar }) => {
+        avatarMap[userId] = avatar;
+      });
+
+      querySnapshot.forEach((doc) => {
+        const data = doc.data();
+        const userId = data.userId || "unknown_user";
 
         const images = data.images || (data.image ? [data.image] : []);
 
         posts.push({
           id: doc.id,
           userName: data.userName || "Анонимный пользователь",
-          userAvatar: require("@/assets/images/people-icon.png"),
+          userAvatar: avatarMap[userId] || null, // Используем загруженный аватар
+          userId: userId,
           postType: data.postType || "Рецепты",
           title: data.title,
           content: data.content,
@@ -1124,7 +1196,7 @@ export default function Community() {
 
   useEffect(() => {
     loadPosts();
-  }, [isAuthenticated]);
+  }, [isAuthenticated, loadUserAvatarForPost]);
 
   const filteredPosts = communityPosts.filter((post) => {
     const matchesSearch =
@@ -1164,13 +1236,18 @@ export default function Community() {
           <View style={styles.profileSection}>
             <TouchableOpacity
               style={styles.profileButton}
+              onPress={handleProfilePress}
             >
               {userProfileLoading ? (
                 <View style={styles.avatarLoading}>
                   <ActivityIndicator size="small" color="#6A9AA9" />
                 </View>
               ) : (
-                <Avatar photoURL={userData.photoURL} size={55} />
+                <Avatar 
+                  photoURL={userData.photoURL} 
+                  size={55} 
+                  onPress={handleProfilePress}
+                />
               )}
               {!isAuthenticated && (
                 <View style={styles.guestBadge}>
@@ -1276,10 +1353,11 @@ export default function Community() {
                   <View style={styles.postHeader}>
                     <View style={styles.userInfo}>
                       <View style={styles.userAvatarContainer}>
-                        {/* Используем placeholder вместо старой иконки */}
-                        <View style={styles.placeholderAvatar}>
-                          <Feather name="user" size={20} color="#6A9AA9" />
-                        </View>
+                        {/* Используем Avatar компонент для отображения фото пользователя */}
+                        <Avatar 
+                          photoURL={post.userAvatar} 
+                          size={45}
+                        />
                       </View>
                       <View style={styles.userDetails}>
                         <View style={styles.userNameContainer}>

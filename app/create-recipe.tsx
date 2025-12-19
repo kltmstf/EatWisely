@@ -1,4 +1,4 @@
-// app/modal/create-recipe.tsx
+// app/create-recipe.tsx
 import React, { useState, useRef, useEffect } from 'react';
 import {
   View,
@@ -18,7 +18,7 @@ import {
   Keyboard,
   ActivityIndicator,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { recipeService } from '@/app/services/recipeService';
@@ -40,43 +40,131 @@ interface Step {
   text: string;
 }
 
+// Тип для данных рецепта на основе интерфейса из recipeService
+interface RecipeData {
+  title: string;
+  description?: string;
+  mealType: string;
+  difficultyLevel: string;
+  cookingTime: number | string;
+  calories: number;
+  proteins: number;
+  fats: number;
+  carbohydrates: number;
+  weight?: string;
+  servings?: number;
+  ingredients: string[]; // Массив строк
+  ingredientsText?: string;
+  steps: string[]; // Массив строк для шагов
+  tags: string[]; // Обязательное поле
+  imageUrl?: string;
+  isPublic: boolean;
+  cloudinaryPublicId?: string;
+  imageMetadata?: any;
+}
+
 export default function CreateRecipeModal() {
   const router = useRouter();
+  const params = useLocalSearchParams();
+  
   const slideAnim = useRef(new Animated.Value(SCREEN_HEIGHT)).current;
   const scrollViewRef = useRef<ScrollView>(null);
   const [isVisible, setIsVisible] = useState(true);
 
+  // Определяем режим: редактирование или создание
+  const isEditMode = params.isEditMode === "true";
+  const recipeId = params.recipeId as string | undefined;
+
   // Форма
   const [form, setForm] = useState({
-    title: '',
-    description: '',
-    mealType: 'Завтрак',
-    difficulty: 'Легко',
-    cookingTime: '',
-    calories: '',
-    proteins: '',
-    fats: '',
-    carbohydrates: '',
-    weight: '',
-    servings: '1',
+    title: params.title as string || '',
+    description: params.description as string || '',
+    mealType: params.mealType as string || 'Завтрак',
+    difficulty: params.difficulty as string || 'Легко',
+    cookingTime: params.cookingTime as string || '',
+    calories: params.calories as string || '',
+    proteins: params.proteins as string || '0',
+    fats: params.fats as string || '0',
+    carbohydrates: params.carbohydrates as string || '0',
+    weight: params.weight as string || '300',
+    servings: params.servings as string || '1',
   });
   
   // Состояния для изображения и загрузки
-  const [image, setImage] = useState<string | null>(null);
+  const [image, setImage] = useState<string | null>(params.imageUrl as string || null);
   const [loading, setLoading] = useState(false);
   const [uploadingImage, setUploadingImage] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
-  const [uploadStage, setUploadStage] = useState<string>(''); // Новое состояние для этапа загрузки
-  const [isPublic, setIsPublic] = useState(true);
+  const [uploadStage, setUploadStage] = useState<string>('');
+  const [isPublic, setIsPublic] = useState(
+    params.isPublic === "true" || 
+    params.isPublic === "1" || 
+    false
+  );
   
   // Ингредиенты и шаги как массивы
-  const [ingredients, setIngredients] = useState<Ingredient[]>([
-    { id: '1', amount: '', unit: '', name: '' }
-  ]);
+  const [ingredients, setIngredients] = useState<Ingredient[]>(() => {
+    if (params.ingredients && typeof params.ingredients === 'string' && params.ingredients !== '') {
+      try {
+        const parsed = JSON.parse(params.ingredients);
+        if (Array.isArray(parsed)) {
+          // Если это массив строк
+          if (typeof parsed[0] === 'string') {
+            return parsed.map((item: string, index: number) => {
+              // Парсим строку вида "100 гр мука"
+              const parts = item.split(' ');
+              return {
+                id: (index + 1).toString(),
+                amount: parts[0] || '',
+                unit: parts[1] || 'гр',
+                name: parts.slice(2).join(' ') || '',
+              };
+            });
+          } else {
+            // Если это массив объектов
+            return parsed.map((item: any, index: number) => ({
+              id: (index + 1).toString(),
+              amount: String(item.amount || item.quantity || ''),
+              unit: item.unit || 'гр',
+              name: item.name || item.text || '',
+            }));
+          }
+        }
+      } catch (error) {
+        console.log('Ошибка парсинга ингредиентов:', error);
+      }
+    }
+    return [{ id: '1', amount: '', unit: '', name: '' }];
+  });
   
-  const [steps, setSteps] = useState<Step[]>([
-    { id: '1', text: '' }
-  ]);
+  const [steps, setSteps] = useState<Step[]>(() => {
+    if (params.instructions && typeof params.instructions === 'string' && params.instructions !== '') {
+      try {
+        const parsed = JSON.parse(params.instructions);
+        if (Array.isArray(parsed)) {
+          return parsed.map((item: any, index: number) => ({
+            id: (index + 1).toString(),
+            text: String(item.text || item.description || item || ''),
+          }));
+        }
+      } catch (error) {
+        console.log('Ошибка парсинга шагов:', error);
+        // Если инструкции переданы как массив строк
+        try {
+          const arrayParsed = JSON.parse(params.instructions);
+          if (Array.isArray(arrayParsed)) {
+            return arrayParsed.map((text: string, index: number) => ({
+              id: (index + 1).toString(),
+              text: String(text || ''),
+            }));
+          }
+        } catch (e) {
+          console.log('Не удалось распарсить инструкции:', e);
+        }
+      }
+    }
+    return [{ id: '1', text: '' }];
+  });
 
   // Анимация открытия
   useEffect(() => {
@@ -138,30 +226,33 @@ export default function CreateRecipeModal() {
       return { url: null, publicId: null };
     }
 
+    // Если изображение уже загружено (URL начинается с http), возвращаем его
+    if (image.startsWith('http')) {
+      console.log('✅ Изображение уже загружено, пропускаем загрузку');
+      return { url: image, publicId: null };
+    }
+
     try {
       console.log('🚀 Начинаем загрузку в Cloudinary...');
       setUploadingImage(true);
       setUploadProgress(0);
       setUploadStage('Подготовка изображения...');
 
-      // Создаем обработчик прогресса
       const onProgress = (progress: UploadProgress) => {
         setUploadProgress(progress.percent);
         setUploadStage(`Загрузка: ${Math.round(progress.percent)}%`);
         console.log(`📊 Прогресс загрузки: ${progress.percent.toFixed(1)}%`);
       };
 
-      // Передаем обработчик прогресса в options
       const result = await cloudinaryService.uploadImage(
         image,
-        { onProgress } // Исправлено: передаем объект options с onProgress
+        { onProgress }
       );
 
       if (result.success && result.url && result.publicId) {
         console.log('✅ Изображение успешно загружено!');
         setUploadStage('Завершение...');
         
-        // Небольшая задержка для UX
         await new Promise(resolve => setTimeout(resolve, 300));
         
         return {
@@ -187,7 +278,6 @@ export default function CreateRecipeModal() {
     const newId = (ingredients.length + 1).toString();
     setIngredients([...ingredients, { id: newId, amount: '', unit: '', name: '' }]);
     
-    // Прокручиваем к новому элементу
     setTimeout(() => {
       scrollViewRef.current?.scrollToEnd({ animated: true });
     }, 100);
@@ -234,9 +324,6 @@ export default function CreateRecipeModal() {
     if (!form.cookingTime.trim()) return 'Введите время приготовления';
     if (!form.weight.trim()) return 'Введите вес блюда';
     if (!form.calories.trim()) return 'Введите количество калорий';
-    if (!form.proteins.trim()) return 'Введите количество белков';
-    if (!form.fats.trim()) return 'Введите количество жиров';
-    if (!form.carbohydrates.trim()) return 'Введите количество углеводов';
     
     // Проверяем ингредиенты
     for (const ing of ingredients) {
@@ -255,7 +342,7 @@ export default function CreateRecipeModal() {
     return null;
   };
 
-  // Создание рецепта
+  // Создание или обновление рецепта
   const handleSubmit = async () => {
     const error = validateForm();
     if (error) {
@@ -267,35 +354,32 @@ export default function CreateRecipeModal() {
     Keyboard.dismiss();
 
     try {
-      let imageUrl = null;
-      let cloudinaryPublicId = null;
+      let imageUrl: string | undefined = undefined;
+      let cloudinaryPublicId: string | undefined = undefined;
       
-      // Загружаем изображение если есть
-      if (image) {
-        console.log('📤 Загрузка изображения в Cloudinary...');
+      // Загружаем изображение если есть и оно новое
+      if (image && !image.startsWith('http')) {
+        console.log('📤 Загрузка нового изображения в Cloudinary...');
         
         try {
           const uploadResult = await uploadImageToCloudinary();
           
           if (uploadResult.url) {
             imageUrl = uploadResult.url;
-            cloudinaryPublicId = uploadResult.publicId;
+            cloudinaryPublicId = uploadResult.publicId || undefined;
             
             console.log('✅ Изображение загружено успешно');
-            console.log('Cloudinary URL:', imageUrl);
-            console.log('Public ID:', cloudinaryPublicId);
           }
         } catch (uploadError: any) {
           console.error('❌ Ошибка загрузки изображения:', uploadError);
           
-          // Спрашиваем пользователя хочет ли он продолжить без изображения
           const shouldContinue = await new Promise((resolve) => {
             Alert.alert(
               'Не удалось загрузить фото',
-              'Хотите создать рецепт без изображения?',
+              'Хотите продолжить без изменения фото?',
               [
                 { text: 'Отмена', style: 'cancel', onPress: () => resolve(false) },
-                { text: 'Продолжить без фото', onPress: () => resolve(true) },
+                { text: 'Продолжить', onPress: () => resolve(true) },
               ]
             );
           });
@@ -305,10 +389,22 @@ export default function CreateRecipeModal() {
             return;
           }
         }
+      } else if (image && image.startsWith('http')) {
+        // Используем существующее изображение
+        imageUrl = image;
+        console.log('✅ Используем существующее изображение');
       }
 
-      // Подготавливаем данные для рецепта (используем первую структуру ингредиентов)
-      const recipeData = {
+      // Преобразуем ингредиенты в массив строк
+      const ingredientsArray = ingredients.map(ing => 
+        `${ing.amount} ${ing.unit} ${ing.name}`
+      );
+      
+      // Преобразуем шаги в массив строк
+      const stepsArray = steps.map(step => step.text.trim());
+
+      // Подготавливаем данные для рецепта
+      const recipeData: RecipeData = {
         title: form.title.trim(),
         description: form.description.trim(),
         mealType: form.mealType,
@@ -321,62 +417,63 @@ export default function CreateRecipeModal() {
         weight: form.weight.trim(),
         servings: parseInt(form.servings) || 1,
         
-        // Формируем текстовое представление ингредиентов
-        ingredientsText: ingredients.map(ing => 
-          `${ing.amount} ${ing.unit} ${ing.name}`
-        ).join('\n'),
+        // Используем текстовое представление
+        ingredientsText: ingredientsArray.join('\n'),
         
-        // ИСПРАВЛЕНО: Используем первую структуру (без order, с полем name вместо text)
-        ingredients: ingredients.map((ing) => ({
-          amount: parseFloat(ing.amount) || 0,
-          unit: ing.unit || 'гр',
-          name: ing.name.trim() // Используем name вместо text
-        })),
+        // Массив строк для совместимости с типом Recipe
+        ingredients: ingredientsArray,
         
-        // Шаги приготовления (сохраняем как было)
-        steps: steps.map((step, index) => ({
-          order: index + 1,
-          text: step.text.trim()
-        })),
+        // Массив строк для шагов
+        steps: stepsArray,
         
-        // Cloudinary данные
+        // Обязательное поле tags
+        tags: [],
+        
         imageUrl: imageUrl,
+        isPublic: isPublic,
         cloudinaryPublicId: cloudinaryPublicId,
         imageMetadata: imageUrl ? {
           source: 'cloudinary',
           publicId: cloudinaryPublicId,
           uploadedAt: new Date().toISOString(),
           inRecipesFolder: cloudinaryPublicId ? cloudinaryPublicId.startsWith('recipes/') : false,
-        } : null,
-        
-        isPublic: isPublic,
-        
-        // Дополнительные метаданные
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        userId: 'current_user_id', // TODO: Заменить на реальный ID пользователя
-        likes: 0,
-        views: 0,
-        isApproved: true,
+        } : undefined,
       };
 
-      console.log('💾 Сохранение рецепта в базу данных...');
-      console.log('Структура ингредиентов:', recipeData.ingredients);
+      console.log(`💾 ${isEditMode ? 'Обновление' : 'Создание'} рецепта...`);
       
-      // Сохраняем рецепт
-      const createdRecipe = await recipeService.createRecipe(recipeData);
-      
-      console.log('✅ Рецепт успешно создан! ID:', createdRecipe.id);
-      
-      Alert.alert(
-        '🎉 Успех!',
-        'Рецепт успешно создан',
-        [{ text: 'ОК', onPress: handleClose }]
-      );
+      if (isEditMode && recipeId) {
+        // Редактирование существующего рецепта
+        await recipeService.updateRecipe(recipeId, recipeData);
+        Alert.alert(
+          '✅ Успех!',
+          'Рецепт успешно обновлен',
+          [{ text: 'ОК', onPress: handleClose }]
+        );
+      } else {
+        // Создание нового рецепта
+        // Используем Omit для исключения полей, которые добавляет сервис
+        const createData = {
+          ...recipeData,
+          // Поля id, userId, createdAt, updatedAt и статистика будут добавлены в сервисе
+        };
+        
+        const createdRecipe = await recipeService.createRecipe(createData);
+        
+        console.log('✅ Рецепт успешно создан! ID:', createdRecipe.id);
+        Alert.alert(
+          '🎉 Успех!',
+          'Рецепт успешно создан',
+          [{ text: 'ОК', onPress: handleClose }]
+        );
+      }
       
     } catch (error: any) {
-      console.error('❌ Ошибка создания рецепта:', error);
-      Alert.alert('Ошибка', error.message || 'Не удалось создать рецепт. Попробуйте еще раз.');
+      console.error(`❌ Ошибка ${isEditMode ? 'обновления' : 'создания'} рецепта:`, error);
+      Alert.alert(
+        'Ошибка', 
+        error.message || `Не удалось ${isEditMode ? 'обновить' : 'создать'} рецепт. Попробуйте еще раз.`
+      );
     } finally {
       setLoading(false);
     }
@@ -407,7 +504,9 @@ export default function CreateRecipeModal() {
           >
             {/* Хедер с заголовком и крестиком */}
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Создать рецепт</Text>
+              <Text style={styles.modalTitle}>
+                {isEditMode ? 'Редактировать рецепт' : 'Создать рецепт'}
+              </Text>
               <TouchableOpacity 
                 onPress={handleClose}
                 style={styles.closeButton}
@@ -487,7 +586,7 @@ export default function CreateRecipeModal() {
                         styles.imageButtonText,
                         uploadingImage && styles.imageButtonTextDisabled
                       ]}>
-                        {image ? 'Изменить фото' : 'Добавить фото'}
+                        {image ? (image.startsWith('http') ? 'Изменить фото' : 'Заменить фото') : 'Добавить фото'}
                       </Text>
                     </TouchableOpacity>
                     
@@ -532,8 +631,14 @@ export default function CreateRecipeModal() {
                           resizeMode="cover"
                         />
                         <View style={styles.previewOverlay}>
-                          <Ionicons name="checkmark-circle" size={20} color="#4CAF50" />
-                          <Text style={styles.previewStatus}>Готово к загрузке</Text>
+                          <Ionicons 
+                            name={image.startsWith('http') ? "checkmark-circle" : "cloud-upload"} 
+                            size={20} 
+                            color={image.startsWith('http') ? "#4CAF50" : "#6A9AA9"} 
+                          />
+                          <Text style={styles.previewStatus}>
+                            {image.startsWith('http') ? 'Загружено' : 'Готово к загрузке'}
+                          </Text>
                         </View>
                       </View>
                     )}
@@ -609,7 +714,6 @@ export default function CreateRecipeModal() {
                         placeholderTextColor="#999"
                         value={form.weight}
                         onChangeText={(value) => updateForm('weight', value)}
-                        keyboardType="default"
                       />
                     </View>
 
@@ -821,7 +925,7 @@ export default function CreateRecipeModal() {
                     </View>
                   </View>
 
-                  {/* Кнопка создания */}
+                  {/* Кнопка сохранения/создания */}
                   <TouchableOpacity 
                     style={[
                       styles.submitButton, 
@@ -834,13 +938,15 @@ export default function CreateRecipeModal() {
                       <View style={styles.submitButtonContent}>
                         <ActivityIndicator color="#FFFFFF" size="small" style={styles.buttonSpinner} />
                         <Text style={styles.submitButtonText}>
-                          {uploadingImage ? 'Загрузка фото...' : 'Создание рецепта...'}
+                          {uploadingImage ? 'Загрузка фото...' : (isEditMode ? 'Сохранение...' : 'Создание...')}
                         </Text>
                       </View>
                     ) : (
                       <View style={styles.submitButtonContent}>
-                        <Ionicons name="add-circle" size={20} color="#FFFFFF" />
-                        <Text style={styles.submitButtonText}>Создать рецепт</Text>
+                        <Ionicons name={isEditMode ? "checkmark-circle" : "add-circle"} size={20} color="#FFFFFF" />
+                        <Text style={styles.submitButtonText}>
+                          {isEditMode ? 'Сохранить изменения' : 'Создать рецепт'}
+                        </Text>
                       </View>
                     )}
                   </TouchableOpacity>
@@ -857,6 +963,7 @@ export default function CreateRecipeModal() {
     </Modal>
   );
 }
+
 
 const styles = StyleSheet.create({
   overlay: {

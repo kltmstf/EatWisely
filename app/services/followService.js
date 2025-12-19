@@ -8,9 +8,15 @@ import {
   getDoc,
   query,
   where,
-  orderBy
+  orderBy,
+  limit,
+  startAfter,
+  writeBatch,
+  increment,
+  updateDoc
 } from 'firebase/firestore';
 import { db, auth } from '../firebase/config';
+import { communityService } from './communityService';
 
 class FollowService {
   // Подписаться на пользователя
@@ -42,6 +48,10 @@ class FollowService {
       };
 
       const docRef = await addDoc(collection(db, 'follows'), followData);
+      
+      // Обновляем счетчики у обоих пользователей
+      await this.updateFollowCounts(user.uid, targetUserId, 'increment');
+      
       return { id: docRef.id, ...followData };
     } catch (error) {
       console.error('Error following user:', error);
@@ -61,10 +71,55 @@ class FollowService {
       }
 
       await deleteDoc(doc(db, 'follows', follow.id));
+      
+      // Обновляем счетчики у обоих пользователей
+      await this.updateFollowCounts(user.uid, targetUserId, 'decrement');
+      
       return true;
     } catch (error) {
       console.error('Error unfollowing user:', error);
       throw error;
+    }
+  }
+
+  // Обновить счетчики подписок/подписчиков
+  async updateFollowCounts(followerId, followingId, operation) {
+    try {
+      const batch = writeBatch(db);
+      
+      const followerRef = doc(db, 'users', followerId);
+      const followingRef = doc(db, 'users', followingId);
+      
+      if (operation === 'increment') {
+        // У подписчика увеличиваем счетчик подписок
+        batch.update(followerRef, {
+          followingCount: increment(1),
+          updatedAt: new Date()
+        });
+        
+        // У того, на кого подписались, увеличиваем счетчик подписчиков
+        batch.update(followingRef, {
+          followersCount: increment(1),
+          updatedAt: new Date()
+        });
+      } else if (operation === 'decrement') {
+        // У подписчика уменьшаем счетчик подписок
+        batch.update(followerRef, {
+          followingCount: increment(-1),
+          updatedAt: new Date()
+        });
+        
+        // У того, от кого отписались, уменьшаем счетчик подписчиков
+        batch.update(followingRef, {
+          followersCount: increment(-1),
+          updatedAt: new Date()
+        });
+      }
+      
+      await batch.commit();
+    } catch (error) {
+      console.error('Error updating follow counts:', error);
+      // Не выбрасываем ошибку, чтобы основная операция не прервалась
     }
   }
 
@@ -102,12 +157,13 @@ class FollowService {
   }
 
   // Получить подписчиков пользователя
-  async getFollowers(userId) {
+  async getFollowers(userId, limitCount = 50) {
     try {
       const followersQuery = query(
         collection(db, 'follows'),
         where('followingId', '==', userId),
-        orderBy('createdAt', 'desc')
+        orderBy('createdAt', 'desc'),
+        limit(limitCount)
       );
 
       const snapshot = await getDocs(followersQuery);
@@ -122,7 +178,16 @@ class FollowService {
           try {
             const userDoc = await getDoc(doc(db, 'users', follow.followerId));
             if (userDoc.exists()) {
-              follow.user = { id: userDoc.id, ...userDoc.data() };
+              const userData = userDoc.data();
+              follow.user = { 
+                id: userDoc.id, 
+                name: userData.name || 'Пользователь',
+                email: userData.email || '',
+                photoURL: userData.photoURL || null,
+                description: userData.description || '',
+                followersCount: userData.followersCount || 0,
+                followingCount: userData.followingCount || 0
+              };
             }
           } catch (error) {
             console.warn(`User ${follow.followerId} not found`);
@@ -139,12 +204,13 @@ class FollowService {
   }
 
   // Получить подписки пользователя
-  async getFollowing(userId) {
+  async getFollowing(userId, limitCount = 50) {
     try {
       const followingQuery = query(
         collection(db, 'follows'),
         where('followerId', '==', userId),
-        orderBy('createdAt', 'desc')
+        orderBy('createdAt', 'desc'),
+        limit(limitCount)
       );
 
       const snapshot = await getDocs(followingQuery);
@@ -159,7 +225,16 @@ class FollowService {
           try {
             const userDoc = await getDoc(doc(db, 'users', follow.followingId));
             if (userDoc.exists()) {
-              follow.user = { id: userDoc.id, ...userDoc.data() };
+              const userData = userDoc.data();
+              follow.user = { 
+                id: userDoc.id, 
+                name: userData.name || 'Пользователь',
+                email: userData.email || '',
+                photoURL: userData.photoURL || null,
+                description: userData.description || '',
+                followersCount: userData.followersCount || 0,
+                followingCount: userData.followingCount || 0
+              };
             }
           } catch (error) {
             console.warn(`User ${follow.followingId} not found`);
@@ -178,8 +253,23 @@ class FollowService {
   // Получить количество подписчиков
   async getFollowersCount(userId) {
     try {
-      const followers = await this.getFollowers(userId);
-      return followers.length;
+      // Сначала пробуем получить из профиля пользователя
+      const userDoc = await getDoc(doc(db, 'users', userId));
+      if (userDoc.exists()) {
+        const userData = userDoc.data();
+        if (userData.followersCount !== undefined) {
+          return userData.followersCount;
+        }
+      }
+      
+      // Если в профиле нет, считаем вручную
+      const followersQuery = query(
+        collection(db, 'follows'),
+        where('followingId', '==', userId)
+      );
+      
+      const snapshot = await getDocs(followersQuery);
+      return snapshot.size;
     } catch (error) {
       console.error('Error getting followers count:', error);
       return 0;
@@ -189,8 +279,23 @@ class FollowService {
   // Получить количество подписок
   async getFollowingCount(userId) {
     try {
-      const following = await this.getFollowing(userId);
-      return following.length;
+      // Сначала пробуем получить из профиля пользователя
+      const userDoc = await getDoc(doc(db, 'users', userId));
+      if (userDoc.exists()) {
+        const userData = userDoc.data();
+        if (userData.followingCount !== undefined) {
+          return userData.followingCount;
+        }
+      }
+      
+      // Если в профиле нет, считаем вручную
+      const followingQuery = query(
+        collection(db, 'follows'),
+        where('followerId', '==', userId)
+      );
+      
+      const snapshot = await getDocs(followingQuery);
+      return snapshot.size;
     } catch (error) {
       console.error('Error getting following count:', error);
       return 0;
@@ -198,33 +303,33 @@ class FollowService {
   }
 
   // Получить рекомендации для подписки (пользователи, на которых еще не подписан)
-  async getFollowSuggestions(limit = 10) {
+  async getFollowSuggestions(limitCount = 10) {
     try {
       const user = auth.currentUser;
       if (!user) throw new Error('User not authenticated');
 
-      // Получаем всех пользователей, кроме текущего
+      // Получаем текущие подписки
+      const currentFollowing = await this.getFollowing(user.uid, 100);
+      const followingIds = new Set(currentFollowing.map(f => f.followingId));
+      followingIds.add(user.uid); // Исключаем себя
+
+      // Получаем несколько случайных пользователей
+      // В реальном приложении здесь должна быть более сложная логика
       const allUsersQuery = query(
         collection(db, 'users'),
-        where('__name__', '!=', user.uid)
+        limit(50)
       );
 
       const allUsersSnapshot = await getDocs(allUsersQuery);
-      const allUsers = allUsersSnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      }));
-
-      // Получаем текущие подписки
-      const currentFollowing = await this.getFollowing(user.uid);
-      const followingIds = new Set(currentFollowing.map(f => f.followingId));
-
-      // Фильтруем пользователей, на которых еще не подписаны
-      const suggestions = allUsers
+      const allUsers = allUsersSnapshot.docs
+        .map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        }))
         .filter(userDoc => !followingIds.has(userDoc.id))
-        .slice(0, limit);
+        .slice(0, limitCount);
 
-      return suggestions;
+      return allUsers;
     } catch (error) {
       console.error('Error getting follow suggestions:', error);
       throw error;
@@ -245,21 +350,20 @@ class FollowService {
         return { posts: [], lastVisible: null };
       }
 
-      let feedQuery = query(
-        collection(db, 'community_posts'),
-        where('userId', 'in', followingIds),
-        where('isPublic', '==', true),
-        orderBy('createdAt', 'desc'),
-        limit(pageSize)
-      );
-
+      let feedQuery;
       if (lastVisible) {
         feedQuery = query(
           collection(db, 'community_posts'),
           where('userId', 'in', followingIds),
-          where('isPublic', '==', true),
           orderBy('createdAt', 'desc'),
           startAfter(lastVisible),
+          limit(pageSize)
+        );
+      } else {
+        feedQuery = query(
+          collection(db, 'community_posts'),
+          where('userId', 'in', followingIds),
+          orderBy('createdAt', 'desc'),
           limit(pageSize)
         );
       }
@@ -276,14 +380,23 @@ class FollowService {
           try {
             const userDoc = await getDoc(doc(db, 'users', post.userId));
             if (userDoc.exists()) {
-              post.author = { id: userDoc.id, ...userDoc.data() };
+              const userData = userDoc.data();
+              post.author = { 
+                id: userDoc.id, 
+                name: userData.name || 'Пользователь',
+                photoURL: userData.photoURL || null
+              };
             }
           } catch (error) {
             console.warn(`User ${post.userId} not found`);
           }
 
           // Проверяем лайк текущего пользователя
-          post.isLikedByCurrentUser = await communityService.isPostLikedByUser(post.id, user.uid);
+          if (communityService && communityService.isPostLikedByUser) {
+            post.isLikedByCurrentUser = await communityService.isPostLikedByUser(post.id, user.uid);
+          } else {
+            post.isLikedByCurrentUser = false;
+          }
 
           return post;
         })
@@ -296,6 +409,25 @@ class FollowService {
     } catch (error) {
       console.error('Error getting following feed:', error);
       throw error;
+    }
+  }
+
+  // Инициализировать счетчики для пользователя (при создании профиля)
+  async initializeUserCounts(userId) {
+    try {
+      const userRef = doc(db, 'users', userId);
+      
+      // Устанавливаем начальные значения
+      await updateDoc(userRef, {
+        followersCount: 0,
+        followingCount: 0,
+        updatedAt: new Date()
+      });
+      
+      return true;
+    } catch (error) {
+      console.error('Error initializing user counts:', error);
+      return false;
     }
   }
 }
