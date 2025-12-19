@@ -226,6 +226,7 @@ class FollowService {
             const userDoc = await getDoc(doc(db, 'users', follow.followingId));
             if (userDoc.exists()) {
               const userData = userDoc.data();
+              console.log(`Загружен пользователь ${follow.followingId}:`, userData.name);
               follow.user = { 
                 id: userDoc.id, 
                 name: userData.name || 'Пользователь',
@@ -235,20 +236,40 @@ class FollowService {
                 followersCount: userData.followersCount || 0,
                 followingCount: userData.followingCount || 0
               };
+            } else {
+            console.log(`Пользователь ${follow.followingId} не найден в базе данных`);
             }
           } catch (error) {
-            console.warn(`User ${follow.followingId} not found`);
+            console.warn(`Ошибка загрузки пользователя ${follow.followingId}:`, error);
+        
           }
           return follow;
         })
       );
-
+      console.log("Обогащенные данные подписок:", enrichedFollowing);
       return enrichedFollowing;
     } catch (error) {
       console.error('Error getting following:', error);
+
       throw error;
     }
   }
+
+  // Проверка взаимной подписки 
+  async checkMutualFollow(currentUserId, otherUserId) {
+  try {
+    // Проверяем, подписан ли текущий пользователь на другого
+    const currentFollowsOther = await this.isFollowing(otherUserId);
+    
+    // Проверяем, подписан ли другой пользователь на текущего
+    const otherFollowsCurrent = await this.getFollow(otherUserId, currentUserId);
+    
+    return currentFollowsOther && !!otherFollowsCurrent;
+  } catch (error) {
+    console.error('Error checking mutual follow:', error);
+    return false;
+  }
+}
 
   // Получить количество подписчиков
   async getFollowersCount(userId) {

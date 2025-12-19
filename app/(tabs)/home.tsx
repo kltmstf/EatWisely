@@ -15,7 +15,7 @@ import {
   RefreshControl,
   Modal,
 } from "react-native";
-import { getAuth, onAuthStateChanged } from "firebase/auth";
+import { getAuth, onAuthStateChanged, User } from "firebase/auth";
 import {
   getFirestore,
   doc,
@@ -24,6 +24,7 @@ import {
   Firestore,
   setLogLevel,
   setDoc,
+  updateDoc,
 } from "firebase/firestore";
 import { getApp, getApps, initializeApp } from "firebase/app";
 import {
@@ -56,13 +57,14 @@ interface Meal {
   bookmarked: boolean;
   image: any;
   cookingTime: number;
-  difficultyLevel?: string;
+  difficultyLevel: string;
   rating?: number;
-  recipeId?: string;
+  recipeId: string | null;
   isCustom?: boolean;
   canBeRemoved?: boolean;
   imageUrl?: string;
   addedAt?: string;
+  originalPlanId?: string;
 }
 
 interface UserDataState {
@@ -109,7 +111,7 @@ const CARD_WIDTH = (width - 56) / 2;
 
 // --- ФУНКЦИЯ ДЛЯ ГЕНЕРАЦИИ УНИКАЛЬНОГО ID ---
 const generateUniqueId = (): string => {
-  return `custom-${Date.now()}-${Math.random().toString(36).substr(2, 9)}-${Math.random().toString(36).substr(2, 9)}`;
+  return `custom-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 };
 
 // --- КОМПОНЕНТ АВАТАРА ---
@@ -155,10 +157,10 @@ const Avatar: React.FC<AvatarProps> = ({ photoURL, size = 55 }) => {
 
 // Функция для преобразования времени в число
 const parseCookingTime = (time: any): number => {
-  if (typeof time === 'number') {
+  if (typeof time === "number") {
     return time;
   }
-  if (typeof time === 'string') {
+  if (typeof time === "string") {
     const timeMatch = time.match(/\d+/);
     return timeMatch ? parseInt(timeMatch[0], 10) : 20;
   }
@@ -268,6 +270,33 @@ const DifficultyBadge: React.FC<DifficultyBadgeProps> = ({ difficulty }) => {
   );
 };
 
+// --- Вспомогательные функции ---
+
+// Функция для получения хэша массива блюд
+const getMealsHash = (mealsArray: Meal[]): string => {
+  return mealsArray.map(m => `${m.id}:${m.name}:${m.isCustom}`).join('|');
+};
+
+// Функция для сравнения массивов блюд
+const arraysEqual = (a: Meal[], b: Meal[]): boolean => {
+  if (a.length !== b.length) return false;
+  
+  return a.every((meal, index) => {
+    const bMeal = b[index];
+    if (!bMeal) return false;
+    
+    return (
+      meal.id === bMeal.id &&
+      meal.marked === bMeal.marked &&
+      meal.bookmarked === bMeal.bookmarked &&
+      meal.isCustom === bMeal.isCustom &&
+      meal.name === bMeal.name &&
+      meal.category === bMeal.category &&
+      meal.calories === bMeal.calories
+    );
+  });
+};
+
 // --- КОМПОНЕНТ HOME ---
 
 export default function Home() {
@@ -276,6 +305,7 @@ export default function Home() {
 
   const [db, setDb] = useState<Firestore | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
 
   const [meals, setMeals] = useState<Meal[]>([]);
@@ -287,19 +317,23 @@ export default function Home() {
   );
   const [isSaving, setIsSaving] = useState(false);
   const [showAddRecipeModal, setShowAddRecipeModal] = useState(false);
-  const [showCategoryModal, setShowCategoryModal] = useState(false);
-  const [pendingRecipe, setPendingRecipe] = useState<any>(null);
 
   // Новые состояния для контроля сохранения
   const [hasSavedToday, setHasSavedToday] = useState(false);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [lastSaveDate, setLastSaveDate] = useState<string | null>(null);
   const [lastPlanDate, setLastPlanDate] = useState<string | null>(null);
+  const [todayPlanId, setTodayPlanId] = useState<string | null>(null);
+  const [userProfileLoading, setUserProfileLoading] = useState(false);
+  const [userSettingsChanged, setUserSettingsChanged] = useState(false);
 
-  const mealsRef = useRef(meals);
-  useEffect(() => {
-    mealsRef.current = meals;
-  }, [meals]);
+  // Флаги для контроля загрузки
+  const [isPlanLoading, setIsPlanLoading] = useState(true);
+  
+  // Рефы для контроля состояния
+  const shouldUpdateFromListenerRef = useRef(true);
+  const lastMealsUpdateRef = useRef<string>('');
+  const hasInitialLoadRef = useRef(false);
 
   const [userData, setUserData] = useState<UserDataState>({
     userName: "Пользователь",
@@ -323,10 +357,18 @@ export default function Home() {
     carbohydrates: 0,
   });
 
-  const [userProfileLoading, setUserProfileLoading] = useState(false);
-  const [userSettingsChanged, setUserSettingsChanged] = useState(false);
+  const loading = !isAuthReady || !db || !userId;
 
-  const loading = !isAuthReady || !db;
+  // Функция для получения сегодняшней даты в формате YYYY-MM-DD
+  const getTodayDate = useCallback(() => {
+    return new Date().toISOString().split("T")[0];
+  }, []);
+
+  // Функция для проверки, новый ли день
+  const checkIfNewDay = useCallback(() => {
+    const today = getTodayDate();
+    return !lastPlanDate || lastPlanDate !== today;
+  }, [lastPlanDate, getTodayDate]);
 
   // Функция проверки, сохранял ли пользователь уже сегодня
   const checkTodaySave = useCallback(
@@ -334,7 +376,7 @@ export default function Home() {
       if (!db) return;
 
       try {
-        const today = new Date().toISOString().split("T")[0];
+        const today = getTodayDate();
         const userDoc = await getDoc(doc(db, `users/${userId}`));
 
         if (userDoc.exists()) {
@@ -343,6 +385,9 @@ export default function Home() {
 
           if (lastSave === today) {
             setHasSavedToday(true);
+          } else {
+            setHasSavedToday(false);
+            setHasUnsavedChanges(false);
           }
           setLastSaveDate(lastSave || null);
         }
@@ -350,26 +395,360 @@ export default function Home() {
         console.error("Ошибка проверки сохранения:", error);
       }
     },
-    [db]
+    [db, getTodayDate]
   );
 
-  // Функция для проверки существования плана в БД
-  const checkIfPlanExists = useCallback(async (userId: string, date: Date): Promise<boolean> => {
-    if (!db) return false;
-    
+  // Упрощенная функция добавления рецепта
+  const addRecipeToPlan = useCallback(
+    async (recipeData: any) => {
+      console.log("➕ Adding recipe to plan:", recipeData.title);
+
+      if (!currentUser || !db) {
+        Alert.alert("Ошибка", "Пользователь не авторизован");
+        return;
+      }
+
+      try {
+        const today = getTodayDate();
+        const finalCategory = recipeData.category || recipeData.mealType || "Обед";
+        const planId = `${currentUser.uid}_${today}`;
+        
+        if (!todayPlanId) {
+          setTodayPlanId(planId);
+        }
+
+        // Проверяем существование рецепта
+        const existingMeal = meals.find(
+          (meal) =>
+            (meal.recipeId && meal.recipeId === recipeData.id) ||
+            (meal.name === recipeData.title && meal.category === finalCategory && meal.isCustom)
+        );
+
+        if (existingMeal) {
+          Alert.alert("Внимание", "Этот рецепт уже добавлен в ваш рацион");
+          return;
+        }
+
+        // Создаем новое блюдо
+        const mealId = generateUniqueId();
+        const newMeal: Meal = {
+          id: mealId,
+          category: finalCategory,
+          name: recipeData.title || recipeData.name || "Новый рецепт",
+          calories: recipeData.calories || 300,
+          proteins: recipeData.proteins || 20,
+          fats: recipeData.fats || 10,
+          carbohydrates: recipeData.carbohydrates || recipeData.carbs || 30,
+          weight: recipeData.weight || "250г",
+          marked: false,
+          bookmarked: false,
+          cookingTime: parseCookingTime(recipeData.cookingTime),
+          difficultyLevel: recipeData.difficultyLevel || recipeData.difficulty || "Легко",
+          rating: recipeData.rating || 0,
+          recipeId: recipeData.id || recipeData.recipeId || null,
+          image: recipeData.imageUrl ? { uri: recipeData.imageUrl } : DEFAULT_MEAL_IMAGE,
+          imageUrl: recipeData.imageUrl || null,
+          isCustom: true,
+          canBeRemoved: true,
+          addedAt: new Date().toISOString(),
+        };
+
+        // 1. Сначала обновляем локальное состояние
+        const updatedMeals = [...meals, newMeal];
+        setMeals(updatedMeals);
+        
+        // Обновляем статистику
+        setRecommendedKBRU((prevKBRU) => ({
+          proteins: prevKBRU.proteins + newMeal.proteins,
+          fats: prevKBRU.fats + newMeal.fats,
+          carbohydrates: prevKBRU.carbohydrates + newMeal.carbohydrates,
+        }));
+
+        // 2. Временно отключаем обновления из слушателя
+        shouldUpdateFromListenerRef.current = false;
+        lastMealsUpdateRef.current = getMealsHash(updatedMeals);
+
+        // 3. Затем обновляем в базе данных
+        const planRef = doc(db, "ration_plan_days", planId);
+        const planSnap = await getDoc(planRef);
+
+        const mealDataForDb = {
+          id: newMeal.id,
+          recipeId: newMeal.recipeId,
+          category: newMeal.category,
+          name: newMeal.name,
+          calories: newMeal.calories,
+          proteins: newMeal.proteins,
+          fats: newMeal.fats,
+          carbohydrates: newMeal.carbohydrates,
+          weight: newMeal.weight,
+          cookingTime: newMeal.cookingTime,
+          difficultyLevel: newMeal.difficultyLevel,
+          rating: newMeal.rating,
+          imageUrl: newMeal.imageUrl,
+          marked: newMeal.marked,
+          bookmarked: newMeal.bookmarked,
+          isCustom: true,
+          canBeRemoved: true,
+          addedAt: newMeal.addedAt,
+        };
+
+        if (planSnap.exists()) {
+          // Добавляем к существующим кастомным блюдам
+          const currentData = planSnap.data();
+          const currentCustomMeals = currentData.customMeals || [];
+          
+          await updateDoc(planRef, {
+            customMeals: [...currentCustomMeals, mealDataForDb],
+            "timestamps.updatedAt": new Date().toISOString(),
+          });
+        } else {
+          // Создаем новый план с этим блюдом
+          const userProfile = await userService.fetchUserProfile(currentUser.uid);
+          
+          await setDoc(planRef, {
+            id: planId,
+            userId: currentUser.uid,
+            date: today,
+            dayOfWeek: new Date().toLocaleDateString("ru-RU", { weekday: "long" }),
+            userTargets: {
+              dailyCalories: userData.dailyCalories,
+              dietType: userProfile?.dietType || "Обычное",
+            },
+            meals: [],
+            customMeals: [mealDataForDb],
+            stats: {
+              totalCalories: newMeal.calories,
+              totalProteins: newMeal.proteins,
+              totalFats: newMeal.fats,
+              totalCarbs: newMeal.carbohydrates,
+              totalCookingTime: newMeal.cookingTime,
+              completedMeals: 0,
+              totalMeals: 1,
+            },
+            timestamps: {
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            },
+          });
+        }
+
+        // Обновляем флаг изменений - при добавлении рецепта появляются изменения
+        setHasUnsavedChanges(true);
+        
+        // Показываем уведомление
+        Alert.alert("Успех", "Рецепт добавлен в рацион!");
+        
+      } catch (error) {
+        console.error("❌ Error adding recipe:", error);
+        Alert.alert("Ошибка", "Не удалось добавить рецепт");
+        
+        // Откатываем локальные изменения при ошибке
+        setMeals(meals);
+      } finally {
+        // Включаем обновления из слушателя через 2 секунды
+        setTimeout(() => {
+          shouldUpdateFromListenerRef.current = true;
+        }, 2000);
+      }
+    },
+    [currentUser, db, meals, todayPlanId, userData.dailyCalories, getTodayDate]
+  );
+
+  // Функция для замены рецепта
+  const handleReplaceRecipe = useCallback(async (replaceData: any) => {
+    if (!currentUser || !db) return;
+
     try {
-      const dateStr = date.toISOString().split('T')[0];
-      const planId = `${userId}_${dateStr}`;
+      const today = getTodayDate();
+      const planId = `${currentUser.uid}_${today}`;
       
-      const planRef = doc(db, 'ration_plan_days', planId);
+      const mealIndex = parseInt(replaceData.mealIndex || "0");
+      const currentMealId = replaceData.currentMealId;
+      const isCustomReplacement = replaceData.isCustomReplacement === "true";
+      
+      // Находим заменяемый рецепт
+      const mealToReplace = meals.find(meal => meal.id === currentMealId);
+      if (!mealToReplace) {
+        Alert.alert("Ошибка", "Рецепт для замены не найден");
+        return;
+      }
+
+      // Создаем новый рецепт
+      const newMealId = generateUniqueId();
+      const newMeal: Meal = {
+        id: newMealId,
+        category: replaceData.category || mealToReplace.category,
+        name: replaceData.title || "Новый рецепт",
+        calories: replaceData.calories || 300,
+        proteins: replaceData.proteins || 0,
+        fats: replaceData.fats || 0,
+        carbohydrates: replaceData.carbohydrates || 0,
+        weight: replaceData.weight || "250г",
+        marked: false,
+        bookmarked: false,
+        cookingTime: parseCookingTime(replaceData.cookingTime),
+        difficultyLevel: replaceData.difficultyLevel || "Легко",
+        rating: replaceData.rating || 0,
+        recipeId: replaceData.recipeId || null,
+        image: replaceData.imageUrl ? { uri: replaceData.imageUrl } : DEFAULT_MEAL_IMAGE,
+        imageUrl: replaceData.imageUrl || null,
+        isCustom: true,
+        canBeRemoved: true,
+        addedAt: new Date().toISOString(),
+      };
+
+      // 1. Обновляем локальное состояние
+      const updatedMeals = [...meals];
+      if (mealIndex >= 0 && mealIndex < updatedMeals.length) {
+        updatedMeals[mealIndex] = newMeal;
+      } else {
+        // Если не нашли по индексу, ищем по ID
+        const replaceIndex = updatedMeals.findIndex(m => m.id === currentMealId);
+        if (replaceIndex !== -1) {
+          updatedMeals[replaceIndex] = newMeal;
+        } else {
+          updatedMeals.push(newMeal);
+        }
+      }
+      
+      setMeals(updatedMeals);
+
+      // Обновляем статистику
+      const consumed = updatedMeals
+        .filter((meal) => meal.marked)
+        .reduce((sum, meal) => sum + meal.calories, 0);
+
+      const totalKBRU = updatedMeals.reduce(
+        (acc, meal) => ({
+          proteins: acc.proteins + meal.proteins,
+          fats: acc.fats + meal.fats,
+          carbohydrates: acc.carbohydrates + meal.carbohydrates,
+        }),
+        { proteins: 0, fats: 0, carbohydrates: 0 }
+      );
+
+      setRecommendedKBRU(totalKBRU);
+      setUserData(prev => ({ ...prev, consumedCalories: consumed }));
+
+      // 2. Временно отключаем обновления из слушателя
+      shouldUpdateFromListenerRef.current = false;
+      lastMealsUpdateRef.current = getMealsHash(updatedMeals);
+
+      // 3. Обновляем в базе данных
+      const planRef = doc(db, "ration_plan_days", planId);
       const planSnap = await getDoc(planRef);
+
+      if (planSnap.exists()) {
+        const planData = planSnap.data();
+        const currentCustomMeals = planData.customMeals || [];
+        
+        // Удаляем старый рецепт (если он был кастомным)
+        const updatedCustomMeals = currentCustomMeals.filter(
+          (meal: any) => meal.id !== currentMealId
+        );
+        
+        // Добавляем новый рецепт
+        const mealDataForDb = {
+          id: newMeal.id,
+          recipeId: newMeal.recipeId,
+          category: newMeal.category,
+          name: newMeal.name,
+          calories: newMeal.calories,
+          proteins: newMeal.proteins,
+          fats: newMeal.fats,
+          carbohydrates: newMeal.carbohydrates,
+          weight: newMeal.weight,
+          cookingTime: newMeal.cookingTime,
+          difficultyLevel: newMeal.difficultyLevel,
+          rating: newMeal.rating,
+          imageUrl: newMeal.imageUrl,
+          marked: newMeal.marked,
+          bookmarked: newMeal.bookmarked,
+          isCustom: true,
+          canBeRemoved: true,
+          addedAt: newMeal.addedAt,
+        };
+
+        await updateDoc(planRef, {
+          customMeals: [...updatedCustomMeals, mealDataForDb],
+          "timestamps.updatedAt": new Date().toISOString(),
+        });
+      }
+
+      // Устанавливаем флаг изменений
+      setHasUnsavedChanges(true);
       
-      return planSnap.exists();
+      Alert.alert("Успех", "Рецепт успешно заменен!");
+      
     } catch (error) {
-      console.error("Error checking if plan exists:", error);
-      return false;
+      console.error("❌ Error replacing recipe:", error);
+      Alert.alert("Ошибка", "Не удалось заменить рецепт");
+    } finally {
+      // Включаем обновления из слушателя через 2 секунды
+      setTimeout(() => {
+        shouldUpdateFromListenerRef.current = true;
+      }, 2000);
     }
-  }, [db]);
+  }, [currentUser, db, meals, getTodayDate]);
+
+  // 1. Инициализация Firebase
+  useEffect(() => {
+    try {
+      const firebaseConfig =
+        typeof __firebase_config !== "undefined"
+          ? JSON.parse(__firebase_config as string)
+          : {};
+      const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
+
+      const authInstance = getAuth(app);
+      const dbInstance = getFirestore(app);
+
+      setDb(dbInstance);
+      console.log("✅ Firebase initialized, DB set");
+
+      const unsubscribeAuth = onAuthStateChanged(authInstance, async (user) => {
+        console.log(
+          "🔄 Auth state changed:",
+          user ? "User logged in" : "No user"
+        );
+        if (user) {
+          setUserId(user.uid);
+          setCurrentUser(user);
+
+          console.log("✅ User authenticated. UID:", user.uid);
+
+          const photoURL = await loadUserProfilePhoto(user.uid);
+          setUserData((prev) => ({
+            ...prev,
+            photoURL: photoURL,
+          }));
+
+          // Проверяем, сохранял ли пользователь уже сегодня
+          await checkTodaySave(user.uid);
+        } else {
+          setUserId(null);
+          setCurrentUser(null);
+          setUserData((prev) => ({
+            ...prev,
+            userName: "Пользователь",
+            dailyCalories: 2000,
+            photoURL: null,
+          }));
+          setHasSavedToday(false);
+          setHasUnsavedChanges(false);
+          setLastSaveDate(null);
+          console.log("⚠️ User is NOT authenticated.");
+        }
+        setIsAuthReady(true);
+      });
+
+      return () => unsubscribeAuth();
+    } catch (error) {
+      console.error("❌ INIT: Ошибка инициализации Firebase:", error);
+      setIsAuthReady(true);
+    }
+  }, []);
 
   // Функция для загрузки фото профиля
   const loadUserProfilePhoto = useCallback(async (userId: string) => {
@@ -392,493 +771,82 @@ export default function Home() {
     }
   }, []);
 
-  // Проверка параметров для добавления рецепта
-  useEffect(() => {
-    if (params.selectedRecipe) {
-      try {
-        const recipeData = JSON.parse(params.selectedRecipe as string);
-        
-        // Если у рецепта уже есть категория, добавляем сразу
-        if (recipeData.category) {
-          addRecipeToPlan(recipeData, recipeData.category);
-        } else {
-          // Если нет категории, показываем выбор
-          setPendingRecipe(recipeData);
-          setShowCategoryModal(true);
-        }
-
-        // Очищаем параметры
-        setTimeout(() => {
-          router.setParams({ selectedRecipe: undefined });
-        }, 100);
-      } catch (error) {
-        console.error("Ошибка парсинга выбранного рецепта:", error);
-      }
+  // Функция для загрузки плана (оптимизированная)
+  const loadDailyPlan = useCallback(async () => {
+    if (!currentUser || !db) {
+      console.log("⚠️ No user or DB, skipping plan load");
+      return;
     }
-  }, [params.selectedRecipe, router]);
 
-  // 1. Инициализация Firebase
-  useEffect(() => {
+    console.log("🔄 Loading daily plan...");
+    setIsPlanLoading(true);
+    setIsGeneratingPlan(true);
+
     try {
-      const firebaseConfig =
-        typeof __firebase_config !== "undefined"
-          ? JSON.parse(__firebase_config as string)
-          : {};
-      const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
+      const today = getTodayDate();
+      const planId = `${currentUser.uid}_${today}`;
+      setTodayPlanId(planId);
 
-      const authInstance = getAuth(app);
-      const dbInstance = getFirestore(app);
+      const planRef = doc(db, "ration_plan_days", planId);
+      const planSnap = await getDoc(planRef);
 
-      setDb(dbInstance);
-
-      const unsubscribeAuth = onAuthStateChanged(authInstance, async (user) => {
-        if (user) {
-          setUserId(user.uid);
-
-          const photoURL = await loadUserProfilePhoto(user.uid);
-          setUserData((prev) => ({
-            ...prev,
-            photoURL: photoURL,
-          }));
-
-          // Проверяем, сохранял ли пользователь уже сегодня
-          await checkTodaySave(user.uid);
-
-          console.log("✅ AUTH: User authenticated. UID:", user.uid);
-        } else {
-          setUserId(null);
-          setUserData((prev) => ({
-            ...prev,
-            userName: "Пользователь",
-            dailyCalories: 2000,
-            photoURL: null,
-          }));
-          setHasSavedToday(false);
-          setLastSaveDate(null);
-          console.log("⚠️ AUTH: User is NOT authenticated.");
-        }
-        setIsAuthReady(true);
-      });
-
-      return () => unsubscribeAuth();
-    } catch (error) {
-      console.error("❌ INIT: Ошибка инициализации Firebase:", error);
-      setIsAuthReady(true);
-    }
-  }, [loadUserProfilePhoto, checkTodaySave]);
-
-  // Функция для добавления рецепта в рацион
-  const addRecipeToPlan = useCallback(
-    async (recipeData: any, category?: string) => {
-      if (!userId) {
-        Alert.alert("Ошибка", "Пользователь не авторизован");
-        return;
-      }
-
-      try {
-        const today = new Date().toISOString().split('T')[0];
+      if (planSnap.exists()) {
+        console.log("📋 Existing plan found");
+        const data = planSnap.data();
         
-        // Используем категорию из рецепта или переданную, или по умолчанию
-        const finalCategory = category || recipeData.category || recipeData.mealType || "Обед";
-        
-        // Проверяем по recipeId и имени
-        const existingMeal = meals.find(
-          (meal) =>
-            (meal.recipeId && meal.recipeId === recipeData.id) ||
-            (meal.name === recipeData.title && 
-             meal.category === finalCategory &&
-             meal.isCustom)
-        );
-
-        if (existingMeal) {
-          Alert.alert(
-            "Внимание",
-            "Этот рецепт уже добавлен в ваш рацион на сегодня"
-          );
-          return;
+        // Обновляем дату последнего плана
+        if (data.date) {
+          setLastPlanDate(data.date);
         }
 
-        const mealId = generateUniqueId();
-        const newMeal: Meal = {
-          id: mealId,
-          category: finalCategory,
-          name: recipeData.title || recipeData.name || "Новый рецепт",
-          calories: recipeData.calories || 300,
-          proteins: recipeData.proteins || 20,
-          fats: recipeData.fats || 10,
-          carbohydrates: recipeData.carbohydrates || recipeData.carbs || 30,
-          weight: recipeData.weight || "250г",
-          marked: false,
-          bookmarked: false,
-          cookingTime: parseCookingTime(recipeData.cookingTime),
-          difficultyLevel:
-            recipeData.difficultyLevel || recipeData.difficulty || "Легко",
-          rating: recipeData.rating || 0,
-          recipeId: recipeData.id || recipeData.recipeId || null,
-          image: recipeData.imageUrl
-            ? { uri: recipeData.imageUrl }
-            : DEFAULT_MEAL_IMAGE,
-          imageUrl: recipeData.imageUrl || null,
-          isCustom: true,
-          canBeRemoved: true,
-          addedAt: new Date().toISOString(),
-        };
+        // Загружаем данные плана
+        const mealsData = data.meals || [];
+        const customMeals = data.customMeals || [];
+        const allMeals = [...mealsData, ...customMeals];
 
-        // Сохраняем в базу данных
-        await dailyRationService.addCustomMealToPlan(userId, new Date(), {
-          id: newMeal.id,
-          recipeId: newMeal.recipeId || null,
-          category: newMeal.category,
-          name: newMeal.name,
-          calories: newMeal.calories,
-          proteins: newMeal.proteins,
-          fats: newMeal.fats,
-          carbohydrates: newMeal.carbohydrates,
-          weight: newMeal.weight,
-          cookingTime: newMeal.cookingTime,
-          difficultyLevel: newMeal.difficultyLevel || "Легко",
-          rating: newMeal.rating || 0,
-          imageUrl: newMeal.imageUrl || null,
-          marked: false,
-          bookmarked: false,
-          isCustom: true,
-          canBeRemoved: true,
-          addedAt: newMeal.addedAt,
+        // Форматируем блюда
+        const formattedMeals: Meal[] = allMeals.map((meal: any, index: number) => {
+          const carbsValue = meal.carbohydrates || meal.carbs || 0;
+          const isCustom = meal.isCustom || false;
+
+          return {
+            id: meal.id || `meal-${index}`,
+            category: meal.category || "Обед",
+            name: meal.name || "Рецепт",
+            calories: meal.calories || 350,
+            proteins: meal.proteins || 20,
+            fats: meal.fats || 10,
+            carbohydrates: carbsValue,
+            weight: meal.weight || "250г",
+            marked: meal.marked || false,
+            bookmarked: meal.bookmarked || false,
+            cookingTime: parseCookingTime(meal.cookingTime),
+            difficultyLevel: meal.difficultyLevel || "Легко",
+            rating: meal.rating || 0,
+            recipeId: meal.recipeId || null,
+            image: meal.imageUrl ? { uri: meal.imageUrl } : DEFAULT_MEAL_IMAGE,
+            imageUrl: meal.imageUrl || null,
+            isCustom: isCustom,
+            canBeRemoved: meal.canBeRemoved || isCustom,
+            addedAt: meal.addedAt || new Date().toISOString(),
+            originalPlanId: !isCustom ? meal.id || `meal-${index}` : undefined,
+          };
         });
 
-        // Обновляем локальное состояние
-        setMeals((prev) => {
-          const updated = [...prev, newMeal];
-
-          // Обновляем КБЖУ
-          setRecommendedKBRU((prevKBRU) => ({
-            proteins: prevKBRU.proteins + newMeal.proteins,
-            fats: prevKBRU.fats + newMeal.fats,
-            carbohydrates: prevKBRU.carbohydrates + newMeal.carbohydrates,
-          }));
-
-          // Обновляем статистику калорий
-          setUserData((prev) => ({
-            ...prev,
-            consumedCalories: prev.consumedCalories + newMeal.calories,
-          }));
-
-          return updated;
-        });
-
-        Alert.alert("Успех", "Рецепт добавлен в рацион!");
-        setPendingRecipe(null);
-        setShowCategoryModal(false);
-      } catch (error) {
-        console.error("Ошибка добавления рецепта:", error);
-        Alert.alert("Ошибка", "Не удалось добавить рецепт");
-      }
-    },
-    [userId, meals]
-  );
-
-  // Функция для удаления кастомного рецепта
-  const removeMeal = useCallback(
-    async (mealId: string) => {
-      const mealToRemove = meals.find((meal) => meal.id === mealId);
-      if (!mealToRemove || !userId) return;
-
-      if (mealToRemove.canBeRemoved) {
-        Alert.alert(
-          "Удалить рецепт",
-          `Удалить "${mealToRemove.name}" из рациона?`,
-          [
-            { text: "Отмена", style: "cancel" },
-            {
-              text: "Удалить",
-              style: "destructive",
-              onPress: async () => {
-                try {
-                  // Удаляем из базы данных
-                  await dailyRationService.removeCustomMealFromPlan(
-                    userId,
-                    new Date(),
-                    mealId
-                  );
-
-                  // Обновляем локальное состояние
-                  setMeals((prev) => prev.filter((meal) => meal.id !== mealId));
-
-                  // Вычитаем калории и КБЖУ
-                  if (mealToRemove.marked) {
-                    setUserData((prev) => ({
-                      ...prev,
-                      consumedCalories:
-                        prev.consumedCalories - mealToRemove.calories,
-                    }));
-                  }
-
-                  // Обновляем КБЖУ
-                  setRecommendedKBRU((prev) => ({
-                    proteins: prev.proteins - mealToRemove.proteins,
-                    fats: prev.fats - mealToRemove.fats,
-                    carbohydrates:
-                      prev.carbohydrates - mealToRemove.carbohydrates,
-                  }));
-
-                  Alert.alert("Успех", "Рецепт удален из рациона");
-                } catch (error) {
-                  console.error("Ошибка удаления рецепта:", error);
-                  Alert.alert("Ошибка", "Не удалось удалить рецепт");
-                }
-              },
-            },
-          ]
-        );
-      } else {
-        Alert.alert("Ошибка", "Сгенерированные рецепты нельзя удалить");
-      }
-    },
-    [meals, userId]
-  );
-
-  // 2. Загрузка ежедневного плана
-  const loadDailyPlan = useCallback(
-    async (forceRegenerate = false) => {
-      if (!userId) {
-        console.log("⚠️ No user ID, skipping plan load");
-        return;
-      }
-
-      try {
-        setIsGeneratingPlan(true);
-
-        const today = new Date().toISOString().split('T')[0];
+        setMeals(formattedMeals);
         
-        // Проверяем, изменился ли день
-        if (lastPlanDate !== today) {
-          console.log(`🔄 Day changed from ${lastPlanDate} to ${today}`);
-          dailyRationService.clearCache();
-          setLastPlanDate(today);
-        }
+        // Сохраняем оригинальную версию для отслеживания изменений
+        setOriginalMeals([...formattedMeals]);
 
-        // Флаги для отслеживания состояния
-        let plan = null;
-        let isNewPlan = false;
-        let shouldCreateDefaultMeals = false;
+        // Инициализируем хэш
+        lastMealsUpdateRef.current = getMealsHash(formattedMeals);
 
-        // 1. Проверяем, нужно ли регенерировать из-за настроек
-        const shouldRegenerate = forceRegenerate || userSettingsChanged;
-
-        if (shouldRegenerate) {
-          console.log("🔄 User settings changed, creating new plan");
-          plan = await dailyRationService.createNewPlanWithUserSettings(userId);
-          setUserSettingsChanged(false);
-          isNewPlan = true;
-        } else {
-          // 2. Пытаемся получить существующий план
-          try {
-            plan = await dailyRationService.getOrGenerateDailyPlan(userId);
-            console.log("✅ Existing plan loaded from DB or cache");
-          } catch (error) {
-            console.log("⚠️ Error loading plan, checking DB directly:", error);
-            
-            // Пытаемся получить план напрямую из БД
-            const dateStr = today;
-            const planId = `${userId}_${dateStr}`;
-            
-            if (db) {
-              const planRef = doc(db, 'ration_plan_days', planId);
-              const planSnap = await getDoc(planRef);
-              
-              if (planSnap.exists()) {
-                console.log("✅ Plan found directly in DB");
-                const data = planSnap.data();
-                const meals = data.meals || [];
-                const customMeals = data.customMeals || [];
-                const allMeals = [...meals, ...customMeals];
-                
-                plan = {
-                  id: planId,
-                  userId,
-                  date: data.date || dateStr,
-                  dayOfWeek: data.dayOfWeek || '',
-                  userTargets: data.userTargets || { dailyCalories: 2000, dietType: 'Обычное' },
-                  meals: allMeals,
-                  customMeals: customMeals,
-                  stats: data.stats || {
-                    totalCalories: allMeals.reduce((sum: number, meal: any) => sum + (meal.calories || 0), 0),
-                    totalProteins: allMeals.reduce((sum: number, meal: any) => sum + (meal.proteins || 0), 0),
-                    totalFats: allMeals.reduce((sum: number, meal: any) => sum + (meal.fats || 0), 0),
-                    totalCarbs: allMeals.reduce((sum: number, meal: any) => sum + (meal.carbohydrates || 0), 0),
-                    totalCookingTime: allMeals.reduce((sum: number, meal: any) => sum + (meal.cookingTime || 0), 0),
-                    completedMeals: allMeals.filter((meal: any) => meal.marked).length,
-                    totalMeals: allMeals.length
-                  },
-                  timestamps: data.timestamps || {
-                    createdAt: new Date().toISOString(),
-                    updatedAt: new Date().toISOString()
-                  }
-                };
-              } else {
-                console.log("⚠️ No plan in DB, will check if we should create default");
-                shouldCreateDefaultMeals = true;
-              }
-            } else {
-              shouldCreateDefaultMeals = true;
-            }
-          }
-        }
-
-        // 3. Если плана нет и мы должны создать стандартные рецепты (только для нового дня)
-        if (!plan && shouldCreateDefaultMeals && !hasSavedToday) {
-          console.log("⚠️ Creating default meals for new day");
-          const defaultMeals: Meal[] = [
-            {
-              id: "default-breakfast-1",
-              category: "Завтрак",
-              name: "Овсяная каша с фрукты",
-              calories: 350,
-              proteins: 12,
-              fats: 8,
-              carbohydrates: 58,
-              weight: "250г",
-              marked: false,
-              bookmarked: false,
-              cookingTime: 15,
-              difficultyLevel: "Легко",
-              rating: 4.5,
-              image: DEFAULT_MEAL_IMAGE,
-              isCustom: false,
-              canBeRemoved: false,
-            },
-            {
-              id: "default-lunch-1",
-              category: "Обед",
-              name: "Куриная грудка с овощами",
-              calories: 450,
-              proteins: 35,
-              fats: 12,
-              carbohydrates: 40,
-              weight: "300г",
-              marked: false,
-              bookmarked: false,
-              cookingTime: 30,
-              difficultyLevel: "Легко",
-              rating: 4.7,
-              image: DEFAULT_MEAL_IMAGE,
-              isCustom: false,
-              canBeRemoved: false,
-            },
-            {
-              id: "default-dinner-1",
-              category: "Ужин",
-              name: "Запеченная рыба с салатом",
-              calories: 400,
-              proteins: 30,
-              fats: 15,
-              carbohydrates: 25,
-              weight: "280г",
-              marked: false,
-              bookmarked: false,
-              cookingTime: 25,
-              difficultyLevel: "Средне",
-              rating: 4.6,
-              image: DEFAULT_MEAL_IMAGE,
-              isCustom: false,
-              canBeRemoved: false,
-            },
-            {
-              id: "default-snack-1",
-              category: "Перекусы",
-              name: "Йогурт с орехами и мёдом",
-              calories: 200,
-              proteins: 10,
-              fats: 12,
-              carbohydrates: 15,
-              weight: "150г",
-              marked: false,
-              bookmarked: false,
-              cookingTime: 5,
-              difficultyLevel: "Легко",
-              rating: 4.3,
-              image: DEFAULT_MEAL_IMAGE,
-              isCustom: false,
-              canBeRemoved: false,
-            },
-          ];
-          
-          plan = { meals: defaultMeals };
-          isNewPlan = true;
-        }
-
-        // 4. Если плана все еще нет, значит пользователь уже сохранял сегодня
-        // и мы просто показываем пустой рацион
-        if (!plan) {
-          console.log("✅ No plan to load - user might have cleared or not created one yet");
-          setMeals([]);
-          setRecommendedKBRU({ proteins: 0, fats: 0, carbohydrates: 0 });
-          setUserData(prev => ({ ...prev, consumedCalories: 0 }));
-          return;
-        }
-
-        // Преобразуем план в формат для отображения
-        const formattedMeals: Meal[] = plan.meals.map(
-          (meal: any, index: number) => {
-            const carbsValue = meal.carbohydrates || meal.carbs || 0;
-            const isCustom = meal.isCustom || false;
-            
-            // ✅ ВАЖНО: Сохраняем оригинальный ID из плана
-            const mealId = meal.id || `meal-${index}`;
-
-            const baseMeal = {
-              id: mealId,
-              category: meal.category || "Обед",
-              name: meal.name || "Рецепт",
-              calories: meal.calories || 350,
-              proteins: meal.proteins || 20,
-              fats: meal.fats || 10,
-              carbohydrates: carbsValue,
-              weight: meal.weight || "250г",
-              marked: meal.marked || false,
-              bookmarked: meal.bookmarked || false,
-              cookingTime: parseCookingTime(meal.cookingTime),
-              difficultyLevel: meal.difficultyLevel || "Легко",
-              rating: meal.rating || 0,
-              recipeId: meal.recipeId || mealId,
-              image: meal.imageUrl
-                ? { uri: meal.imageUrl }
-                : DEFAULT_MEAL_IMAGE,
-              imageUrl: meal.imageUrl || null,
-              isCustom: isCustom,
-              canBeRemoved: meal.canBeRemoved || isCustom,
-              addedAt: meal.addedAt || new Date().toISOString(),
-            };
-
-            return baseMeal;
-          }
-        );
-
-        // Удаляем дубликаты по ID
-        const uniqueMeals = formattedMeals.reduce((acc: Meal[], current) => {
-          const exists = acc.find(meal => meal.id === current.id);
-          if (!exists) {
-            acc.push(current);
-          }
-          return acc;
-        }, []);
-
-        setMeals(uniqueMeals);
-
-        // Сохраняем оригинальную версию только если это новый план
-        if (isNewPlan && originalMeals.length === 0) {
-          setOriginalMeals([...uniqueMeals]);
-        } else if (!isNewPlan && originalMeals.length === 0) {
-          // Если это загрузка существующего плана, тоже сохраняем как оригинал
-          setOriginalMeals([...uniqueMeals]);
-        }
-
-        // Обновляем потребленные калории и КБЖУ
-        const consumed = uniqueMeals
+        // Обновляем статистику
+        const consumed = formattedMeals
           .filter((meal) => meal.marked)
           .reduce((sum, meal) => sum + meal.calories, 0);
 
-        const totalKBRU = uniqueMeals.reduce(
+        const totalKBRU = formattedMeals.reduce(
           (acc, meal) => ({
             proteins: acc.proteins + meal.proteins,
             fats: acc.fats + meal.fats,
@@ -890,101 +858,258 @@ export default function Home() {
         setRecommendedKBRU(totalKBRU);
         setUserData((prev) => ({ ...prev, consumedCalories: consumed }));
 
-        console.log("✅ Daily plan loaded:", {
-          meals: uniqueMeals.length,
-          isNewPlan,
-          date: today,
-          hasSavedToday,
-        });
-        
-        // Если это новый план и мы его создали, автоматически сохраняем в БД
-        if (isNewPlan && plan && plan.meals && plan.meals.length > 0) {
-          console.log("💾 Auto-saving new plan to DB");
-          try {
-            await dailyRationService.savePlan({
-              id: `${userId}_${today}`,
-              userId,
-              date: today,
-              dayOfWeek: new Date().toLocaleDateString('ru-RU', { weekday: 'long' }),
-              userTargets: {
-                dailyCalories: userData.dailyCalories,
-                dietType: 'Обычное'
-              },
-              meals: uniqueMeals.filter(m => !m.isCustom),
-              customMeals: uniqueMeals.filter(m => m.isCustom),
-              stats: {
-                totalCalories: totalKBRU.proteins * 4 + totalKBRU.fats * 9 + totalKBRU.carbohydrates * 4,
-                totalProteins: totalKBRU.proteins,
-                totalFats: totalKBRU.fats,
-                totalCarbs: totalKBRU.carbohydrates,
-                totalCookingTime: uniqueMeals.reduce((sum, meal) => sum + meal.cookingTime, 0),
-                completedMeals: uniqueMeals.filter(m => m.marked).length,
-                totalMeals: uniqueMeals.length
-              },
-              timestamps: {
-                createdAt: new Date().toISOString(),
-                updatedAt: new Date().toISOString()
-              }
-            });
-          } catch (error) {
-            console.error("❌ Error auto-saving plan:", error);
-          }
+        // Проверяем, сохранял ли пользователь сегодня
+        if (data.date === today) {
+          setHasSavedToday(true);
+        } else {
+          setHasSavedToday(false);
+          setHasUnsavedChanges(false);
         }
 
-      } catch (error) {
-        console.error("❌ Critical error loading plan:", error);
-        Alert.alert(
-          "Ошибка",
-          "Не удалось загрузить рацион. Попробуйте обновить."
-        );
-      } finally {
-        setIsGeneratingPlan(false);
-        setIsRefreshing(false);
-      }
-    },
-    [userId, userSettingsChanged, lastPlanDate, db, originalMeals, hasSavedToday, userData.dailyCalories]
-  );
+        console.log("✅ Plan loaded successfully");
+      } else {
+        // План не существует - проверяем, нужно ли создавать новый
+        const isNewDay = checkIfNewDay();
+        
+        if (isNewDay && !hasSavedToday) {
+          console.log("🆕 Creating new plan for new day");
+          
+          // Создаем новый план через сервис
+          const newPlan = await dailyRationService.createNewPlanWithUserSettings(
+            currentUser.uid
+          );
 
-  // Загружаем план только при готовности аутентификации
+          if (newPlan) {
+            // Преобразуем план
+            const allPlanMeals = [
+              ...(newPlan.meals || []),
+              ...(newPlan.customMeals || []),
+            ];
+            
+            const formattedMeals: Meal[] = allPlanMeals.map((meal: any, index: number) => {
+              const carbsValue = meal.carbohydrates || meal.carbs || 0;
+              const isCustom = meal.isCustom || false;
+
+              return {
+                id: meal.id || `meal-${index}`,
+                category: meal.category || "Обед",
+                name: meal.name || "Рецепт",
+                calories: meal.calories || 350,
+                proteins: meal.proteins || 20,
+                fats: meal.fats || 10,
+                carbohydrates: carbsValue,
+                weight: meal.weight || "250г",
+                marked: meal.marked || false,
+                bookmarked: meal.bookmarked || false,
+                cookingTime: parseCookingTime(meal.cookingTime),
+                difficultyLevel: meal.difficultyLevel || "Легко",
+                rating: meal.rating || 0,
+                recipeId: meal.recipeId || null,
+                image: meal.imageUrl ? { uri: meal.imageUrl } : DEFAULT_MEAL_IMAGE,
+                imageUrl: meal.imageUrl || null,
+                isCustom: isCustom,
+                canBeRemoved: meal.canBeRemoved || isCustom,
+                addedAt: meal.addedAt || new Date().toISOString(),
+                originalPlanId: !isCustom ? meal.id || `meal-${index}` : undefined,
+              };
+            });
+
+            setMeals(formattedMeals);
+            setOriginalMeals([...formattedMeals]);
+            setLastPlanDate(today);
+            
+            // Инициализируем хэш
+            lastMealsUpdateRef.current = getMealsHash(formattedMeals);
+            
+            const consumed = formattedMeals
+              .filter((meal) => meal.marked)
+              .reduce((sum, meal) => sum + meal.calories, 0);
+
+            const totalKBRU = formattedMeals.reduce(
+              (acc, meal) => ({
+                proteins: acc.proteins + meal.proteins,
+                fats: acc.fats + meal.fats,
+                carbohydrates: acc.carbohydrates + meal.carbohydrates,
+              }),
+              { proteins: 0, fats: 0, carbohydrates: 0 }
+            );
+
+            setRecommendedKBRU(totalKBRU);
+            setUserData((prev) => ({ ...prev, consumedCalories: consumed }));
+            
+            // Новый день - сбрасываем флаг сохранения
+            setHasSavedToday(false);
+            setHasUnsavedChanges(false);
+          }
+        } else {
+          // Не новый день и план не существует - показываем пустой
+          console.log("📭 No plan exists, showing empty");
+          setMeals([]);
+          setOriginalMeals([]);
+          setRecommendedKBRU({ proteins: 0, fats: 0, carbohydrates: 0 });
+          setUserData((prev) => ({ ...prev, consumedCalories: 0 }));
+          lastMealsUpdateRef.current = '';
+          setHasSavedToday(false);
+          setHasUnsavedChanges(false);
+        }
+      }
+    } catch (error) {
+      console.error("❌ Error loading plan:", error);
+      Alert.alert("Ошибка", "Не удалось загрузить рацион");
+    } finally {
+      setIsPlanLoading(false);
+      setIsGeneratingPlan(false);
+    }
+  }, [currentUser, db, checkIfNewDay, hasSavedToday, getTodayDate]);
+
+  // Инициализация загрузки плана
   useEffect(() => {
-    if (isAuthReady && userId) {
+    if (isAuthReady && currentUser && db && !hasInitialLoadRef.current) {
+      console.log("🚀 Initial plan load");
+      hasInitialLoadRef.current = true;
       loadDailyPlan();
     }
-  }, [isAuthReady, userId]);
+  }, [isAuthReady, currentUser, db, loadDailyPlan]);
 
-  // Проверяем изменения в рационе
+  // Проверка параметров для добавления рецепта
   useEffect(() => {
-    if (originalMeals.length > 0 && meals.length > 0) {
-      // Простая проверка на изменения
-      const hasChanges = 
-        meals.length !== originalMeals.length ||
-        meals.some((meal, index) => {
-          const originalMeal = originalMeals[index];
-          if (!originalMeal) return true;
-          return (
-            meal.id !== originalMeal.id ||
-            meal.marked !== originalMeal.marked ||
-            meal.bookmarked !== originalMeal.bookmarked ||
-            meal.isCustom !== originalMeal.isCustom ||
-            meal.name !== originalMeal.name
-          );
-        });
-      
-      setHasUnsavedChanges(hasChanges);
-      
-      // Если есть изменения и ранее был сохранен, разблокируем кнопку
-      if (hasChanges && hasSavedToday) {
-        console.log("🔄 Рацион изменен, сбрасываем флаг сохранения");
-        setHasSavedToday(false);
+    if (params.selectedRecipe && currentUser && db) {
+      try {
+        const recipeData = JSON.parse(params.selectedRecipe as string);
+        console.log("📥 Received recipe to add:", recipeData.title);
+        
+        // Добавляем рецепт
+        addRecipeToPlan(recipeData);
+
+        // Очищаем параметры
+        setTimeout(() => {
+          router.setParams({ selectedRecipe: undefined });
+        }, 100);
+      } catch (error) {
+        console.error("Ошибка парсинга выбранного рецепта:", error);
       }
     }
-  }, [meals, originalMeals, hasSavedToday]);
+  }, [params.selectedRecipe, currentUser, db, router, addRecipeToPlan]);
 
-  // 3. Загрузка данных пользователя с улучшенной логикой
+  // Обработка замены рецепта
   useEffect(() => {
-    if (!db || !userId) return;
+    if (params.replaceRecipe && currentUser && db) {
+      try {
+        const replaceData = JSON.parse(params.replaceRecipe as string);
+        console.log("🔄 Received recipe to replace:", replaceData.title);
+        
+        // Обрабатываем замену рецепта
+        handleReplaceRecipe(replaceData);
 
-    const userDocRef = doc(db, `users/${userId}`);
+        // Очищаем параметры
+        setTimeout(() => {
+          router.setParams({ replaceRecipe: undefined });
+        }, 100);
+      } catch (error) {
+        console.error("Ошибка парсинга данных замены рецепта:", error);
+      }
+    }
+  }, [params.replaceRecipe, currentUser, db, router, handleReplaceRecipe]);
+
+  // 2. Слушатель изменений плана в реальном времени
+  useEffect(() => {
+    if (!currentUser || !db || !todayPlanId) {
+      return;
+    }
+
+    console.log("👂 Setting up real-time plan listener for:", todayPlanId);
+    const planRef = doc(db, "ration_plan_days", todayPlanId);
+
+    const unsubscribePlan = onSnapshot(
+      planRef,
+      (docSnap) => {
+        if (!docSnap.exists()) {
+          console.log("📭 No plan document found");
+          return;
+        }
+
+        // Если мы сами обновляем данные, пропускаем обновление из слушателя
+        if (!shouldUpdateFromListenerRef.current) {
+          console.log("⏸️ Skipping listener update - manual update in progress");
+          return;
+        }
+
+        console.log("📡 Real-time plan update received");
+        const data = docSnap.data();
+        const mealsData = data.meals || [];
+        const customMeals = data.customMeals || [];
+        const allMeals = [...mealsData, ...customMeals];
+
+        const formattedMeals: Meal[] = allMeals.map((meal: any, index: number) => {
+          const carbsValue = meal.carbohydrates || meal.carbs || 0;
+          const isCustom = meal.isCustom || false;
+
+          return {
+            id: meal.id || `meal-${index}`,
+            category: meal.category || "Обед",
+            name: meal.name || "Рецепт",
+            calories: meal.calories || 350,
+            proteins: meal.proteins || 20,
+            fats: meal.fats || 10,
+            carbohydrates: carbsValue,
+            weight: meal.weight || "250г",
+            marked: meal.marked || false,
+            bookmarked: meal.bookmarked || false,
+            cookingTime: parseCookingTime(meal.cookingTime),
+            difficultyLevel: meal.difficultyLevel || "Легко",
+            rating: meal.rating || 0,
+            recipeId: meal.recipeId || null,
+            image: meal.imageUrl ? { uri: meal.imageUrl } : DEFAULT_MEAL_IMAGE,
+            imageUrl: meal.imageUrl || null,
+            isCustom: isCustom,
+            canBeRemoved: meal.canBeRemoved || isCustom,
+            addedAt: meal.addedAt || new Date().toISOString(),
+            originalPlanId: !isCustom ? meal.id || `meal-${index}` : undefined,
+          };
+        });
+
+        const currentHash = getMealsHash(formattedMeals);
+        
+        // Обновляем только если данные действительно изменились
+        if (currentHash !== lastMealsUpdateRef.current) {
+          console.log("🔄 Updating meals from real-time listener");
+          lastMealsUpdateRef.current = currentHash;
+          
+          setMeals(formattedMeals);
+          
+          // Обновляем статистику
+          const consumed = formattedMeals
+            .filter((meal) => meal.marked)
+            .reduce((sum, meal) => sum + meal.calories, 0);
+
+          const totalKBRU = formattedMeals.reduce(
+            (acc, meal) => ({
+              proteins: acc.proteins + meal.proteins,
+              fats: acc.fats + meal.fats,
+              carbohydrates: acc.carbohydrates + meal.carbohydrates,
+            }),
+            { proteins: 0, fats: 0, carbohydrates: 0 }
+          );
+
+          setRecommendedKBRU(totalKBRU);
+          setUserData((prev) => ({ ...prev, consumedCalories: consumed }));
+        } else {
+          console.log("✅ No changes detected, skipping update");
+        }
+      },
+      (error) => {
+        console.error("❌ Error in plan listener:", error);
+      }
+    );
+
+    return () => unsubscribePlan();
+  }, [currentUser, db, todayPlanId]);
+
+  // 3. Загрузка данных пользователя
+  useEffect(() => {
+    if (!db || !currentUser) return;
+
+    const userDocRef = doc(db, `users/${currentUser.uid}`);
 
     const unsubscribeProfile = onSnapshot(
       userDocRef,
@@ -1009,12 +1134,13 @@ export default function Home() {
 
           // Обновляем дату последнего сохранения
           const lastSave = data.lastDailyPlanSave;
-          const today = new Date().toISOString().split("T")[0];
-          
+          const today = getTodayDate();
+
           if (lastSave === today) {
             setHasSavedToday(true);
           } else {
             setHasSavedToday(false);
+            setHasUnsavedChanges(false);
           }
           setLastSaveDate(lastSave || null);
 
@@ -1039,18 +1165,26 @@ export default function Home() {
           }));
 
           // Проверяем, изменились ли ключевые параметры пользователя
-          // Только если изменения значительные, отмечаем нужду в регенерации
           const caloriesChanged = Math.abs(currentCalories - oldCalories) > 100;
-          const proteinsChanged = Math.abs(newTargetProteins - oldTargetProteins) > 10;
+          const proteinsChanged =
+            Math.abs(newTargetProteins - oldTargetProteins) > 10;
           const fatsChanged = Math.abs(newTargetFats - oldTargetFats) > 10;
           const carbsChanged = Math.abs(newTargetCarbs - oldTargetCarbs) > 10;
 
-          if (caloriesChanged || proteinsChanged || fatsChanged || carbsChanged) {
+          if (
+            caloriesChanged ||
+            proteinsChanged ||
+            fatsChanged ||
+            carbsChanged
+          ) {
             console.log(
-              "🔄 User settings changed significantly, will regenerate on next refresh",
+              "🔄 User settings changed significantly",
               { caloriesChanged, proteinsChanged, fatsChanged, carbsChanged }
             );
             setUserSettingsChanged(true);
+            
+            // Перезагружаем план при значительных изменениях настроек
+            loadDailyPlan();
           }
         }
       },
@@ -1060,7 +1194,7 @@ export default function Home() {
     );
 
     return () => unsubscribeProfile();
-  }, [db, userId]);
+  }, [db, currentUser, getTodayDate, loadDailyPlan]);
 
   // 4. Расчет целевого КБЖУ
   useEffect(() => {
@@ -1081,15 +1215,103 @@ export default function Home() {
     });
   }, [userData.dailyCalories]);
 
+  // Функция для удаления кастомного рецепта
+  const removeMeal = useCallback(
+    async (mealId: string) => {
+      const mealToRemove = meals.find((meal) => meal.id === mealId);
+      if (!mealToRemove || !currentUser || !db) return;
+
+      if (mealToRemove.canBeRemoved) {
+        Alert.alert(
+          "Удалить рецепт",
+          `Удалить "${mealToRemove.name}" из рациона?`,
+          [
+            { text: "Отмена", style: "cancel" },
+            {
+              text: "Удалить",
+              style: "destructive",
+              onPress: async () => {
+                try {
+                  const today = getTodayDate();
+                  const planId = `${currentUser.uid}_${today}`;
+                  
+                  // 1. Обновляем локальное состояние
+                  const updatedMeals = meals.filter((meal) => meal.id !== mealId);
+                  setMeals(updatedMeals);
+
+                  // Обновляем статистику
+                  if (mealToRemove.marked) {
+                    setUserData((prev) => ({
+                      ...prev,
+                      consumedCalories:
+                        prev.consumedCalories - mealToRemove.calories,
+                    }));
+                  }
+
+                  setRecommendedKBRU((prev) => ({
+                    proteins: prev.proteins - mealToRemove.proteins,
+                    fats: prev.fats - mealToRemove.fats,
+                    carbohydrates:
+                      prev.carbohydrates - mealToRemove.carbohydrates,
+                  }));
+
+                  // 2. Временно отключаем обновления из слушателя
+                  shouldUpdateFromListenerRef.current = false;
+                  lastMealsUpdateRef.current = getMealsHash(updatedMeals);
+
+                  // 3. Обновляем базу данных
+                  const planRef = doc(db, "ration_plan_days", planId);
+                  const planSnap = await getDoc(planRef);
+
+                  if (planSnap.exists()) {
+                    const planData = planSnap.data();
+                    const currentCustomMeals = planData.customMeals || [];
+
+                    // Удаляем рецепт из кастомных
+                    const updatedCustomMeals = currentCustomMeals.filter(
+                      (meal: any) => meal.id !== mealId
+                    );
+
+                    await updateDoc(planRef, {
+                      customMeals: updatedCustomMeals,
+                      "timestamps.updatedAt": new Date().toISOString(),
+                    });
+                  }
+
+                  // Устанавливаем флаг изменений
+                  setHasUnsavedChanges(true);
+                  
+                  Alert.alert("Успех", "Рецепт удален из рациона");
+                } catch (error) {
+                  console.error("Ошибка удаления рецепта:", error);
+                  Alert.alert("Ошибка", "Не удалось удалить рецепт");
+                } finally {
+                  // Включаем обновления из слушателя через 2 секунды
+                  setTimeout(() => {
+                    shouldUpdateFromListenerRef.current = true;
+                  }, 2000);
+                }
+              },
+            },
+          ]
+        );
+      } else {
+        Alert.alert("Ошибка", "Сгенерированные рецепты нельзя удалить");
+      }
+    },
+    [meals, currentUser, db, getTodayDate]
+  );
+
   // 5. Функция обновления состояния приема пищи
   const updateMealState = useCallback(
     async (mealId: string, updates: Partial<Meal>) => {
-      if (!userId || !db) return;
+      if (!currentUser || !db) return;
 
       try {
         const mealIndex = meals.findIndex((m) => m.id === mealId);
         if (mealIndex === -1) return;
 
+        // 1. Обновляем локальное состояние
         const updatedMeals = [...meals];
         updatedMeals[mealIndex] = { ...updatedMeals[mealIndex], ...updates };
         setMeals(updatedMeals);
@@ -1103,30 +1325,81 @@ export default function Home() {
           consumedCalories: newConsumedCalories,
         }));
 
+        // 2. Временно отключаем обновления из слушателя
         if (updates.marked !== undefined) {
-          await dailyRationService.updateMealStatus(
-            userId,
-            new Date(),
-            mealId,
-            { marked: updates.marked }
-          );
+          shouldUpdateFromListenerRef.current = false;
+          lastMealsUpdateRef.current = getMealsHash(updatedMeals);
+
+          try {
+            const today = getTodayDate();
+            const planId = `${currentUser.uid}_${today}`;
+            const meal = meals[mealIndex];
+            const planRef = doc(db, "ration_plan_days", planId);
+            const planSnap = await getDoc(planRef);
+
+            if (planSnap.exists()) {
+              const planData = planSnap.data();
+
+              if (meal.isCustom) {
+                // Обновляем кастомный рецепт
+                const customMeals = planData.customMeals || [];
+                const updatedCustomMeals = customMeals.map(
+                  (customMeal: any) => {
+                    if (customMeal.id === mealId) {
+                      return { ...customMeal, marked: updates.marked };
+                    }
+                    return customMeal;
+                  }
+                );
+
+                await updateDoc(planRef, {
+                  customMeals: updatedCustomMeals,
+                  "timestamps.updatedAt": new Date().toISOString(),
+                });
+              } else {
+                // Обновляем рецепт из плана
+                const planMeals = planData.meals || [];
+                const updatedPlanMeals = planMeals.map((planMeal: any) => {
+                  if (
+                    planMeal.id === mealId ||
+                    planMeal.id === meal.originalPlanId
+                  ) {
+                    return { ...planMeal, marked: updates.marked };
+                  }
+                  return planMeal;
+                });
+
+                await updateDoc(planRef, {
+                  meals: updatedPlanMeals,
+                  "timestamps.updatedAt": new Date().toISOString(),
+                });
+              }
+            }
+          } catch (error) {
+            console.error("❌ Error updating meal in DB:", error);
+          } finally {
+            // Включаем обновления из слушателя через 2 секунды
+            setTimeout(() => {
+              shouldUpdateFromListenerRef.current = true;
+            }, 2000);
+          }
         }
+
+        // Устанавливаем флаг изменений
+        setHasUnsavedChanges(true);
       } catch (error) {
         console.error("❌ Error updating meal state:", error);
       }
     },
-    [userId, db, meals]
+    [currentUser, db, meals, getTodayDate]
   );
 
   // Оптимизированная функция для избранного
   const toggleRecipeFavorite = useCallback(
-    async (mealId: string, recipeId?: string) => {
-      if (!userId || isUpdatingBookmark) {
+    async (mealId: string, recipeId?: string | null) => {
+      if (!currentUser || isUpdatingBookmark || !recipeId) {
         return;
       }
-
-      const actualRecipeId = recipeId || mealId;
-      if (!actualRecipeId) return;
 
       setIsUpdatingBookmark(mealId);
 
@@ -1148,15 +1421,15 @@ export default function Home() {
           try {
             if (isCurrentlyBookmarked) {
               await favoriteService.removeFromFavorites(
-                actualRecipeId,
+                recipeId,
                 "recipe",
-                userId
+                currentUser.uid
               );
             } else {
               await favoriteService.addToFavorites(
-                actualRecipeId,
+                recipeId,
                 "recipe",
-                userId
+                currentUser.uid
               );
             }
           } catch (error) {
@@ -1177,228 +1450,109 @@ export default function Home() {
         setIsUpdatingBookmark(null);
       }
     },
-    [userId, meals, isUpdatingBookmark]
+    [currentUser, meals, isUpdatingBookmark]
   );
 
-  // Функция для сохранения дневного рациона как шаблона
+  // Упрощенная функция сохранения плана как шаблона
   const saveDailyPlanAsTemplate = useCallback(async () => {
-    if (!userId || meals.length === 0) {
+    if (!currentUser || meals.length === 0) {
       Alert.alert("Ошибка", "Нет данных для сохранения");
       return;
     }
 
     try {
       setIsSaving(true);
+      const today = getTodayDate();
 
-      const today = new Date().toISOString().split("T")[0];
-      const templateData: any = {
+      const templateData = {
         title: `Рацион на ${today}`,
-        description: `Сохраненный дневной рацион от ${new Date().toLocaleDateString(
-          "ru-RU"
-        )}`,
-        type: "daily",
-        days: [
-          {
-            day: 1,
-            meals: meals.map((meal) => ({
-              id: meal.id,
-              recipeId: meal.recipeId || meal.id,
-              name: meal.name,
-              category: meal.category,
-              calories: meal.calories,
-              proteins: meal.proteins,
-              fats: meal.fats,
-              carbohydrates: meal.carbohydrates,
-              weight: meal.weight,
-              cookingTime: meal.cookingTime,
-              difficultyLevel: meal.difficultyLevel || "Легко",
-              imageUrl: meal.image?.uri || null,
-              bookmarked: meal.bookmarked,
-              marked: meal.marked,
-              isCustom: meal.isCustom || false,
-            })),
-            stats: {
-              totalCalories: meals.reduce(
-                (sum, meal) => sum + meal.calories,
-                0
-              ),
-              totalProteins: meals.reduce(
-                (sum, meal) => sum + meal.proteins,
-                0
-              ),
-              totalFats: meals.reduce((sum, meal) => sum + meal.fats, 0),
-              totalCarbs: meals.reduce(
-                (sum, meal) => sum + meal.carbohydrates,
-                0
-              ),
-              totalCookingTime: meals.reduce((sum, meal) => {
-                return sum + (meal.cookingTime || 20);
-              }, 0),
-            },
-          },
-        ],
-        isTemplate: true,
-        isDailyPlan: true,
-        originalDate: today,
-        category: "Общее",
-        totalCalories: meals.reduce((sum, meal) => sum + meal.calories, 0),
-        totalDuration: "1 день",
-        mealsCount: meals.length,
-        status: "active",
+        description: `Дневной рацион от ${new Date().toLocaleDateString("ru-RU")}`,
+        meals: meals.map(meal => ({
+          id: meal.id,
+          recipeId: meal.recipeId,
+          name: meal.name,
+          category: meal.category,
+          calories: meal.calories,
+          proteins: meal.proteins,
+          fats: meal.fats,
+          carbohydrates: meal.carbohydrates,
+          weight: meal.weight,
+          cookingTime: meal.cookingTime,
+          difficultyLevel: meal.difficultyLevel,
+          imageUrl: meal.imageUrl,
+          isCustom: meal.isCustom,
+          marked: meal.marked,
+        })),
+        stats: {
+          totalCalories: meals.reduce((sum, meal) => sum + meal.calories, 0),
+          totalProteins: meals.reduce((sum, meal) => sum + meal.proteins, 0),
+          totalFats: meals.reduce((sum, meal) => sum + meal.fats, 0),
+          totalCarbs: meals.reduce((sum, meal) => sum + meal.carbohydrates, 0),
+          totalCookingTime: meals.reduce((sum, meal) => sum + (meal.cookingTime || 0), 0),
+        },
+        date: today,
         createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
       };
 
-      // Проверяем, сохранял ли пользователь уже сегодня
-      if (hasSavedToday && lastSaveDate === today && !hasUnsavedChanges) {
-        // Предлагаем обновить существующий шаблон
-        Alert.alert(
-          "Обновить сохраненный рацион?",
-          "Вы уже сохраняли рацион сегодня. Хотите обновить существующий шаблон новыми изменениями?",
-          [
-            {
-              text: "Отмена",
-              style: "cancel",
-            },
-            {
-              text: "Обновить",
-              onPress: async () => {
-                try {
-                  // Здесь нужно найти ID существующего шаблона и обновить его
-                  // Пока просто создаем новый с пометкой "Обновленный"
-                  const templateId = await rationPlanService.createRationPlan(
-                    userId,
-                    {
-                      ...templateData,
-                      title: `Рацион на ${today} (Обновленный)`,
-                    }
-                  );
-
-                  if (db) {
-                    await setDoc(
-                      doc(db, `users/${userId}`),
-                      {
-                        lastDailyPlanSave: today,
-                        lastDailyPlanUpdate: new Date().toISOString(),
-                      },
-                      { merge: true }
-                    );
-                  }
-
-                  setHasSavedToday(true);
-                  setOriginalMeals([...meals]);
-
-                  Alert.alert(
-                    "Успех!",
-                    "Дневной рацион обновлен. Вы можете найти его в разделе 'Мои планы'.",
-                    [
-                      {
-                        text: "Продолжить",
-                        style: "default",
-                      },
-                      {
-                        text: "Посмотреть",
-                        onPress: () => router.push("/saved-plans"),
-                      },
-                    ]
-                  );
-                } catch (error: any) {
-                  console.error("Ошибка обновления шаблона:", error);
-                  Alert.alert("Ошибка", error.message || "Не удалось обновить шаблон");
-                }
-              },
-            },
-            {
-              text: "Сохранить как новый",
-              onPress: async () => {
-                try {
-                  const templateId = await rationPlanService.createRationPlan(
-                    userId,
-                    {
-                      ...templateData,
-                      title: `Рацион на ${today} (Измененный)`,
-                    }
-                  );
-
-                  if (db) {
-                    await setDoc(
-                      doc(db, `users/${userId}`),
-                      {
-                        lastDailyPlanSave: today,
-                      },
-                      { merge: true }
-                    );
-                  }
-
-                  setHasSavedToday(true);
-                  setLastSaveDate(today);
-                  setOriginalMeals([...meals]);
-
-                  Alert.alert(
-                    "Успех!",
-                    "Новый вариант дневного рациона сохранен. Вы можете найти его в разделе 'Мои планы'.",
-                    [
-                      {
-                        text: "Продолжить",
-                        style: "default",
-                      },
-                      {
-                        text: "Посмотреть",
-                        onPress: () => router.push("/saved-plans"),
-                      },
-                    ]
-                  );
-                } catch (error: any) {
-                  console.error("Ошибка сохранения шаблона:", error);
-                  Alert.alert("Ошибка", error.message || "Не удалось сохранить шаблон");
-                }
-              },
-            },
-          ]
-        );
-      } else {
-        // Первое сохранение сегодня или есть изменения
-        const templateId = await rationPlanService.createRationPlan(
-          userId,
-          templateData
-        );
-
-        if (db) {
-          await setDoc(
-            doc(db, `users/${userId}`),
-            {
-              lastDailyPlanSave: today,
-            },
-            { merge: true }
-          );
-        }
-
-        setHasSavedToday(true);
-        setLastSaveDate(today);
-        setOriginalMeals([...meals]);
-
-        Alert.alert(
-          "Успех!",
-          "Дневной рацион сохранен как шаблон. Вы можете найти его в разделе 'Мои планы'.",
-          [
-            {
-              text: "Продолжить",
-              style: "default",
-            },
-            {
-              text: "Посмотреть",
-              onPress: () => router.push("/saved-plans"),
-            },
-          ]
+      // Сохраняем в Firebase
+      if (db) {
+        await setDoc(
+          doc(db, `users/${currentUser.uid}`),
+          {
+            lastDailyPlanSave: today,
+          },
+          { merge: true }
         );
       }
+
+      // Сохраняем как шаблон
+      await rationPlanService.createRationPlan(currentUser.uid, templateData);
+
+      setHasSavedToday(true);
+      setLastSaveDate(today);
+      setHasUnsavedChanges(false);
+      
+      // Обновляем оригинальные блюда после сохранения
+      setOriginalMeals([...meals]);
+
+      Alert.alert(
+        "Успех!",
+        "Дневной рацион сохранен как шаблон.",
+        [
+          { text: "Продолжить", style: "default" },
+          { 
+            text: "Посмотреть", 
+            onPress: () => router.push("/saved-plans") 
+          },
+        ]
+      );
     } catch (error: any) {
-      console.error("Ошибка сохранения шаблона:", error);
+      console.error("❌ Error saving template:", error);
       Alert.alert("Ошибка", error.message || "Не удалось сохранить шаблон");
     } finally {
       setIsSaving(false);
     }
-  }, [userId, meals, hasSavedToday, lastSaveDate, hasUnsavedChanges, db, router]);
+  }, [currentUser, meals, db, router, getTodayDate]);
+
+  // Проверка изменений в рационе
+  useEffect(() => {
+    if (originalMeals.length > 0 && meals.length > 0) {
+      const hasChanges = !arraysEqual(meals, originalMeals);
+      setHasUnsavedChanges(hasChanges);
+      
+      // Сбрасываем флаг сохранения при изменениях
+      if (hasChanges && hasSavedToday) {
+        // Оставляем hasSavedToday = true, но показываем "Обновить шаблон"
+        console.log("🔄 Есть несохраненные изменения, можно обновить шаблон");
+      }
+    } else if (meals.length > 0 && originalMeals.length === 0) {
+      // Если есть блюда, но нет оригинальных - это изменения
+      setHasUnsavedChanges(true);
+    } else if (meals.length === 0 && originalMeals.length === 0) {
+      // Если нет блюд - нет изменений
+      setHasUnsavedChanges(false);
+    }
+  }, [meals, originalMeals, hasSavedToday]);
 
   // 6. Обработчики UI
   const handleToggleMeal = useCallback(
@@ -1422,36 +1576,43 @@ export default function Home() {
   );
 
   const navigateToMealPage = (mealIndex: number) => {
-    const meal = meals[mealIndex];
-    if (!meal) return;
+  const meal = meals[mealIndex];
+  if (!meal) return;
 
-    const params: Record<string, string | number | null | undefined> = {
-      mealId: meal.id,
-      recipeId: meal.recipeId || meal.id || null,
-      mealName: meal.name,
-      category: meal.category,
-      mealIndex: mealIndex.toString(),
-      initialBookmarked: meal.bookmarked.toString(),
-      calories: meal.calories.toString(),
-      proteins: meal.proteins.toString(),
-      fats: meal.fats.toString(),
-      carbohydrates: meal.carbohydrates.toString(),
-      weight: meal.weight,
-      cookingTime: meal.cookingTime.toString(),
-      difficultyLevel: meal.difficultyLevel || "Легко",
-      rating: meal.rating?.toString() || "0",
-      fromScreen: "home",
-      isCustom: meal.isCustom?.toString() || "false",
-    } as any;
+  const params: Record<string, string | number | null | undefined> = {
+    mealId: meal.id,
+    recipeId: meal.recipeId || meal.id || null, 
+    mealName: meal.name,
+    category: meal.category,
+    mealIndex: mealIndex.toString(),
+    initialBookmarked: meal.bookmarked.toString(),
+    calories: meal.calories.toString(),
+    proteins: meal.proteins.toString(),
+    fats: meal.fats.toString(),
+    carbohydrates: meal.carbohydrates.toString(),
+    weight: meal.weight,
+    cookingTime: meal.cookingTime.toString(),
+    difficultyLevel: meal.difficultyLevel || "Легко",
+    rating: meal.rating?.toString() || "0",
+    fromScreen: "home",
+    isCustom: meal.isCustom?.toString() || "false",
+    imageUrl: meal.imageUrl || undefined, 
+  } as any;
 
-    router.push({
-      pathname: "/meal",
-      params,
-    });
-  };
+  console.log("🚀 Navigating to meal page with params:", {
+    recipeId: meal.recipeId,
+    mealId: meal.id,
+    isCustom: meal.isCustom
+  });
+
+  router.push({
+    pathname: "/meal",
+    params,
+  });
+};
 
   const navigateToProfile = () => {
-    if (userId) {
+    if (currentUser) {
       router.push("/profile");
     }
   };
@@ -1462,8 +1623,8 @@ export default function Home() {
 
   const handleRefresh = () => {
     setIsRefreshing(true);
-    // При обновлении загружаем существующий план, НЕ создаем новый
-    loadDailyPlan(false); // false = не регенерировать, просто загрузить
+    loadDailyPlan();
+    setIsRefreshing(false);
   };
 
   // 7. Компонент модального окна добавления рецепта
@@ -1529,60 +1690,8 @@ export default function Home() {
     </Modal>
   );
 
-  // Модальное окно выбора категории
-  const CategoryModal = () => (
-    <Modal
-      animationType="slide"
-      transparent={true}
-      visible={showCategoryModal}
-      onRequestClose={() => {
-        setShowCategoryModal(false);
-        setPendingRecipe(null);
-      }}
-    >
-      <View style={styles.modalOverlay}>
-        <View style={styles.modalContainer}>
-          <View style={styles.modalHeader}>
-            <Text style={styles.modalTitle}>Выберите категорию</Text>
-            <TouchableOpacity
-              onPress={() => {
-                setShowCategoryModal(false);
-                setPendingRecipe(null);
-              }}
-              style={styles.modalCloseButton}
-            >
-              <Ionicons name="close" size={24} color="#666" />
-            </TouchableOpacity>
-          </View>
-
-          <View style={styles.categoryModalContent}>
-            <Text style={styles.modalText}>
-              Выберите категорию для рецепта "
-              {pendingRecipe?.title || "Новый рецепт"}"
-            </Text>
-
-            {["Завтрак", "Обед", "Ужин", "Перекусы"].map((category) => (
-              <TouchableOpacity
-                key={category}
-                style={styles.categoryOption}
-                onPress={() => addRecipeToPlan(pendingRecipe, category)}
-              >
-                <Ionicons
-                  name={getCategoryIcon(category) as any}
-                  size={24}
-                  color="#6A9AA9"
-                />
-                <Text style={styles.categoryOptionText}>{category}</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-        </View>
-      </View>
-    </Modal>
-  );
-
   // 8. Обработка пустого состояния
-  if (loading || isGeneratingPlan) {
+  if (loading || isPlanLoading) {
     return (
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="large" color="#6A9AA9" />
@@ -1737,13 +1846,15 @@ export default function Home() {
             <TouchableOpacity
               style={[
                 styles.saveDailyPlanButton,
-                hasSavedToday && !hasUnsavedChanges && styles.saveDailyPlanButtonDisabled,
+                hasSavedToday &&
+                  !hasUnsavedChanges &&
+                  styles.saveDailyPlanButtonDisabled,
                 isSaving && styles.saveDailyPlanButtonSaving,
                 hasUnsavedChanges && styles.saveDailyPlanButtonChanged,
               ]}
               onPress={saveDailyPlanAsTemplate}
               activeOpacity={0.7}
-              disabled={(hasSavedToday && !hasUnsavedChanges) || isSaving}
+              disabled={isSaving} // Разрешаем нажатие всегда, кроме процесса сохранения
             >
               {isSaving ? (
                 <ActivityIndicator size="small" color="#6A9AA9" />
@@ -1751,31 +1862,33 @@ export default function Home() {
                 <>
                   <Ionicons
                     name={
-                      hasSavedToday && !hasUnsavedChanges 
-                        ? "checkmark-circle" 
-                        : hasUnsavedChanges 
-                        ? "refresh-outline" 
+                      hasSavedToday && !hasUnsavedChanges
+                        ? "checkmark-circle"
+                        : hasSavedToday && hasUnsavedChanges
+                        ? "refresh-outline"
                         : "copy-outline"
                     }
                     size={18}
                     color={
-                      hasSavedToday && !hasUnsavedChanges 
-                        ? "#4CAF50" 
-                        : hasUnsavedChanges 
-                        ? "#FF9800" 
+                      hasSavedToday && !hasUnsavedChanges
+                        ? "#4CAF50"
+                        : hasUnsavedChanges
+                        ? "#FF9800"
                         : "#6A9AA9"
                     }
                   />
                   <Text
                     style={[
                       styles.saveDailyPlanText,
-                      hasSavedToday && !hasUnsavedChanges && styles.saveDailyPlanTextDisabled,
+                      hasSavedToday &&
+                        !hasUnsavedChanges &&
+                        styles.saveDailyPlanTextDisabled,
                       hasUnsavedChanges && styles.saveDailyPlanTextChanged,
                     ]}
                   >
                     {hasSavedToday && !hasUnsavedChanges
                       ? "Сохранено сегодня"
-                      : hasUnsavedChanges
+                      : hasSavedToday && hasUnsavedChanges
                       ? "Обновить шаблон"
                       : "Сохранить как шаблон"}
                   </Text>
@@ -1953,9 +2066,6 @@ export default function Home() {
 
       {/* Модальное окно добавления рецепта */}
       <AddRecipeModal />
-
-      {/* Модальное окно выбора категории */}
-      <CategoryModal />
     </View>
   );
 }
@@ -2450,28 +2560,6 @@ const styles = StyleSheet.create({
     borderColor: "#E0E0E0",
   },
   modalOptionText: {
-    fontSize: 16,
-    color: "#1a1a1a",
-    fontFamily: "Playfair Display Regular",
-    marginLeft: 12,
-    flex: 1,
-  },
-  categoryModalContent: {
-    padding: 20,
-    alignItems: "center",
-  },
-  categoryOption: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#F8F8F8",
-    padding: 16,
-    borderRadius: 12,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: "#E0E0E0",
-    width: "100%",
-  },
-  categoryOptionText: {
     fontSize: 16,
     color: "#1a1a1a",
     fontFamily: "Playfair Display Regular",

@@ -1,6 +1,6 @@
-// components/Meal.js
+// app/meal.tsx
 import { useLocalSearchParams, useRouter } from "expo-router";
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   Image,
   ScrollView,
@@ -12,7 +12,7 @@ import {
   ActivityIndicator,
   Alert,
 } from "react-native";
-import { Ionicons, Feather, MaterialCommunityIcons } from "@expo/vector-icons";
+import { Ionicons, Feather, MaterialCommunityIcons, MaterialIcons } from "@expo/vector-icons";
 import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 import {
   getAuth,
@@ -23,10 +23,9 @@ import {
 import { getApps, getApp, initializeApp } from "firebase/app";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
-// 💡 Убедитесь, что путь к сервису правильный
 import recipeService from "../app/services/recipeService";
 
-// --- ТИПЫ ДАННЫХ (для ясности) ---
+// --- ТИПЫ ДАННЫХ ---
 interface FullRecipeData {
   id: string;
   title: string;
@@ -46,6 +45,60 @@ interface FullRecipeData {
   instructions: string[];
   imageUrl?: string;
 }
+
+// Функция для получения иконки по категории
+const getCategoryIcon = (category: string | undefined) => {
+  const normalizedCategory = String(category || "")
+    .trim()
+    .toLowerCase();
+
+  switch (normalizedCategory) {
+    case "завтрак":
+    case "breakfast":
+      return { name: "sunny-outline", color: "#FFB74D" };
+    case "обед":
+    case "lunch":
+      return { name: "restaurant-outline", color: "#4CAF50" };
+    case "ужин":
+    case "dinner":
+      return { name: "moon-outline", color: "#5C6BC0" };
+    case "перекусы":
+    case "snack":
+      return { name: "cafe-outline", color: "#FF9800" };
+    default:
+      return { name: "fast-food-outline", color: "#9C27B0" };
+  }
+};
+
+// Функция для цвета сложности
+const getDifficultyColor = (difficulty: string | undefined) => {
+  if (!difficulty) return "#6A9AA9";
+
+  switch (difficulty.trim()) {
+    case "Легко":
+    case "Легкая":
+      return "#4CAF50";
+    case "Средне":
+    case "Средняя":
+      return "#FF9800";
+    case "Сложно":
+    case "Сложная":
+      return "#F44336";
+    default:
+      return "#6A9AA9";
+  }
+};
+
+// Компонент бэджа сложности
+const DifficultyBadge = ({ difficulty }: { difficulty: string }) => {
+  const color = getDifficultyColor(difficulty);
+  
+  return (
+    <View style={[styles.difficultyBadge, { backgroundColor: color }]}>
+      <Text style={styles.difficultyText}>{difficulty}</Text>
+    </View>
+  );
+};
 
 const fallbackMealData = (
   mealName: string,
@@ -76,7 +129,7 @@ const fallbackMealData = (
   instructions: [
     "Разогреть молоко на среднем огне.",
     "Добавить овсянку и мед. Перемешивать до загустения.",
-    "Снять с огня, добавить фрукты и ягоды.",
+    "Снять с огне, добавить фрукты и ягоды.",
   ],
   imageUrl: undefined,
 });
@@ -85,29 +138,46 @@ export default function Meal() {
   const router = useRouter();
   const params = useLocalSearchParams();
 
-  const {
-    mealName = "Ошибка Загрузки Названия",
-    mealType: mealTypeParam = "Ошибка Типа Блюда",
-    mealIndex = "0",
-    initialBookmarked = "false",
-    mealId = "",
-    fromScreen = "",
-    isCustom = "false",
-  } = params;
+  // Получаем параметры и преобразуем их в строки
+  const mealName = Array.isArray(params.mealName) ? params.mealName[0] : params.mealName || "Ошибка Загрузки Названия";
+  const mealTypeParam = Array.isArray(params.mealType) ? params.mealType[0] : params.mealType || "Ошибка Типа Блюда";
+  const category = Array.isArray(params.category) ? params.category[0] : params.category || mealTypeParam;
+  const mealIndex = Array.isArray(params.mealIndex) ? params.mealIndex[0] : params.mealIndex || "0";
+  const initialBookmarked = Array.isArray(params.initialBookmarked) ? params.initialBookmarked[0] : params.initialBookmarked || "false";
+  const mealId = Array.isArray(params.mealId) ? params.mealId[0] : params.mealId || "";
+  const fromScreen = Array.isArray(params.fromScreen) ? params.fromScreen[0] : params.fromScreen || "";
+  const isCustom = Array.isArray(params.isCustom) ? params.isCustom[0] : params.isCustom || "false";
+  const recipeId = Array.isArray(params.recipeId) ? params.recipeId[0] : params.recipeId || "";
+  const difficultyLevel = Array.isArray(params.difficultyLevel) ? params.difficultyLevel[0] : params.difficultyLevel || "Легко";
+  const rating = Array.isArray(params.rating) ? params.rating[0] : params.rating || "0";
+  const imageUrl = Array.isArray(params.imageUrl) ? params.imageUrl[0] : params.imageUrl || "";
+  const calories = Array.isArray(params.calories) ? params.calories[0] : params.calories || "300";
+  const proteins = Array.isArray(params.proteins) ? params.proteins[0] : params.proteins || "20";
+  const fats = Array.isArray(params.fats) ? params.fats[0] : params.fats || "10";
+  const carbohydrates = Array.isArray(params.carbohydrates) ? params.carbohydrates[0] : params.carbohydrates || "30";
+  const weight = Array.isArray(params.weight) ? params.weight[0] : params.weight || "250г";
+  const cookingTime = Array.isArray(params.cookingTime) ? params.cookingTime[0] : params.cookingTime || "20 минут";
 
   // Определяем, пришли ли мы с домашней страницы
   const isFromHome = fromScreen === "home";
   const isCustomMeal = isCustom === "true";
 
+  // Реф для предотвращения повторной загрузки
+  const hasLoadedRef = useRef(false);
+
   // Лог для проверки переданного ID
   useEffect(() => {
     console.log("📍 MEAL.JS - Params Received:");
     console.log(`Meal ID: ${mealId || "N/A"}`);
+    console.log(`Recipe ID: ${recipeId || "N/A"}`);
     console.log(`Meal Name: ${mealName}`);
+    console.log(`Category: ${category}`);
+    console.log(`Meal Type: ${mealTypeParam}`);
     console.log(`From Screen: ${fromScreen || "N/A"}`);
     console.log(`Is from Home: ${isFromHome}`);
     console.log(`Is Custom: ${isCustomMeal}`);
-  }, [mealId, mealName, fromScreen, isFromHome, isCustomMeal]);
+    console.log(`Image URL: ${imageUrl || "No image"}`);
+  }, []);
 
   // --- СОСТОЯНИЕ ---
   const [db, setDb] = useState<any>(null);
@@ -131,6 +201,7 @@ export default function Meal() {
           typeof __firebase_config !== "undefined"
             ? JSON.parse(__firebase_config as string)
             : {};
+
         const app = !getApps().length
           ? initializeApp(firebaseConfig)
           : getApp();
@@ -172,9 +243,146 @@ export default function Meal() {
     typeof __app_id !== "undefined" ? __app_id : "default-app-id"
   }/users/${userId}/mealRatings/${currentMealData?.id || "fallback-id"}`;
 
-  // --- 3. ЛОГИКА ЗАГРУЗКИ ДЕТАЛЕЙ РЕЦЕПТА (FIRESTORE) ---
+  // --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ ФОРМАТИРОВАНИЯ ---
+
+  const formatIngredients = (ingredientsData: any): string[] => {
+    console.log("🔧 Форматирование ингредиентов, полученные данные:", ingredientsData);
+    
+    if (!ingredientsData) {
+      console.log("🔧 Нет данных об ингредиентах");
+      return ["Ингредиенты не указаны"];
+    }
+    
+    if (typeof ingredientsData === 'string') {
+      console.log("🔧 Ингредиенты получены как строка, пытаемся распарсить JSON");
+      try {
+        const parsed = JSON.parse(ingredientsData);
+        console.log("🔧 Успешно распарсили JSON:", parsed);
+        return formatIngredients(parsed);
+      } catch (error) {
+        console.log("🔧 Не удалось распарсить как JSON, используем как есть");
+        return [ingredientsData];
+      }
+    }
+    
+    if (Array.isArray(ingredientsData)) {
+      console.log("🔧 Ингредиенты получены как массив, длина:", ingredientsData.length);
+      
+      if (ingredientsData.length === 0) {
+        console.log("🔧 Массив ингредиентов пуст");
+        return ["Ингредиенты не указаны"];
+      }
+      
+      const firstItem = ingredientsData[0];
+      console.log("🔧 Тип первого элемента:", typeof firstItem);
+      
+      if (typeof firstItem === 'string') {
+        console.log("🔧 Это массив строк, используем как есть");
+        return ingredientsData.filter((item: string) => item && item.trim() !== '');
+      }
+      
+      if (typeof firstItem === 'object' && firstItem !== null) {
+        console.log("🔧 Это массив объектов, преобразуем в строки");
+        return ingredientsData.map((item: any, index: number) => {
+          if (item.amount && item.name) {
+            const result = `${item.amount} ${item.unit || ''} ${item.name}`.trim();
+            console.log(`🔧 Ингредиент ${index + 1}: ${result}`);
+            return result;
+          } else if (item.text) {
+            console.log(`🔧 Ингредиент ${index + 1}: ${item.text}`);
+            return item.text;
+          } else if (item.quantity && item.ingredient) {
+            const result = `${item.quantity} ${item.unit || ''} ${item.ingredient}`.trim();
+            console.log(`🔧 Ингредиент ${index + 1}: ${result}`);
+            return result;
+          } else if (item.name) {
+            console.log(`🔧 Ингредиент ${index + 1}: ${item.name}`);
+            return item.name;
+          } else {
+            const result = JSON.stringify(item);
+            console.log(`🔧 Ингредиент ${index + 1} (неизвестный формат): ${result}`);
+            return result;
+          }
+        }).filter((item: string) => item && item.trim() !== '');
+      }
+    }
+    
+    console.log("🔧 Неизвестный формат ингредиентов:", typeof ingredientsData);
+    return ["Ингредиенты не загружены"];
+  };
+
+  const formatSteps = (stepsData: any): string[] => {
+    console.log("🔧 Форматирование шагов, полученные данные:", stepsData);
+    
+    if (!stepsData) {
+      console.log("🔧 Нет данных о шагах");
+      return ["Инструкции не указаны"];
+    }
+    
+    if (typeof stepsData === 'string') {
+      console.log("🔧 Шаги получены как строка, пытаемся распарсить JSON");
+      try {
+        const parsed = JSON.parse(stepsData);
+        console.log("🔧 Успешно распарсили JSON:", parsed);
+        return formatSteps(parsed);
+      } catch (error) {
+        console.log("🔧 Не удалось распарсить как JSON, используем как есть");
+        return [stepsData];
+      }
+    }
+    
+    if (Array.isArray(stepsData)) {
+      console.log("🔧 Шаги получены как массив, длина:", stepsData.length);
+      
+      if (stepsData.length === 0) {
+        console.log("🔧 Массив шагов пуст");
+        return ["Инструкции не указаны"];
+      }
+      
+      const firstItem = stepsData[0];
+      console.log("🔧 Тип первого элемента:", typeof firstItem);
+      
+      if (typeof firstItem === 'string') {
+        console.log("🔧 Это массив строк, используем как есть");
+        return stepsData.filter((item: string) => item && item.trim() !== '');
+      }
+      
+      if (typeof firstItem === 'object' && firstItem !== null) {
+        console.log("🔧 Это массив объектов, преобразуем в строки");
+        return stepsData.map((item: any, index: number) => {
+          if (item.text) {
+            console.log(`🔧 Шаг ${index + 1}: ${item.text}`);
+            return item.text;
+          } else if (item.description) {
+            console.log(`🔧 Шаг ${index + 1}: ${item.description}`);
+            return item.description;
+          } else if (item.step) {
+            console.log(`🔧 Шаг ${index + 1}: ${item.step}`);
+            return item.step;
+          } else if (item.instruction) {
+            console.log(`🔧 Шаг ${index + 1}: ${item.instruction}`);
+            return item.instruction;
+          } else {
+            const result = JSON.stringify(item);
+            console.log(`🔧 Шаг ${index + 1} (неизвестный формат): ${result}`);
+            return result;
+          }
+        }).filter((item: string) => item && item.trim() !== '');
+      }
+    }
+    
+    console.log("🔧 Неизвестный формат шагов:", typeof stepsData);
+    return ["Инструкции не загружены"];
+  };
+
+  // --- 3. ЛОГИКА ЗАГРУЗКИ ДЕТАЛЕЙ РЕЦЕПТА ---
 
   const loadRecipeDetails = useCallback(async () => {
+    if (hasLoadedRef.current) {
+      console.log("🔄 MEAL.JS - Already loaded, skipping");
+      return;
+    }
+
     if (!isAuthReady || !db) {
       console.log(
         `🟡 MEAL.JS - Load Skipped. Auth Ready: ${isAuthReady}, DB: ${!!db}`
@@ -184,90 +392,108 @@ export default function Meal() {
     }
 
     console.log(`🚀 MEAL.JS - Starting load for ID: ${mealId}`);
+    hasLoadedRef.current = true;
     setLoading(true);
+    
     try {
-      // Для кастомных рецептов используем параметры
       if (isCustomMeal) {
         console.log("📝 MEAL.JS - Custom recipe, using params data");
         setRecipeDetails({
-          id: mealId as string,
-          title: mealName as string,
-          mealType: mealTypeParam as string,
-          description: "Этот рецепт был добавлен вами в дневной рацион.",
-          calories: Number(params.calories) || 300,
-          proteins: Number(params.proteins) || 20,
-          fats: Number(params.fats) || 10,
-          carbohydrates: Number(params.carbohydrates) || 30,
-          weight: (params.weight as string) || "250г",
-          imageUrl: undefined,
-          cookingTime: (params.cookingTime as string) || "20 минут",
+          id: mealId,
+          title: mealName,
+          mealType: mealTypeParam || category || "Обед",
+          description: "Этот рецепт был добавлен вами в дневной рацион. Вы можете добавить описание, ингредиенты и инструкции в разделе 'Мои рецепты'.",
+          calories: Number(calories) || 300,
+          proteins: Number(proteins) || 20,
+          fats: Number(fats) || 10,
+          carbohydrates: Number(carbohydrates) || 30,
+          weight: weight || "250г",
+          imageUrl: imageUrl || undefined,
+          cookingTime: cookingTime || "20 минут",
           servings: "1 порция",
-          difficulty: (params.difficultyLevel as string) || "Легко",
-          averageRating: 0,
+          difficulty: difficultyLevel || "Легко",
+          averageRating: Number(rating) || 0,
           totalRatings: 0,
-          ingredients: ["Ингредиенты не указаны"],
-          instructions: ["Инструкции не указаны"],
+          ingredients: [
+            "Ингредиенты не указаны",
+            "Для просмотра полного списка ингредиентов перейдите в 'Мои рецепты'"
+          ],
+          instructions: [
+            "Инструкции не указаны",
+            "Для просмотра способа приготовления перейдите в 'Мои рецепты'"
+          ],
         } as FullRecipeData);
         setLoading(false);
         return;
       }
 
-      const docRef = doc(db, "recipes", mealId as string);
+      const actualRecipeId = recipeId || mealId;
+      
+      if (!actualRecipeId || actualRecipeId === "undefined" || actualRecipeId === "null") {
+        console.warn("❌ MEAL.JS - No valid recipe ID provided");
+        setRecipeDetails(
+          fallbackMealData(mealName, mealTypeParam || category || "Обед")
+        );
+        setLoading(false);
+        return;
+      }
+
+      console.log(`🔍 MEAL.JS - Loading recipe from Firestore with ID: ${actualRecipeId}`);
+      const docRef = doc(db, "recipes", actualRecipeId);
       const docSnap = await getDoc(docRef);
 
       if (docSnap.exists()) {
         const data = docSnap.data() as any;
 
-        console.log("✅ MEAL.JS - Recipe data loaded successfully.");
-
-        const formattedIngredients = Array.isArray(data.ingredients)
-          ? data.ingredients.map(
-              (item: any) => `${item.amount} ${item.unit}. ${item.name}`
-            )
-          : ["Ингредиенты не загружены"];
-
-        const formattedInstructions = Array.isArray(data.steps)
-          ? data.steps.map((step: any) => step.text)
-          : ["Инструкции не загружены"];
+        console.log("✅ MEAL.JS - Recipe data loaded successfully from Firestore");
+        
+        const formattedIngredients = formatIngredients(data.ingredients);
+        const formattedInstructions = formatSteps(data.steps);
+        
+        console.log("✅ Отформатированные ингредиенты:", formattedIngredients);
+        console.log("✅ Отформатированные шаги:", formattedInstructions);
 
         setRecipeDetails({
-          id: mealId as string,
-          title: data.title || "Рецепт не найден",
-          mealType: data.mealType || (mealTypeParam as string),
+          id: actualRecipeId,
+          title: data.title || mealName || "Рецепт не найден",
+          mealType: data.mealType || mealTypeParam || category || "Обед",
           description: data.description || "Описание не предоставлено.",
-          calories: data.calories || 0,
-          proteins: data.proteins || 0,
-          fats: data.fats || 0,
-          carbohydrates: data.carbohydrates || 0,
-          weight: data.weight || "300 гр.",
-          imageUrl: data.imageUrl,
-          cookingTime: data.cookingTime || "15 мин",
+          calories: data.calories || Number(calories) || 0,
+          proteins: data.proteins || Number(proteins) || 0,
+          fats: data.fats || Number(fats) || 0,
+          carbohydrates: data.carbohydrates || Number(carbohydrates) || 0,
+          weight: data.weight || weight || "300 гр.",
+          imageUrl: data.imageUrl || imageUrl || undefined,
+          cookingTime: data.cookingTime || cookingTime || "15 мин",
           servings: data.servings || "1 порция",
-          difficulty: data.difficultyLevel || "Средняя",
-          averageRating: data.averageRating || 0,
-          totalRatings: data.ratingsCount || 0,
+          difficulty: data.difficultyLevel || difficultyLevel || "Средняя",
+          averageRating: data.averageRating || Number(rating) || 0,
+          totalRatings: data.ratingsCount || data.totalRatings || 0,
           ingredients: formattedIngredients,
           instructions: formattedInstructions,
         } as FullRecipeData);
       } else {
         console.warn(
-          `❌ MEAL.JS - Document with ID ${mealId} NOT FOUND in /recipes collection.`
+          `❌ MEAL.JS - Document with ID ${actualRecipeId} NOT FOUND in /recipes collection.`
         );
-        setRecipeDetails(null);
+        setRecipeDetails(
+          fallbackMealData(mealName, mealTypeParam || category || "Обед")
+        );
       }
     } catch (error) {
       console.error("❌ MEAL.JS - Error loading recipe details:", error);
-      setRecipeDetails(null);
+      setRecipeDetails(
+        fallbackMealData(mealName, mealTypeParam || category || "Обед")
+      );
     } finally {
       setLoading(false);
     }
-  }, [isAuthReady, db, mealId, mealName, mealTypeParam, isCustomMeal, params]);
+  }, [isAuthReady, db, mealId, recipeId, mealName, mealTypeParam, category, isCustomMeal, imageUrl, difficultyLevel, rating, calories, proteins, fats, carbohydrates, weight, cookingTime]);
 
-  // --- 2. ЛОГИКА ЗАГРУЗКИ ОЦЕНКИ (FIRESTORE) ---
+  // --- 2. ЛОГИКА ЗАГРУЗКИ ОЦЕНКИ ---
   const loadRating = useCallback(async () => {
     if (!isAuthReady || !db || !userId || !currentMealData?.id) return;
 
-    // Для кастомных рецептов не загружаем оценки
     if (isCustomMeal) return;
 
     try {
@@ -292,115 +518,66 @@ export default function Meal() {
     isCustomMeal,
   ]);
 
-  // --- ЛОГИКА СОХРАНЕНИЯ ОЦЕНКИ ---
-  const saveRating = useCallback(
-    async (rating: boolean) => {
-      if (!isAuthReady || !db || !userId || !currentMealData?.id) return;
+  useEffect(() => {
+    return () => {
+      hasLoadedRef.current = false;
+    };
+  }, []);
 
-      // Для кастомных рецептов не сохраняем оценки
-      if (isCustomMeal) {
-        setLiked(rating);
-        Alert.alert("Информация", "Оценка сохранена локально");
-        return;
-      }
-
-      const ratingDocRef = doc(db, ratingDocPath);
-      const docSnap = await getDoc(ratingDocRef);
-      const previousLikedState = docSnap.exists() ? docSnap.data().liked : null;
-
-      if (previousLikedState === rating) {
-        return;
-      }
-
-      const isFirstVote = previousLikedState === null;
-      const totalRatingsDelta = isFirstVote ? 1 : 0;
-
-      try {
-        await setDoc(
-          ratingDocRef,
-          { liked: rating, timestamp: new Date() },
-          { merge: true }
-        );
-        setLiked(rating);
-
-        await recipeService.updateRecipeRatingStats(
-          currentMealData.id,
-          totalRatingsDelta
-        );
-
-        await loadRecipeDetails();
-      } catch (error) {
-        console.error("Ошибка при сохранении оценки:", error);
-      }
-    },
-    [
-      isAuthReady,
-      db,
-      userId,
-      ratingDocPath,
-      currentMealData?.id,
-      loadRecipeDetails,
-      isCustomMeal,
-    ]
-  );
-
-  // --- ЛОГИКА СБРОСА ОЦЕНКИ ---
-  const handleResetRating = async () => {
-    if (!isAuthReady || !db || !userId || !currentMealData?.id) return;
-
-    // Для кастомных рецептов просто сбрасываем локально
-    if (isCustomMeal) {
-      setLiked(null);
-      return;
-    }
-
-    const ratingDocRef = doc(db, ratingDocPath);
-    const docSnap = await getDoc(ratingDocRef);
-    const previousLikedState = docSnap.exists() ? docSnap.data().liked : null;
-    const hadRating = previousLikedState !== null;
-
-    try {
-      await setDoc(
-        ratingDocRef,
-        { liked: null, timestamp: new Date() },
-        { merge: true }
-      );
-      setLiked(null);
-
-      if (hadRating) {
-        await recipeService.updateRecipeRatingStats(currentMealData.id, -1);
-
-        await loadRecipeDetails();
-      }
-    } catch (error) {
-      console.error("Ошибка при сбросе оценки в Firestore:", error);
-    }
-  };
-
-  // --- ЭФФЕКТЫ ---
   useEffect(() => {
     if (isAuthReady && db && userId) {
       loadRecipeDetails();
       if (!isCustomMeal) {
         loadRating();
       }
-    } else if (isAuthReady && !mealId) {
+    } else if (isAuthReady && (!mealId || !recipeId)) {
       setLoading(false);
       setRecipeDetails(
-        fallbackMealData(mealName as string, mealTypeParam as string)
+        fallbackMealData(mealName, mealTypeParam || category || "Обед")
       );
     }
-  }, [
-    isAuthReady,
-    db,
-    userId,
-    mealId,
-    loadRecipeDetails,
-    loadRating,
-    isCustomMeal,
-  ]);
+  }, [isAuthReady, db, userId]);
 
-  // --- ФУНКЦИИ УПРАВЛЕНИЯ СОСТОЯНИЕМ И НАВИГАЦИИ ---
+  // --- НОВАЯ ФУНКЦИЯ ДЛЯ ВЫБОРА ИСТОЧНИКА РЕЦЕПТА ---
+  const handleReplaceMeal = () => {
+    Alert.alert(
+      "Заменить рецепт",
+      "Откуда вы хотите выбрать новый рецепт?",
+      [
+        { text: "Отмена", style: "cancel" },
+        {
+          text: "Из всех рецептов",
+          onPress: () => {
+            router.push({
+              pathname: "/select-recipe",
+              params: {
+                mealIndex: mealIndex,
+                currentMealId: mealId,
+                currentMealCategory: category,
+                isReplacement: "true",
+                isCustomReplacement: isCustomMeal ? "true" : "false"
+              }
+            });
+          }
+        },
+        {
+          text: "Из моих рецептов",
+          onPress: () => {
+            router.push({
+              pathname: "/select-user-recipes",
+              params: {
+                mealIndex: mealIndex,
+                currentMealId: mealId,
+                currentMealCategory: category,
+                isReplacement: "true",
+                isCustomReplacement: isCustomMeal ? "true" : "false"
+              }
+            });
+          }
+        }
+      ]
+    );
+  };
 
   const handleNavigationBack = useCallback(
     (
@@ -427,63 +604,6 @@ export default function Meal() {
     await saveRating(false);
   };
 
-  // Функция выбора рецепта из списка
-  const handleChooseFromList = async () => {
-    if (isFromHome) {
-      // Сохраняем текущий mealId в AsyncStorage для возврата
-      await AsyncStorage.setItem("currentMealId", mealId as string);
-      await AsyncStorage.setItem("currentMealIndex", mealIndex as string);
-      router.push("/select-recipe");
-    }
-  };
-
-  // Функция смены рецепта
-  const handleChangeMeal = async () => {
-    if (isFromHome) {
-      // Для кастомных рецептов показываем предупреждение
-      if (isCustomMeal) {
-        Alert.alert(
-          "Смена рецепта",
-          "Вы хотите заменить этот добавленный рецепт на другой?",
-          [
-            { text: "Отмена", style: "cancel" },
-            {
-              text: "Заменить",
-              style: "destructive",
-              onPress: async () => {
-                await AsyncStorage.setItem("currentMealId", mealId as string);
-                await AsyncStorage.setItem(
-                  "currentMealIndex",
-                  mealIndex as string
-                );
-                router.push("/select-recipe");
-              },
-            },
-          ]
-        );
-      } else {
-        Alert.alert(
-          "Смена рецепта",
-          "Этот рецепт был сгенерирован системой. Вы можете добавить новый рецепт, не заменяя этот.",
-          [
-            { text: "Отмена", style: "cancel" },
-            {
-              text: "Добавить новый",
-              style: "default",
-              onPress: async () => {
-                await AsyncStorage.setItem(
-                  "currentMealIndex",
-                  mealIndex as string
-                );
-                router.push("/select-recipe");
-              },
-            },
-          ]
-        );
-      }
-    }
-  };
-
   const handleBack = () => {
     router.back();
   };
@@ -493,24 +613,101 @@ export default function Meal() {
     setIsBookmarked(newBookmarkState);
   };
 
-  const getMealImage = () => {
-    const type = currentMealData?.mealType || mealTypeParam;
+  const saveRating = useCallback(
+    async (rating: boolean) => {
+      if (!isAuthReady || !db || !userId || !currentMealData?.id) return;
 
-    switch (type) {
-      case "Завтрак":
-        return require("@/assets/images/breakfast-oats.png");
-      case "Обед":
-        return require("@/assets/images/lunch-soup.png");
-      case "Ужин":
-        return require("@/assets/images/dinner-rice.png");
-      case "Перекусы":
-        return require("@/assets/images/snack-fruits.png");
-      default:
-        return require("@/assets/images/breakfast-oats.png");
+      if (isCustomMeal) {
+        setLiked(rating);
+        Alert.alert("Информация", "Оценка сохранена локально");
+        return;
+      }
+
+      const ratingDocRef = doc(db, ratingDocPath);
+      const docSnap = await getDoc(ratingDocRef);
+      const previousLikedState = docSnap.exists() ? docSnap.data().liked : null;
+
+      if (previousLikedState === rating) {
+        return;
+      }
+
+      const isFirstVote = previousLikedState === null;
+      const totalRatingsDelta = isFirstVote ? 1 : 0;
+
+      try {
+        await setDoc(
+          ratingDocRef,
+          { liked: rating, timestamp: new Date() },
+          { merge: true }
+        );
+        setLiked(rating);
+
+        if (!isCustomMeal) {
+          await recipeService.updateRecipeRatingStats(
+            currentMealData.id,
+            totalRatingsDelta
+          );
+
+          loadRecipeDetails();
+        }
+      } catch (error) {
+        console.error("Ошибка при сохранении оценки:", error);
+      }
+    },
+    [
+      isAuthReady,
+      db,
+      userId,
+      ratingDocPath,
+      currentMealData?.id,
+      isCustomMeal,
+      loadRecipeDetails,
+    ]
+  );
+
+  const handleResetRating = async () => {
+    if (!isAuthReady || !db || !userId || !currentMealData?.id) return;
+
+    if (isCustomMeal) {
+      setLiked(null);
+      return;
+    }
+
+    const ratingDocRef = doc(db, ratingDocPath);
+    const docSnap = await getDoc(ratingDocRef);
+    const previousLikedState = docSnap.exists() ? docSnap.data().liked : null;
+    const hadRating = previousLikedState !== null;
+
+    try {
+      await setDoc(
+        ratingDocRef,
+        { liked: null, timestamp: new Date() },
+        { merge: true }
+      );
+      setLiked(null);
+
+      if (hadRating && !isCustomMeal) {
+        await recipeService.updateRecipeRatingStats(currentMealData.id, -1);
+        loadRecipeDetails();
+      }
+    } catch (error) {
+      console.error("Ошибка при сбросе оценки в Firestore:", error);
     }
   };
 
-  // --- ОБРАБОТКА ЗАГРУЗКИ И ОШИБКИ ---
+  const getMealIcon = () => {
+    const type = currentMealData?.mealType || mealTypeParam || category;
+    const iconInfo = getCategoryIcon(type);
+    
+    return (
+      <Ionicons 
+        name={iconInfo.name as any} 
+        size={80} 
+        color={iconInfo.color} 
+      />
+    );
+  };
+
   if (loading || !isAuthReady) {
     return (
       <View style={styles.loadingContainer}>
@@ -523,7 +720,7 @@ export default function Meal() {
     );
   }
 
-  if (!mealId || !currentMealData) {
+  if (!currentMealData) {
     return (
       <View style={styles.loadingContainer}>
         <Feather name="alert-triangle" size={30} color="#DC3545" />
@@ -553,13 +750,10 @@ export default function Meal() {
     );
   }
 
-  // --- РЕНДЕРИНГ ДЕТАЛЕЙ РЕЦЕПТА ---
-
   return (
     <View style={styles.container}>
       <StatusBar barStyle="dark-content" />
 
-      {/* Шапка с кнопкой назад и заголовком */}
       <View style={styles.header}>
         <TouchableOpacity style={styles.backButton} onPress={handleBack}>
           <Feather name="arrow-left" size={24} color="#000000" />
@@ -577,75 +771,73 @@ export default function Meal() {
         style={styles.scrollView}
         showsVerticalScrollIndicator={false}
       >
-        {/* Изображение блюда с кнопкой избранного */}
         <View style={styles.imageContainer}>
-          <Image
-            source={
-              currentMealData.imageUrl
-                ? { uri: currentMealData.imageUrl }
-                : getMealImage()
-            }
-            style={styles.mealImage}
-            resizeMode="cover"
-          />
+          {currentMealData.imageUrl ? (
+            <Image
+              source={{ uri: currentMealData.imageUrl }}
+              style={styles.mealImage}
+              resizeMode="cover"
+            />
+          ) : (
+            <View style={styles.mealImagePlaceholder}>
+              {getMealIcon()}
+              <Text style={styles.mealTypeText}>{currentMealData.mealType}</Text>
+            </View>
+          )}
+          
+          <View style={styles.difficultyBadgeContainer}>
+            <DifficultyBadge difficulty={currentMealData.difficulty} />
+          </View>
+          
+          {currentMealData.averageRating > 0 && (
+            <View style={styles.ratingBadge}>
+              <Ionicons name="star" size={12} color="#FFD700" />
+              <Text style={styles.ratingBadgeText}>
+                {currentMealData.averageRating.toFixed(1)}
+              </Text>
+            </View>
+          )}
+          
           <TouchableOpacity
             style={styles.bookmarkButton}
             onPress={handleBookmark}
           >
             <Ionicons
               name={isBookmarked ? "bookmark" : "bookmark-outline"}
-              size={20}
-              color="#6A9AA9"
+              size={24}
+              color={isBookmarked ? "#6A9AA9" : "#6A9AA9"}
             />
           </TouchableOpacity>
+          
+          {isCustomMeal && (
+            <View style={styles.customBadge}>
+              <Ionicons name="add-circle" size={12} color="#FFFFFF" />
+              <Text style={styles.customBadgeText}>Добавлен вами</Text>
+            </View>
+          )}
         </View>
 
-        {/* Кнопки действий под изображением - ТОЛЬКО если пришли с Home */}
         {isFromHome && (
           <View style={styles.actionButtons}>
             <TouchableOpacity
-              style={styles.changeMealButton}
-              onPress={handleChangeMeal}
+              style={styles.replaceMealButton}
+              onPress={handleReplaceMeal}
             >
-              <Text style={styles.changeMealText}>
-                {isCustomMeal ? "Заменить рецепт" : "Сменить блюдо"}
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.chooseFromListButton}
-              onPress={handleChooseFromList}
-            >
-              <Text style={styles.chooseFromListText}>Выбрать из списка</Text>
+              <Ionicons name="swap-horizontal" size={20} color="#FFFFFF" />
+              <Text style={styles.replaceMealText}>Заменить рецепт</Text>
             </TouchableOpacity>
           </View>
         )}
 
-        {/* Основная информация */}
         <View style={styles.content}>
-          {/* Средний рейтинг */}
-          {(currentMealData.averageRating > 0 ||
-            currentMealData.totalRatings > 0) && (
-            <View style={styles.ratingRow}>
-              <Ionicons name="star" size={20} color="#FFC107" />
-              <Text style={styles.ratingText}>
-                {currentMealData.averageRating.toFixed(1)}
-              </Text>
-              <Text style={styles.ratingLabel}>
-                ({currentMealData.totalRatings} оценок)
-              </Text>
-            </View>
-          )}
-          {/* Название блюда */}
           <Text style={styles.mealName}>{currentMealData.title}</Text>
 
-          {/* Время, Порции и Сложность */}
           <View style={styles.detailsRow}>
             <View style={styles.detailItem}>
-              <MaterialCommunityIcons
-                name="clock-time-three-outline"
+              <MaterialIcons
+                name="access-time"
                 size={28}
-                color="#000000"
+                color="#6A9AA9"
                 style={styles.detailIcon}
               />
               <Text style={styles.detailText}>
@@ -658,70 +850,62 @@ export default function Meal() {
               <Ionicons
                 name="people-outline"
                 size={28}
-                color="#000000"
+                color="#6A9AA9"
                 style={styles.detailIcon}
               />
               <Text style={styles.detailText}>{currentMealData.servings}</Text>
               <Text style={styles.detailLabel}>порций</Text>
             </View>
+            
             <View style={styles.detailItem}>
-              <MaterialCommunityIcons
-                name="tune"
+              <MaterialIcons
+                name="restaurant"
                 size={28}
-                color="#000000"
+                color="#6A9AA9"
                 style={styles.detailIcon}
               />
-              <Text style={styles.detailText}>
-                {currentMealData.difficulty}
-              </Text>
-              <Text style={styles.detailLabel}>сложность</Text>
+              <Text style={styles.detailText}>{currentMealData.weight}</Text>
+              <Text style={styles.detailLabel}>вес</Text>
             </View>
           </View>
 
-          {/* КБЖУ */}
-          <View style={styles.nutritionRow}>
-            <View style={styles.nutritionItem}>
-              <Text style={styles.nutritionLabelSmall}>Вес</Text>
-              <Text style={styles.nutritionValue}>
-                {currentMealData.weight}
-              </Text>
-            </View>
-            <View style={styles.nutritionItem}>
-              <Text style={styles.nutritionLabelSmall}>Ккал</Text>
-              <Text style={styles.nutritionValue}>
-                {currentMealData.calories}
-              </Text>
-            </View>
-            <View style={styles.nutritionItem}>
-              <Text style={styles.nutritionLabelSmall}>Белки</Text>
-              <Text style={styles.nutritionValue}>
-                {currentMealData.proteins} гр
-              </Text>
-            </View>
-            <View style={styles.nutritionItem}>
-              <Text style={styles.nutritionLabelSmall}>Жиры</Text>
-              <Text style={styles.nutritionValue}>
-                {currentMealData.fats} гр
-              </Text>
-            </View>
-            <View style={styles.nutritionItem}>
-              <Text style={styles.nutritionLabelSmall}>Углеводы</Text>
-              <Text style={styles.nutritionValue}>
-                {currentMealData.carbohydrates} гр
-              </Text>
+          <View style={styles.nutritionContainer}>
+            <View style={styles.nutritionRow}>
+              <View style={styles.nutritionItem}>
+                <Text style={styles.nutritionLabelSmall}>Ккал</Text>
+                <Text style={styles.nutritionValue}>
+                  {currentMealData.calories}
+                </Text>
+              </View>
+              <View style={styles.nutritionItem}>
+                <Text style={styles.nutritionLabelSmall}>Белки</Text>
+                <Text style={styles.nutritionValue}>
+                  {currentMealData.proteins} г
+                </Text>
+              </View>
+              <View style={styles.nutritionItem}>
+                <Text style={styles.nutritionLabelSmall}>Жиры</Text>
+                <Text style={styles.nutritionValue}>
+                  {currentMealData.fats} г
+                </Text>
+              </View>
+              <View style={styles.nutritionItem}>
+                <Text style={styles.nutritionLabelSmall}>Углеводы</Text>
+                <Text style={styles.nutritionValue}>
+                  {currentMealData.carbohydrates} г
+                </Text>
+              </View>
             </View>
           </View>
 
-          {/* Описание */}
           <View style={styles.section}>
-            <Text style={styles.sectionSubtitle}>Описание:</Text>
+            <Text style={styles.sectionTitle}>Описание</Text>
             <Text style={styles.descriptionText}>
               {currentMealData.description}
             </Text>
           </View>
 
-          {/* Сообщение о выборе */}
-          {liked !== null && (
+          {liked !== null && !isCustomMeal && (
             <View style={styles.feedbackMessage}>
               <Text style={styles.feedbackText}>
                 {liked
@@ -737,8 +921,7 @@ export default function Meal() {
             </View>
           )}
 
-          {/* Кнопки лайка и дизлайка */}
-          {liked === null && (
+          {liked === null && !isCustomMeal && (
             <View style={styles.likeSection}>
               <Text style={styles.likeQuestion}>
                 Вам понравилось это блюдо?
@@ -773,33 +956,44 @@ export default function Meal() {
             </View>
           )}
 
-          {/* Ингредиенты */}
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Ингредиенты:</Text>
-            {currentMealData.ingredients.map((ingredient, index) => (
-              <View key={`ingredient-${index}`} style={styles.ingredientItem}>
-                <Text style={styles.ingredientText}>{`• ${ingredient}`}</Text>
-              </View>
-            ))}
+            <Text style={styles.sectionTitle}>Ингредиенты</Text>
+            <View style={styles.ingredientsContainer}>
+              {currentMealData.ingredients.length > 0 ? (
+                currentMealData.ingredients.map((ingredient, index) => (
+                  <View key={`ingredient-${index}`} style={styles.ingredientItem}>
+                    <Ionicons name="ellipse" size={8} color="#6A9AA9" style={styles.ingredientBullet} />
+                    <Text style={styles.ingredientText}>{ingredient}</Text>
+                  </View>
+                ))
+              ) : (
+                <Text style={styles.noDataText}>Ингредиенты не указаны</Text>
+              )}
+            </View>
           </View>
 
-          {/* Способ приготовления */}
           <View style={styles.section}>
-            <Text style={styles.sectionSubtitle}>Способ приготовления:</Text>
-            {currentMealData.instructions.map((instruction, index) => (
-              <View key={index} style={styles.instructionItem}>
-                <Text style={styles.stepNumber}>{index + 1}.</Text>
-                <Text style={styles.instructionText}>{instruction}</Text>
-              </View>
-            ))}
+            <Text style={styles.sectionTitle}>Способ приготовления</Text>
+            {currentMealData.instructions.length > 0 ? (
+              currentMealData.instructions.map((instruction, index) => (
+                <View key={`instruction-${index}`} style={styles.instructionItem}>
+                  <View style={styles.stepNumberContainer}>
+                    <Text style={styles.stepNumber}>{index + 1}</Text>
+                  </View>
+                  <Text style={styles.instructionText}>{instruction}</Text>
+                </View>
+              ))
+            ) : (
+              <Text style={styles.noDataText}>Инструкции не указаны</Text>
+            )}
           </View>
+          
+          <View style={styles.bottomSpacer} />
         </View>
       </ScrollView>
     </View>
   );
 }
-
-// --- СТИЛИ (ОСТАЮТСЯ БЕЗ ИЗМЕНЕНИЙ) ---
 
 const styles = StyleSheet.create({
   container: {
@@ -817,6 +1011,8 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: "#6A9AA9",
     fontFamily: "Playfair Display Regular",
+    textAlign: "center",
+    paddingHorizontal: 20,
   },
   header: {
     flexDirection: "row",
@@ -825,7 +1021,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingTop: 50,
     paddingBottom: 15,
-    backgroundColor: "#6A9AA9",
+    backgroundColor: "#FFFFFF",
+    borderBottomWidth: 1,
+    borderBottomColor: "#E0E0E0",
   },
   backButton: {
     padding: 8,
@@ -850,18 +1048,80 @@ const styles = StyleSheet.create({
   },
   imageContainer: {
     position: "relative",
+    height: 220,
+    backgroundColor: "#E5F0F5",
+    justifyContent: "center",
+    alignItems: "center",
+    borderBottomWidth: 1,
+    borderBottomColor: "#C2DAE2",
   },
   mealImage: {
     width: "100%",
-    height: 250,
+    height: "100%",
+  },
+  mealImagePlaceholder: {
+    width: "100%",
+    height: "100%",
+    justifyContent: "center",
+    alignItems: "center",
+    paddingTop: 20,
+    backgroundColor: "#E5F0F5",
+  },
+  mealTypeText: {
+    fontSize: 18,
+    color: "#6A9AA9",
+    fontFamily: "Playfair Display Bold",
+    marginTop: 10,
+    textAlign: "center",
+  },
+  difficultyBadgeContainer: {
+    position: "absolute",
+    top: 20,
+    left: 20,
+    zIndex: 10,
+  },
+  difficultyBadge: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 12,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.2,
+    shadowRadius: 1.41,
+    elevation: 2,
+  },
+  difficultyText: {
+    fontSize: 12,
+    color: "#FFFFFF",
+    fontFamily: "Playfair Display Bold",
+  },
+  ratingBadge: {
+    position: "absolute",
+    top: 20,
+    right: 70,
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(255, 255, 255, 0.9)",
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#E0E0E0",
+    zIndex: 10,
+  },
+  ratingBadgeText: {
+    fontSize: 12,
+    color: "#000000",
+    fontFamily: "Playfair Display Bold",
+    marginLeft: 4,
   },
   bookmarkButton: {
     position: "absolute",
     top: 16,
     right: 16,
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: "rgba(255, 255, 255, 0.9)",
     alignItems: "center",
     justifyContent: "center",
@@ -873,23 +1133,46 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.25,
     shadowRadius: 3.84,
     elevation: 5,
+    zIndex: 10,
+  },
+  customBadge: {
+    position: "absolute",
+    bottom: 20,
+    left: 20,
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(155, 223, 17, 0.9)",
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#FFFFFF",
+    zIndex: 10,
+  },
+  customBadgeText: {
+    fontSize: 12,
+    color: "#FFFFFF",
+    fontFamily: "Playfair Display Bold",
+    marginLeft: 4,
   },
   actionButtons: {
     flexDirection: "row",
-    justifyContent: "space-between",
+    justifyContent: "center",
     paddingHorizontal: 20,
     paddingVertical: 16,
     backgroundColor: "white",
     borderBottomWidth: 1,
     borderBottomColor: "#E9ECEF",
-    gap: 12,
   },
-  changeMealButton: {
-    flex: 1,
+  replaceMealButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
     backgroundColor: "#6A9AA9",
+    paddingHorizontal: 20,
     paddingVertical: 12,
     borderRadius: 12,
-    alignItems: "center",
+    gap: 8,
     shadowColor: "#000",
     shadowOffset: {
       width: 0,
@@ -899,68 +1182,28 @@ const styles = StyleSheet.create({
     shadowRadius: 3.84,
     elevation: 5,
   },
-  changeMealText: {
+  replaceMealText: {
     fontSize: 14,
     fontWeight: "600",
     color: "white",
     fontFamily: "Playfair Display Regular",
   },
-  chooseFromListButton: {
-    flex: 1,
-    backgroundColor: "#C2DAE2",
-    paddingVertical: 12,
-    borderRadius: 12,
-    alignItems: "center",
-    shadowColor: "#000000ff",
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-    shadowOpacity: 0.1,
-    shadowRadius: 3.84,
-    elevation: 5,
-  },
-  chooseFromListText: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: "#000000ff",
-    fontFamily: "Playfair Display Regular",
-  },
   content: {
     padding: 20,
-  },
-  ratingRow: {
-    flexDirection: "row",
-    justifyContent: "center",
-    alignItems: "center",
-    marginBottom: 10,
-  },
-  ratingText: {
-    fontSize: 18,
-    fontWeight: "700",
-    color: "#FFC107",
-    marginLeft: 5,
-    fontFamily: "Playfair Display Regular",
-  },
-  ratingLabel: {
-    fontSize: 12,
-    color: "#6C757D",
-    marginLeft: 8,
-    fontFamily: "Playfair Display Regular",
   },
   mealName: {
     fontSize: 24,
     fontWeight: "600",
     color: "#000000",
     marginBottom: 20,
-    fontFamily: "Playfair Display Regular",
+    fontFamily: "Playfair Display Bold",
     textAlign: "center",
   },
   detailsRow: {
     flexDirection: "row",
     justifyContent: "space-around",
-    marginBottom: 30,
-    paddingHorizontal: 0,
+    marginBottom: 24,
+    paddingHorizontal: 10,
   },
   detailItem: {
     alignItems: "center",
@@ -973,7 +1216,7 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "600",
     color: "#000000",
-    fontFamily: "Playfair Display Regular",
+    fontFamily: "Playfair Display Bold",
     marginBottom: 4,
   },
   detailLabel: {
@@ -982,28 +1225,28 @@ const styles = StyleSheet.create({
     fontFamily: "Playfair Display Regular",
     textAlign: "center",
   },
+  nutritionContainer: {
+    backgroundColor: "#F7F7F7",
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 24,
+    borderWidth: 1,
+    borderColor: "#E0E0E0",
+  },
   nutritionRow: {
     flexDirection: "row",
     justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 30,
-    paddingVertical: 15,
-    paddingHorizontal: 5,
-    backgroundColor: "#F8F9FA",
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#E9ECEF",
   },
   nutritionItem: {
     alignItems: "center",
     flex: 1,
   },
   nutritionValue: {
-    fontSize: 15,
+    fontSize: 18,
     fontWeight: "700",
     color: "#000000",
-    fontFamily: "Playfair Display Regular",
-    marginTop: 4,
+    fontFamily: "Playfair Display Bold",
+    marginTop: 6,
   },
   nutritionLabelSmall: {
     fontSize: 12,
@@ -1013,37 +1256,40 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
   },
   section: {
-    marginBottom: 30,
+    marginBottom: 28,
   },
   sectionTitle: {
     fontSize: 20,
     fontWeight: "600",
     color: "#000000",
     marginBottom: 16,
-    fontFamily: "Playfair Display Regular",
-  },
-  sectionSubtitle: {
-    fontSize: 18,
-    fontWeight: "600",
-    color: "#000000",
-    marginBottom: 16,
-    fontFamily: "Playfair Display Regular",
+    fontFamily: "Playfair Display Bold",
   },
   descriptionText: {
     fontSize: 16,
     color: "#212529",
     fontFamily: "Playfair Display Regular",
     lineHeight: 24,
-    marginBottom: 10,
+    textAlign: "justify",
+  },
+  ingredientsContainer: {
+    backgroundColor: "#F8F9FA",
+    borderRadius: 10,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: "#E9ECEF",
   },
   ingredientItem: {
     flexDirection: "row",
     alignItems: "flex-start",
-    marginBottom: 8,
-    paddingLeft: 8,
+    marginBottom: 10,
+  },
+  ingredientBullet: {
+    marginTop: 6,
+    marginRight: 10,
   },
   ingredientText: {
-    fontSize: 16,
+    fontSize: 15,
     color: "#212529",
     flex: 1,
     fontFamily: "Playfair Display Regular",
@@ -1052,19 +1298,29 @@ const styles = StyleSheet.create({
   instructionItem: {
     flexDirection: "row",
     alignItems: "flex-start",
-    marginBottom: 12,
-    paddingLeft: 8,
+    marginBottom: 16,
+    paddingBottom: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: "#E9ECEF",
+  },
+  stepNumberContainer: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: "#6A9AA9",
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 12,
+    marginTop: 2,
   },
   stepNumber: {
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: "600",
-    color: "#6A9AA9",
-    marginRight: 12,
-    fontFamily: "Playfair Display Regular",
-    minWidth: 24,
+    color: "#FFFFFF",
+    fontFamily: "Playfair Display Bold",
   },
   instructionText: {
-    fontSize: 16,
+    fontSize: 15,
     color: "#000000ff",
     flex: 1,
     fontFamily: "Playfair Display Regular",
@@ -1150,5 +1406,16 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: "white",
     fontFamily: "Playfair Display Regular",
+  },
+  noDataText: {
+    fontSize: 14,
+    color: "#999",
+    fontFamily: "Playfair Display Regular",
+    textAlign: "center",
+    fontStyle: "italic",
+    padding: 10,
+  },
+  bottomSpacer: {
+    height: 40,
   },
 });

@@ -111,6 +111,30 @@ const getCategoryName = (mealType: string) => {
   }
 };
 
+// Функция для сокращения длинных строк активности
+const formatActivity = (activity: string): string => {
+  if (!activity) return "-";
+  
+  // Сокращаем длинные описания активности
+  const maxLength = 25;
+  if (activity.length <= maxLength) return activity;
+  
+  // Ищем точку для естественного обрезания
+  const periodIndex = activity.indexOf('.', maxLength - 10);
+  if (periodIndex !== -1 && periodIndex < maxLength + 10) {
+    return activity.substring(0, periodIndex + 1);
+  }
+  
+  // Ищем запятую
+  const commaIndex = activity.indexOf(',', maxLength - 10);
+  if (commaIndex !== -1 && commaIndex < maxLength + 10) {
+    return activity.substring(0, commaIndex + 1);
+  }
+  
+  // Просто обрезаем и добавляем многоточие
+  return activity.substring(0, maxLength - 3) + '...';
+};
+
 // --- ДАННЫЕ ПО УМОЛЧАНИЮ ---
 const defaultProfileData: ProfileData = {
   name: "Пользователь",
@@ -143,7 +167,6 @@ export default function ProfileScreen() {
   const [favoritesLoading, setFavoritesLoading] = useState(false);
   const [plansLoading, setPlansLoading] = useState(false);
   const [profileCompleted, setProfileCompleted] = useState(false);
-  // Добавляем состояние для статистики подписок
   const [followStats, setFollowStats] = useState({
     followersCount: 0,
     followingCount: 0
@@ -178,6 +201,11 @@ export default function ProfileScreen() {
       console.log(`Подписчики: ${followersCount}, Подписки: ${followingCount}`);
     } catch (error) {
       console.error("Ошибка загрузки статистики подписок:", error);
+      // В случае ошибки показываем 0
+      setFollowStats({
+        followersCount: 0,
+        followingCount: 0
+      });
     } finally {
       setFollowStatsLoading(false);
     }
@@ -186,13 +214,22 @@ export default function ProfileScreen() {
   // --- ФУНКЦИЯ ЗАГРУЗКИ КОЛИЧЕСТВА ПОСТОВ ---
   const loadPostsCount = useCallback(async () => {
     const userId = getCurrentUserId();
-    if (!userId) return;
+    if (!userId) {
+      setPostsCount(0);
+      return;
+    }
 
     try {
       console.log("Загрузка количества постов...");
-      // TODO: Реализовать метод для получения количества постов пользователя
-      // Пока используем заглушку
-      setPostsCount(0);
+      
+      // Временное решение: пока считаем все рецепты пользователя как посты
+      // В будущем нужно будет заменить на вызов сервиса постов
+      const userRecipes = await recipeService.getUserRecipes(userId);
+      const recipesArray = userRecipes || [];
+      
+      // Считаем все рецепты пользователя (пока нет отдельного поля для публикаций)
+      setPostsCount(recipesArray.length);
+      console.log(`Найдено рецептов пользователя: ${recipesArray.length}`);
     } catch (error) {
       console.error("Ошибка загрузки количества постов:", error);
       setPostsCount(0);
@@ -213,8 +250,6 @@ export default function ProfileScreen() {
     setFavoritesLoading(true);
     try {
       console.log("Загрузка избранных рецептов для профиля...");
-
-      // Используем userId при загрузке избранного
       const allFavorites = await favoriteService.getUserFavorites(userId);
       console.log("Получено избранных элементов:", allFavorites?.length || 0);
 
@@ -225,27 +260,22 @@ export default function ProfileScreen() {
       }
 
       const recipes: Recipe[] = [];
-
-      // Добавляем уникальный счётчик
       let recipeCounter = 0;
 
       allFavorites.forEach((fav: any) => {
         if (fav.favoriteType === "recipe" && fav.item) {
           const recipeData = fav.item;
 
-          // Название рецепта
           const title =
             recipeData.title ||
             recipeData.fields?.title ||
             recipeData.name ||
             "Рецепт без названия";
 
-          // Категория - получаем из mealType или fields
           const rawCategory =
             recipeData.mealType || recipeData.fields?.mealType || "other";
           const category = getCategoryName(rawCategory);
 
-          // Калории
           let calories = 0;
           if (recipeData.fields?.calories !== undefined)
             calories = recipeData.fields.calories;
@@ -254,29 +284,22 @@ export default function ProfileScreen() {
           else if (recipeData.fields?.fscts !== undefined)
             calories = recipeData.fields.fscts;
 
-          // Время приготовления - безопасное получение и форматирование
           let cookingTime = "20 минут";
-
-          // Пробуем получить время из разных источников
           const rawTime =
             recipeData.fields?.cookingTime ||
             recipeData.cookingTime ||
             recipeData.time;
 
           if (rawTime) {
-            // Если это число, форматируем его
             if (typeof rawTime === "number") {
               cookingTime = formatMinutes(rawTime);
             } else {
-              // Если это строка, используем как есть
               cookingTime = String(rawTime);
-              // Добавляем "минут" если нужно
               if (
                 cookingTime &&
                 !cookingTime.includes("мин") &&
                 !cookingTime.includes("минут")
               ) {
-                // Пытаемся извлечь только число из строки
                 const timeMatch = cookingTime.match(/\d+/);
                 if (timeMatch) {
                   cookingTime = formatMinutes(parseInt(timeMatch[0], 10));
@@ -287,14 +310,12 @@ export default function ProfileScreen() {
             }
           }
 
-          // Рейтинг
           const rating =
             recipeData.rating ||
             recipeData.fields?.rating ||
             recipeData.ratingCount ||
             0;
 
-          // Сложность приготовления - из разных полей
           let difficulty = "Легко";
           const rawDifficulty =
             recipeData.difficulty ||
@@ -304,7 +325,6 @@ export default function ProfileScreen() {
 
           if (rawDifficulty) {
             const normalizedDifficulty = String(rawDifficulty).trim();
-            // Проверяем разные варианты написания
             if (
               normalizedDifficulty.toLowerCase().includes("легк") ||
               normalizedDifficulty === "Easy"
@@ -325,7 +345,6 @@ export default function ProfileScreen() {
             }
           }
 
-          // Изображение
           let imageUri = null;
           if (recipeData.fields?.image) imageUri = recipeData.fields.image;
           else if (recipeData.image) imageUri = recipeData.image;
@@ -333,7 +352,6 @@ export default function ProfileScreen() {
           else if (recipeData.fields?.langdir1)
             imageUri = recipeData.fields.langdir1;
 
-          // ФИКС: Генерируем уникальный ID
           recipeCounter++;
           const uniqueId =
             recipeData.id ||
@@ -343,7 +361,7 @@ export default function ProfileScreen() {
               .substr(2, 9)}`;
 
           const recipe: Recipe = {
-            id: uniqueId, // ✅ Теперь всегда уникальный
+            id: uniqueId,
             name: title,
             category: category,
             calories: calories,
@@ -362,14 +380,12 @@ export default function ProfileScreen() {
 
       console.log(`Загружено ${recipes.length} избранных рецептов`);
 
-      // Дополнительная проверка на уникальность ID
       const duplicateIds = recipes
         .map((r) => r.id)
         .filter((id, index, self) => self.indexOf(id) !== index);
 
       if (duplicateIds.length > 0) {
         console.warn("⚠️ Обнаружены дублирующиеся ID:", duplicateIds);
-        // Исправляем дубликаты
         const fixedRecipes = recipes.map((recipe, index) => ({
           ...recipe,
           id: duplicateIds.includes(recipe.id)
@@ -400,8 +416,6 @@ export default function ProfileScreen() {
     setPlansLoading(true);
     try {
       console.log("Загрузка планов пользователя...");
-
-      // Загружаем все планы пользователя
       const userPlans = await rationPlanService.getUserRationPlans(userId);
       console.log("Получено планов пользователя:", userPlans?.length || 0);
 
@@ -411,26 +425,18 @@ export default function ProfileScreen() {
         return;
       }
 
-      // Преобразуем данные планов в нужный формат
       const formattedPlans: Plan[] = userPlans.map((plan: any) => {
-        // Определяем дату создания плана
         let createdAt = Date.now();
         if (plan.createdAt) {
-          // Если createdAt - это строка даты
           if (typeof plan.createdAt === "string") {
             createdAt = new Date(plan.createdAt).getTime();
-          }
-          // Если createdAt - это объект Firestore Timestamp
-          else if (plan.createdAt.seconds) {
+          } else if (plan.createdAt.seconds) {
             createdAt = plan.createdAt.seconds * 1000;
-          }
-          // Если createdAt - это число (timestamp)
-          else if (typeof plan.createdAt === "number") {
+          } else if (typeof plan.createdAt === "number") {
             createdAt = plan.createdAt;
           }
         }
 
-        // Форматируем дату сохранения
         const savedDate = new Date(createdAt).toLocaleDateString("ru-RU");
 
         return {
@@ -440,18 +446,16 @@ export default function ProfileScreen() {
           totalCalories: plan.totalCalories || 0,
           duration: plan.totalDuration || "0 дней",
           mealsCount: plan.mealsCount || 0,
-          image: null, // УБИРАЕМ ИЗОБРАЖЕНИЕ
+          image: null,
           savedDate: savedDate,
           createdAt: createdAt,
         };
       });
 
-      // Сортируем планы по дате создания (от новых к старым)
       const sortedPlans = formattedPlans.sort(
         (a, b) => (b.createdAt || 0) - (a.createdAt || 0)
       );
 
-      // Берем только последние 3 плана
       const latestPlans = sortedPlans.slice(0, 3);
 
       console.log(
@@ -472,10 +476,7 @@ export default function ProfileScreen() {
 
     try {
       console.log("Загрузка количества моих рецептов...");
-
-      // Если метод принимает string | null | undefined
       const userRecipes = await recipeService.getUserRecipes(userId || null);
-
       const count = userRecipes?.length || 0;
       console.log(`Получено ${count} моих рецептов`);
       setMyRecipesCount(count);
@@ -491,7 +492,6 @@ export default function ProfileScreen() {
     try {
       const userId = getCurrentUserId();
 
-      // 1. Загружаем данные из AsyncStorage
       const [storedProfile, setupStatus] = await Promise.all([
         AsyncStorage.getItem(PROFILE_STORAGE_KEY),
         AsyncStorage.getItem(PROFILE_SETUP_KEY),
@@ -508,11 +508,9 @@ export default function ProfileScreen() {
         }
       }
 
-      // 2. Пробуем загрузить фото из Firebase Auth (если пользователь авторизован)
       if (userId && auth.currentUser) {
         const authUser = auth.currentUser;
 
-        // Получаем имя из Auth, если его нет в хранилище
         if (
           !profileFromStorage.name ||
           profileFromStorage.name === "Пользователь"
@@ -523,28 +521,22 @@ export default function ProfileScreen() {
             "Пользователь";
         }
 
-        // Получаем email из Auth, если его нет в хранилище
         if (!profileFromStorage.email) {
           profileFromStorage.email = authUser.email || "";
         }
 
-        // Получаем фото из Firebase Auth (приоритет 1)
         if (authUser.photoURL && !profileFromStorage.photoURL) {
           profileFromStorage.photoURL = authUser.photoURL;
         }
 
-        // 3. Пробуем загрузить из Firestore через userService (приоритет 2)
         try {
-          // Используем импортированный userService
           const firestoreData = await userService.fetchUserProfile(userId);
 
           if (firestoreData) {
-            // Обновляем фото из Firestore, если есть
             if (firestoreData.photoURL && !profileFromStorage.photoURL) {
               profileFromStorage.photoURL = firestoreData.photoURL;
             }
 
-            // Обновляем другие данные из Firestore
             profileFromStorage = {
               ...profileFromStorage,
               name: firestoreData.name || profileFromStorage.name,
@@ -585,14 +577,12 @@ export default function ProfileScreen() {
             "Ошибка загрузки профиля из Firestore:",
             firestoreError
           );
-          // Продолжаем с данными из AsyncStorage
         }
       }
 
       setProfileData(profileFromStorage);
       setProfileCompleted(setupStatus === "true");
 
-      // 4. Загружаем все данные параллельно
       await Promise.all([
         loadFavoritesFromDB(),
         loadUserPlans(),
@@ -649,7 +639,11 @@ export default function ProfileScreen() {
   const preferences = useMemo(
     () => [
       { label: "Цель", value: profileData.goal || "-" },
-      { label: "Активность", value: profileData.activity || "-" },
+      { 
+        label: "Активность", 
+        value: formatActivity(profileData.activity) || "-",
+        fullValue: profileData.activity // Сохраняем полное значение для детального просмотра
+      },
       { label: "Тип питания", value: profileData.nutritionType || "-" },
       { label: "Аллергии", value: profileData.allergies || "Нет" },
       { label: "Нелюбимые продукты", value: profileData.dislikes || "Нет" },
@@ -677,7 +671,6 @@ export default function ProfileScreen() {
     router.push("/profile-settings");
   };
 
-  // ОБНОВЛЕННЫЕ ПЕРЕХОДЫ
   const handleNavigation = useCallback((path: string) => {
     switch (path) {
       case "/user-recipes":
@@ -691,9 +684,7 @@ export default function ProfileScreen() {
         break;
       case "/posts":
         console.log("Переход к публикациям");
-        // TODO: Создать страницу постов
-        // router.push("/posts");
-        Alert.alert("Информация", "Страница публикаций в разработке");
+        router.push("/posts");
         break;
       default:
         console.log(`Переход на: ${path}`);
@@ -709,8 +700,6 @@ export default function ProfileScreen() {
       }
 
       console.log(`Удаление рецепта ${recipeId} из избранного...`);
-
-      // Используем правильный вызов с userId
       await favoriteService.removeFromFavorites(recipeId, "recipe", userId);
 
       setFavoriteRecipes((prev) =>
@@ -746,7 +735,6 @@ export default function ProfileScreen() {
 
   const handlePlanPress = (plan: Plan) => {
     console.log(`Открытие плана: ${plan.name}`);
-    // Переход к деталям плана или редактированию
     router.push({
       pathname: "/create-ration",
       params: { planId: plan.id },
@@ -763,7 +751,6 @@ export default function ProfileScreen() {
           text: "Использовать",
           onPress: () => {
             console.log(`Начало использования плана ${plan.id}`);
-            // Здесь можно добавить логику применения плана
             Alert.alert("Успешно", `План "${plan.name}" теперь активен!`);
           },
         },
@@ -808,7 +795,6 @@ export default function ProfileScreen() {
       );
     }
 
-    // Заглушка, если фото нет
     return <Ionicons name="person" size={48} color="#6A9AA9" />;
   };
 
@@ -825,7 +811,6 @@ export default function ProfileScreen() {
             style={styles.recipeImage}
             resizeMode="cover"
           />
-          {/* Бейджи рейтинга и сложности */}
           <View style={styles.recipeBadges}>
             {recipe.rating && recipe.rating > 0 ? (
               <View style={styles.ratingBadge}>
@@ -846,7 +831,6 @@ export default function ProfileScreen() {
               <Text style={styles.difficultyText}>{recipe.difficulty}</Text>
             </View>
           </View>
-          {/* Кнопка закладки */}
           <TouchableOpacity
             style={styles.bookmarkButton}
             onPress={() => toggleBookmark(recipe.id)}
@@ -863,10 +847,8 @@ export default function ProfileScreen() {
             >
               {recipe.name}
             </Text>
-            {/* Категория */}
             <Text style={styles.recipeCategory}>{recipe.category}</Text>
             <View style={styles.recipeDetails}>
-              {/* Калории */}
               {recipe.calories && recipe.calories > 0 ? (
                 <Text style={styles.recipeCalories}>
                   {recipe.calories} ккал
@@ -899,7 +881,6 @@ export default function ProfileScreen() {
       style={styles.planCard}
       onPress={() => handlePlanPress(plan)}
     >
-      {/* УБИРАЕМ ИЗОБРАЖЕНИЕ ПЛАНА */}
       <View style={styles.planIconContainer}>
         <Ionicons name="calendar-outline" size={32} color="#6A9AA9" />
       </View>
@@ -936,6 +917,40 @@ export default function ProfileScreen() {
       </View>
     </TouchableOpacity>
   );
+
+  // Функция для отображения активности с тултипом
+  const renderActivity = (item: any) => {
+    const showFullActivity = item.fullValue && item.fullValue.length > 25;
+    
+    return (
+      <View key={item.label} style={styles.preferenceRow}>
+        <Text style={styles.preferenceLabel}>{item.label}</Text>
+        <View style={styles.activityContainer}>
+          <Text 
+            style={styles.preferenceValue}
+            numberOfLines={1}
+            ellipsizeMode="tail"
+          >
+            {item.value}
+          </Text>
+          {showFullActivity && (
+            <TouchableOpacity 
+              style={styles.infoButton}
+              onPress={() => {
+                Alert.alert(
+                  "Уровень активности",
+                  item.fullValue,
+                  [{ text: "Понятно", style: "default" }]
+                );
+              }}
+            >
+              <Ionicons name="information-circle-outline" size={16} color="#6A9AA9" />
+            </TouchableOpacity>
+          )}
+        </View>
+      </View>
+    );
+  };
 
   // --- РЕНДЕР ВКЛАДКИ "ПРОФИЛЬ" ---
   const renderProfileTab = () => (
@@ -1018,18 +1033,29 @@ export default function ProfileScreen() {
       <View style={styles.section}>
         <Text style={styles.sectionTitleProfile}>Предпочтения</Text>
         <View style={styles.preferences}>
-          {preferences.map((item, index) => (
-            <View
-              key={item.label}
-              style={[
-                styles.preferenceRow,
-                index === preferences.length - 1 && styles.preferenceRowLast,
-              ]}
-            >
-              <Text style={styles.preferenceLabel}>{item.label}</Text>
-              <Text style={styles.preferenceValue}>{item.value}</Text>
-            </View>
-          ))}
+          {preferences.map((item, index) => {
+            if (item.label === "Активность") {
+              return renderActivity(item);
+            }
+            return (
+              <View
+                key={item.label}
+                style={[
+                  styles.preferenceRow,
+                  index === preferences.length - 1 && styles.preferenceRowLast,
+                ]}
+              >
+                <Text style={styles.preferenceLabel}>{item.label}</Text>
+                <Text 
+                  style={styles.preferenceValue}
+                  numberOfLines={1}
+                  ellipsizeMode="tail"
+                >
+                  {item.value}
+                </Text>
+              </View>
+            );
+          })}
         </View>
       </View>
     </ScrollView>
@@ -1677,6 +1703,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 15,
     borderBottomWidth: 1,
     borderBottomColor: "#F5F7F9",
+    alignItems: "center",
   },
   preferenceRowLast: {
     borderBottomWidth: 0,
@@ -1685,10 +1712,24 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: "#212529",
     fontFamily: "Playfair Display Regular",
+    flex: 1,
   },
   preferenceValue: {
     fontSize: 15,
     color: "#212529",
     fontFamily: "Playfair Display Regular",
+    flex: 1,
+    textAlign: "right",
+    marginLeft: 8,
+  },
+  activityContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    flex: 1,
+    justifyContent: "flex-end",
+  },
+  infoButton: {
+    marginLeft: 4,
+    padding: 2,
   },
 });

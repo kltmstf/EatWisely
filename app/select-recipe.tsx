@@ -1,3 +1,4 @@
+// app/select-recipe.tsx
 import { useRouter, useLocalSearchParams } from "expo-router";
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -108,7 +109,6 @@ const Avatar: React.FC<AvatarProps> = ({ photoURL, size = 55 }) => {
   );
 };
 
-// --- Функция для правильного склонения слова "минута" ---
 const formatMinutes = (minutes: number): string => {
   const absMinutes = Math.abs(minutes);
   const lastDigit = absMinutes % 10;
@@ -120,7 +120,6 @@ const formatMinutes = (minutes: number): string => {
   return `${absMinutes} минут`;
 };
 
-// --- Компонент для индикатора загрузки ---
 const FooterLoader: React.FC<{ loading: boolean }> = ({ loading }) => {
   if (!loading) return null;
 
@@ -157,7 +156,6 @@ const getCategoryIcon = (mealType: string) => {
 export default function SelectRecipeScreen() {
   const router = useRouter();
   const params = useLocalSearchParams();
-  const { fromScreen = "home", replaceMealId } = params;
   
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("Все");
@@ -174,15 +172,20 @@ export default function SelectRecipeScreen() {
 
   const { user } = useAuthContext();
   const userId = user?.uid || null;
-  const userName = user?.displayName || user?.email || "Пользователь";
   const [userPhotoURL, setUserPhotoURL] = useState<string | null>(null);
 
   const categories = ["Все", "Завтрак", "Обед", "Ужин", "Перекусы"];
   const scrollViewRef = useRef<ScrollView>(null);
 
-  // Рефы для управления загрузкой
   const isInitialLoadDone = useRef(false);
   const isComponentMounted = useRef(true);
+
+  // Получаем параметры для замены рецепта
+  const isReplacement = params.isReplacement === "true";
+  const mealIndex = params.mealIndex;
+  const currentMealId = params.currentMealId;
+  const currentMealCategory = params.currentMealCategory;
+  const isCustomReplacement = params.isCustomReplacement === "true";
 
   // --- Инициализация Firebase ---
   useEffect(() => {
@@ -273,16 +276,13 @@ export default function SelectRecipeScreen() {
   const loadRecipes = useCallback(
     async (loadMore = false) => {
       if (!db || !isComponentMounted.current) {
-        console.log("Пропускаем загрузку: db нет или компонент размонтирован");
         return;
       }
 
       if (loadMore && loadingMore) {
-        console.log("Пропускаем: уже загружается больше");
         return;
       }
       if (!loadMore && loading && isInitialLoadDone.current) {
-        console.log("Пропускаем: начальная загрузка уже выполнена");
         return;
       }
 
@@ -296,10 +296,6 @@ export default function SelectRecipeScreen() {
             setLastVisible(null);
           }
         }
-
-        console.log(
-          `Загрузка рецептов: loadMore=${loadMore}, lastVisible=${!!lastVisible}`
-        );
 
         let recipesQuery = query(
           collection(db, "recipes"),
@@ -330,7 +326,6 @@ export default function SelectRecipeScreen() {
         setLastVisible(newLastVisible);
 
         if (recipesSnapshot.docs.length < RECIPES_PER_PAGE) {
-          console.log("Больше данных нет");
           setHasMore(false);
         } else {
           console.log("Еще есть данные для загрузки");
@@ -364,8 +359,6 @@ export default function SelectRecipeScreen() {
           };
         });
 
-        console.log(`Загружено рецептов: ${loadedRecipes.length}`);
-
         if (loadMore) {
           setRecipes((prev) => [...prev, ...loadedRecipes]);
         } else {
@@ -381,7 +374,6 @@ export default function SelectRecipeScreen() {
             );
             const countSnapshot = await getDocs(countQuery);
             setTotalCount(countSnapshot.size);
-            console.log(`Всего рецептов: ${countSnapshot.size}`);
           } catch (countError) {
             console.error("Ошибка подсчета общего количества:", countError);
           }
@@ -402,26 +394,21 @@ export default function SelectRecipeScreen() {
     [db, userId, lastVisible, loading, loadingMore]
   );
 
-  // --- Первоначальная загрузка ---
   useEffect(() => {
     if (db && !isInitialLoadDone.current) {
-      console.log("=== НАЧАЛЬНАЯ ЗАГРУЗКА ===");
       loadRecipes();
     }
   }, [db, loadRecipes]);
 
-  // --- Pull-to-refresh ---
   const onRefresh = useCallback(async () => {
     if (!db || refreshing) return;
 
-    console.log("=== PULL TO REFRESH ===");
     setRefreshing(true);
     isInitialLoadDone.current = false;
     await loadRecipes();
     setRefreshing(false);
   }, [db, loadRecipes, refreshing]);
 
-  // --- Фильтрация рецептов ---
   const filteredRecipes = recipes.filter((recipe) => {
     const matchesSearch =
       recipe.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -435,7 +422,6 @@ export default function SelectRecipeScreen() {
     return matchesSearch && matchesCategory;
   });
 
-  // --- Обработка скролла для пагинации ---
   const handleScroll = useCallback(
     (event: any) => {
       const { layoutMeasurement, contentOffset, contentSize } =
@@ -455,14 +441,12 @@ export default function SelectRecipeScreen() {
         !refreshing &&
         isInitialLoadDone.current
       ) {
-        console.log("=== ЗАГРУЗКА ПРИ СКРОЛЛЕ ===");
         loadRecipes(true);
       }
     },
     [loadingMore, hasMore, db, loading, refreshing, loadRecipes]
   );
 
-  // --- Переключение закладки ---
   const toggleBookmark = async (recipeId: string) => {
     if (!db || !userId || isUpdating) return;
 
@@ -513,7 +497,6 @@ export default function SelectRecipeScreen() {
     }
   };
 
-  // --- Навигация ---
   const navigateToProfile = () => {
     if (userId) {
       router.back();
@@ -538,42 +521,84 @@ export default function SelectRecipeScreen() {
     }
   };
 
-  // --- Функция выбора рецепта ---
-const handleSelectRecipe = (recipe: Recipe) => {
-  Alert.alert(
-    "Добавить рецепт",
-    `Добавить "${recipe.title}" в дневной рацион?`,
-    [
-      { text: "Отмена", style: "cancel" },
-      { 
-        text: "Добавить", 
-        style: "default",
-        onPress: () => {
-          // Передаем данные через параметры роутера
-          router.push({
-            pathname: "/(tabs)/home",
-            params: {
-              selectedRecipe: JSON.stringify({
-                id: recipe.id,
-                title: recipe.title,
-                calories: recipe.calories || 300,
-                proteins: 0,
-                fats: 0,
-                carbohydrates: 0,
-                cookingTime: recipe.cookingTime || 20,
-                difficultyLevel: recipe.difficultyLevel || recipe.difficulty || "Легко",
-                imageUrl: recipe.imageUrl,
-                mealType: recipe.mealType,
-                weight: "250г",
-                rating: recipe.rating || 0
-              })
+  // --- ОБНОВЛЕННАЯ ФУНКЦИЯ ВЫБОРА РЕЦЕПТА ---
+  const handleSelectRecipe = (recipe: Recipe) => {
+    if (isReplacement) {
+      // Замена рецепта в существующем рационе
+      Alert.alert(
+        "Заменить рецепт",
+        `Заменить текущий рецепт на "${recipe.title}"?`,
+        [
+          { text: "Отмена", style: "cancel" },
+          { 
+            text: "Заменить", 
+            style: "default",
+            onPress: () => {
+              // Передаем данные через параметры для замены
+              router.push({
+                pathname: "/(tabs)/home",
+                params: {
+                  replaceRecipe: JSON.stringify({
+                    recipeId: recipe.id,
+                    title: recipe.title,
+                    calories: recipe.calories || 300,
+                    proteins: 0,
+                    fats: 0,
+                    carbohydrates: 0,
+                    cookingTime: recipe.cookingTime || 20,
+                    difficultyLevel: recipe.difficultyLevel || recipe.difficulty || "Легко",
+                    imageUrl: recipe.imageUrl,
+                    mealType: recipe.mealType,
+                    category: currentMealCategory || recipe.mealType,
+                    weight: "250г",
+                    rating: recipe.rating || 0,
+                    isReplacement: "true",
+                    mealIndex: mealIndex,
+                    currentMealId: currentMealId,
+                    isCustomReplacement: isCustomReplacement ? "true" : "false"
+                  })
+                }
+              });
             }
-          });
-        }
-      }
-    ]
-  );
-};
+          }
+        ]
+      );
+    } else {
+      // Добавление нового рецепта в рацион
+      Alert.alert(
+        "Добавить рецепт",
+        `Добавить "${recipe.title}" в дневной рацион?`,
+        [
+          { text: "Отмена", style: "cancel" },
+          { 
+            text: "Добавить", 
+            style: "default",
+            onPress: () => {
+              router.push({
+                pathname: "/(tabs)/home",
+                params: {
+                  selectedRecipe: JSON.stringify({
+                    id: recipe.id,
+                    title: recipe.title,
+                    calories: recipe.calories || 300,
+                    proteins: 0,
+                    fats: 0,
+                    carbohydrates: 0,
+                    cookingTime: recipe.cookingTime || 20,
+                    difficultyLevel: recipe.difficultyLevel || recipe.difficulty || "Легко",
+                    imageUrl: recipe.imageUrl,
+                    mealType: recipe.mealType,
+                    weight: "250г",
+                    rating: recipe.rating || 0
+                  })
+                }
+              });
+            }
+          }
+        ]
+      );
+    }
+  };
 
   if (loading && !refreshing) {
     return (
@@ -588,7 +613,6 @@ const handleSelectRecipe = (recipe: Recipe) => {
     <View style={styles.container}>
       <StatusBar barStyle="dark-content" />
 
-      {/* Верхнее меню */}
       <View style={styles.header}>
         <TouchableOpacity 
           style={styles.backButton}
@@ -598,8 +622,14 @@ const handleSelectRecipe = (recipe: Recipe) => {
         </TouchableOpacity>
         
         <View style={styles.headerTextContainer}>
-          <Text style={styles.greetingText}>Выберите рецепт</Text>
-          <Text style={styles.dietText}>Добавьте в дневной рацион</Text>
+          <Text style={styles.greetingText}>
+            {isReplacement ? "Заменить рецепт" : "Выберите рецепт"}
+          </Text>
+          <Text style={styles.dietText}>
+            {isReplacement 
+              ? "Выберите новый рецепт для замены" 
+              : "Добавьте в дневной рацион"}
+          </Text>
         </View>
 
         <View style={styles.userInfo}>
@@ -623,7 +653,6 @@ const handleSelectRecipe = (recipe: Recipe) => {
         onScroll={handleScroll}
         scrollEventThrottle={400}
       >
-        {/* Поиск и фильтры */}
         <View style={styles.searchSection}>
           <ScrollView
             horizontal
@@ -680,7 +709,6 @@ const handleSelectRecipe = (recipe: Recipe) => {
           <View style={styles.sectionDivider} />
         </View>
 
-        {/* Рецепты */}
         <View style={styles.recipesSection}>
           <View style={styles.recipesHeader}>
             <Text style={styles.recipesTitle}>
@@ -691,7 +719,6 @@ const handleSelectRecipe = (recipe: Recipe) => {
             </TouchableOpacity>
           </View>
 
-          {/* Сетка рецептов */}
           <View style={styles.recipesGrid}>
             {filteredRecipes.map((recipe) => (
               <View key={recipe.id} style={styles.recipeColumn}>
@@ -789,7 +816,9 @@ const handleSelectRecipe = (recipe: Recipe) => {
                       style={styles.selectButton}
                       onPress={() => handleSelectRecipe(recipe)}
                     >
-                      <Text style={styles.selectButtonText}>Выбрать</Text>
+                      <Text style={styles.selectButtonText}>
+                        {isReplacement ? "Заменить" : "Выбрать"}
+                      </Text>
                     </TouchableOpacity>
                   </View>
                 </TouchableOpacity>
@@ -797,10 +826,8 @@ const handleSelectRecipe = (recipe: Recipe) => {
             ))}
           </View>
 
-          {/* Индикатор загрузки */}
           <FooterLoader loading={loadingMore} />
 
-          {/* Пустое состояние */}
           {filteredRecipes.length === 0 && !loading && (
             <View style={styles.emptyState}>
               <Ionicons name="restaurant-outline" size={64} color="#C2DAE2" />

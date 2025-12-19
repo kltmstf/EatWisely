@@ -1,4 +1,4 @@
-// app/(tabs)/profile/followers.tsx
+// app/followers.tsx
 import { Ionicons, Feather } from "@expo/vector-icons";
 import { useFocusEffect, useRouter } from "expo-router";
 import React, { useCallback, useState } from "react";
@@ -35,6 +35,7 @@ interface FollowerData {
   createdAt: any;
   user?: UserProfile;
   isFollowing?: boolean;
+  isFriend?: boolean; // Новое поле: является ли другом
 }
 
 export default function FollowersScreen() {
@@ -59,39 +60,73 @@ export default function FollowersScreen() {
 
     try {
       setLoading(true);
-      console.log("Загрузка списка подписчиков...");
+      console.log("Загрузка списка подписчиков для пользователя:", userId);
 
-      // Получаем данные и явно приводим к типу
+      // Получаем данные из сервиса
       const followersList = await followService.getFollowers(userId);
+      console.log("Raw данные из сервиса:", followersList);
       
-      // Явно приводим к нужному типу
-      const typedFollowers: FollowerData[] = (followersList || []).map(item => ({
-        id: item.id,
-        followerId: item.followerId || '',
-        followingId: item.followingId || '',
-        createdAt: item.createdAt || new Date(),
-        user: item.user ? {
-          id: item.user.id || '',
-          name: item.user.name || 'Пользователь',
-          email: item.user.email,
-          photoURL: item.user.photoURL,
-          description: item.user.description,
-          followersCount: item.user.followersCount || 0,
-          followingCount: item.user.followingCount || 0
-        } : undefined
-      }));
+      // Преобразуем данные, защищаясь от ошибок
+      const typedFollowers: FollowerData[] = [];
+      
+      if (Array.isArray(followersList)) {
+        for (const item of followersList) {
+          try {
+            // Используем any для обхода проверки типов
+            const anyItem = item as any;
+            
+            const followerData: FollowerData = {
+              id: anyItem.id || '',
+              followerId: anyItem.followerId || '',
+              followingId: anyItem.followingId || '',
+              createdAt: anyItem.createdAt || new Date(),
+            };
+            
+            // Проверяем наличие user данных
+            if (anyItem.user) {
+              followerData.user = {
+                id: anyItem.user.id || anyItem.followerId || '',
+                name: anyItem.user.name || 'Пользователь',
+                email: anyItem.user.email,
+                photoURL: anyItem.user.photoURL,
+                description: anyItem.user.description,
+                followersCount: anyItem.user.followersCount || 0,
+                followingCount: anyItem.user.followingCount || 0
+              };
+            } else {
+              // Если user не загружен, используем базовую информацию
+              followerData.user = {
+                id: anyItem.followerId || '',
+                name: 'Пользователь',
+                followersCount: 0,
+                followingCount: 0
+              };
+            }
+            
+            typedFollowers.push(followerData);
+          } catch (error) {
+            console.error("Ошибка обработки элемента:", error, item);
+          }
+        }
+      }
 
-      console.log("Получено подписчиков:", typedFollowers.length);
+      console.log("Обработанные подписчики:", typedFollowers.length, typedFollowers);
       
       // Проверяем, подписан ли я на каждого подписчика
       const enrichedFollowers = await Promise.all(
         typedFollowers.map(async (follower) => {
           try {
+            // Проверяем, подписан ли я на этого пользователя
             const isFollowing = await followService.isFollowing(follower.followerId);
-            return { ...follower, isFollowing };
+            
+            // Временно: считаем друзьями, если мы подписаны на подписчика
+            // (так как он уже подписан на нас - он в списке подписчиков)
+            const isFriend = isFollowing;
+            
+            return { ...follower, isFollowing, isFriend };
           } catch (error) {
             console.error("Ошибка проверки подписки:", error);
-            return { ...follower, isFollowing: false };
+            return { ...follower, isFollowing: false, isFriend: false };
           }
         })
       );
@@ -111,30 +146,115 @@ export default function FollowersScreen() {
   const handleFollow = async (userId: string, userName: string) => {
     try {
       await followService.followUser(userId);
+      
       // Обновляем статус в списке
       setFollowers(prev =>
         prev.map(follower =>
           follower.followerId === userId
-            ? { ...follower, isFollowing: true }
+            ? { ...follower, isFollowing: true, isFriend: true } // При подписке автоматически становимся друзьями
             : follower
         )
       );
-      Alert.alert("Успешно", `Вы подписались на ${userName}`);
+      
+      Alert.alert("Успешно", `Вы подписались на ${userName}. Теперь вы друзья!`);
     } catch (error: any) {
       console.error("Ошибка подписки:", error);
       Alert.alert("Ошибка", error.message || "Не удалось подписаться");
     }
   };
 
-  // Переход к профилю пользователя
-  const navigateToProfile = (userId: string) => {
-    // Создаем временное решение пока нет страницы профиля пользователя
-    if (userId === getCurrentUserId()) {
-      router.push("/(tabs)/profile");
+  // Отписаться от пользователя (используется для кнопки "Друзья")
+  const handleUnfollow = async (userId: string, userName: string) => {
+    Alert.alert(
+      "Отписаться",
+      `Вы уверены, что хотите отписаться от ${userName}? Это удалит статус "Друзья".`,
+      [
+        { text: "Отмена", style: "cancel" },
+        {
+          text: "Отписаться",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await followService.unfollowUser(userId);
+              
+              // Обновляем статус в списке
+              setFollowers(prev =>
+                prev.map(follower =>
+                  follower.followerId === userId
+                    ? { ...follower, isFollowing: false, isFriend: false }
+                    : follower
+                )
+              );
+              
+              Alert.alert("Успешно", `Вы отписались от ${userName}`);
+            } catch (error: any) {
+              console.error("Ошибка отписки:", error);
+              Alert.alert("Ошибка", error.message || "Не удалось отписаться");
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  // Обработка нажатия на кнопку (для друзей и подписок)
+  const handleFollowButtonPress = (follower: FollowerData) => {
+    const user = follower.user;
+    if (!user) return;
+
+    if (follower.isFriend) {
+      // Если это друг - предлагаем отписаться
+      handleUnfollow(user.id, user.name);
+    } else if (follower.isFollowing) {
+      // Если уже подписан - предлагаем отписаться
+      Alert.alert(
+        "Отписаться",
+        `Вы уверены, что хотите отписаться от ${user.name}?`,
+        [
+          { text: "Отмена", style: "cancel" },
+          {
+            text: "Отписаться",
+            style: "destructive",
+            onPress: async () => {
+              try {
+                await followService.unfollowUser(user.id);
+                
+                // Обновляем статус в списке
+                setFollowers(prev =>
+                  prev.map(f =>
+                    f.followerId === user.id
+                      ? { ...f, isFollowing: false, isFriend: false }
+                      : f
+                  )
+                );
+                
+                Alert.alert("Успешно", `Вы отписались от ${user.name}`);
+              } catch (error: any) {
+                console.error("Ошибка отписки:", error);
+                Alert.alert("Ошибка", error.message || "Не удалось отписаться");
+              }
+            },
+          },
+        ]
+      );
     } else {
-      Alert.alert("Информация", "Страница профиля пользователя в разработке");
+      // Если не подписан - подписаться
+      handleFollow(user.id, user.name);
     }
   };
+
+  // Переход к профилю пользователя
+  const navigateToProfile = (userId: string) => {
+  if (userId === getCurrentUserId()) {
+    router.push("/(tabs)/profile");
+  } else {
+    // Используем правильный синтаксис для динамических маршрутов
+    router.push({
+      pathname: "/user/[id]",
+      params: { id: userId }
+    });
+  }
+};
 
   // Pull-to-refresh
   const onRefresh = useCallback(async () => {
@@ -167,6 +287,27 @@ export default function FollowersScreen() {
     if (!user) return null;
 
     const isCurrentUser = follower.followerId === getCurrentUserId();
+
+    // Определяем текст и стиль кнопки
+    let buttonText = "Подписаться";
+    let buttonStyle = styles.notFollowingButton;
+    let buttonTextStyle = styles.notFollowingButtonText;
+    let iconName: "person-add" | "person" | "people" = "person-add";
+    let iconColor = "#fff";
+
+    if (follower.isFriend) {
+      buttonText = "Друзья";
+      buttonStyle = styles.friendButton;
+      buttonTextStyle = styles.friendButtonText;
+      iconName = "people";
+      iconColor = "#fff";
+    } else if (follower.isFollowing) {
+      buttonText = "Подписан";
+      buttonStyle = styles.followingButton;
+      buttonTextStyle = styles.followingButtonText;
+      iconName = "person";
+      iconColor = "#000";
+    }
 
     return (
       <View key={follower.id} style={styles.userCard}>
@@ -209,6 +350,12 @@ export default function FollowersScreen() {
                   {user.followingCount || 0}
                 </Text>
               </View>
+              {follower.isFriend && (
+                <View style={styles.friendBadge}>
+                  <Ionicons name="checkmark-circle" size={10} color="#fff" />
+                  <Text style={styles.friendBadgeText}>Друг</Text>
+                </View>
+              )}
             </View>
           </View>
         </TouchableOpacity>
@@ -217,20 +364,20 @@ export default function FollowersScreen() {
           <TouchableOpacity
             style={[
               styles.followButton,
-              follower.isFollowing ? styles.followingButton : styles.notFollowingButton
+              buttonStyle
             ]}
-            onPress={() => handleFollow(user.id, user.name)}
+            onPress={() => handleFollowButtonPress(follower)}
           >
             <Ionicons 
-              name={follower.isFollowing ? "person" : "person-add"} 
+              name={iconName} 
               size={16} 
-              color={follower.isFollowing ? "#000" : "#fff"} 
+              color={iconColor} 
             />
             <Text style={[
               styles.followButtonText,
-              follower.isFollowing ? styles.followingButtonText : styles.notFollowingButtonText
+              buttonTextStyle
             ]}>
-              {follower.isFollowing ? "Подписан" : "Подписаться"}
+              {buttonText}
             </Text>
           </TouchableOpacity>
         )}
@@ -337,7 +484,6 @@ export default function FollowersScreen() {
   );
 }
 
-// Используем те же стили, что и для FollowingScreen с небольшими изменениями
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -526,6 +672,21 @@ const styles = StyleSheet.create({
     color: "#666",
     fontFamily: "Playfair Display Regular",
   },
+  friendBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#9BDF11",
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 10,
+    gap: 2,
+  },
+  friendBadgeText: {
+    fontSize: 10,
+    color: "#fff",
+    fontWeight: "600",
+    fontFamily: "Playfair Display Regular",
+  },
   followButton: {
     flexDirection: "row",
     alignItems: "center",
@@ -533,6 +694,8 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     borderRadius: 20,
     gap: 4,
+    minWidth: 100,
+    justifyContent: "center",
   },
   notFollowingButton: {
     backgroundColor: "#6A9AA9",
@@ -544,6 +707,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#E5E7EB",
   },
+  friendButton: {
+    backgroundColor: "#9BDF11",
+    borderWidth: 1,
+    borderColor: "#9BDF11",
+  },
   followButtonText: {
     fontSize: 12,
     fontWeight: "600",
@@ -554,5 +722,8 @@ const styles = StyleSheet.create({
   },
   followingButtonText: {
     color: "#666",
+  },
+  friendButtonText: {
+    color: "#fff",
   },
 });

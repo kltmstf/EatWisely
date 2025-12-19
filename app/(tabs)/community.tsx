@@ -1,3 +1,4 @@
+// app/community/index.tsx (обновленная часть)
 import { Feather, MaterialIcons } from "@expo/vector-icons";
 import { useRouter, useFocusEffect } from "expo-router";
 import {
@@ -345,6 +346,25 @@ export default function Community() {
   const handleProfilePress = () => {
     router.push('/profile');
   };
+
+  // Функция для перехода к профилю пользователя
+  const navigateToUserProfile = useCallback((userId: string) => {
+    if (!userId) return;
+    
+    // Проверяем, это ли профиль текущего пользователя
+    const currentUserId = currentUser?.uid;
+    
+    if (currentUserId === userId) {
+      // Если это текущий пользователь - переходим на вкладку профиля
+      router.push('/profile');
+    } else {
+      // Если это другой пользователь - переходим на страницу его профиля
+      router.push({
+        pathname: "/user/[id]",
+        params: { id: userId }
+      });
+    }
+  }, [currentUser, router]);
 
   // Отслеживаем состояние аутентификации и загружаем фото профиля
   useEffect(() => {
@@ -1351,7 +1371,11 @@ export default function Community() {
               {filteredPosts.map((post) => (
                 <View key={post.id} style={styles.postCard}>
                   <View style={styles.postHeader}>
-                    <View style={styles.userInfo}>
+                    <TouchableOpacity
+                      style={styles.userInfo}
+                      onPress={() => navigateToUserProfile(post.userId)}
+                      activeOpacity={0.7}
+                    >
                       <View style={styles.userAvatarContainer}>
                         {/* Используем Avatar компонент для отображения фото пользователя */}
                         <Avatar 
@@ -1372,7 +1396,7 @@ export default function Community() {
                         </View>
                         <Text style={styles.postTime}>{post.timeAgo}</Text>
                       </View>
-                    </View>
+                    </TouchableOpacity>
                     <View
                       style={[
                         styles.postTypeBadge,
@@ -1745,9 +1769,14 @@ export default function Community() {
                     comments.map((comment) => (
                       <View key={comment.id} style={styles.commentItem}>
                         <View style={styles.commentHeader}>
-                          <Text style={styles.commentUserName}>
-                            {comment.userName}
-                          </Text>
+                          <TouchableOpacity
+                            onPress={() => navigateToUserProfile(comment.userId)}
+                            activeOpacity={0.7}
+                          >
+                            <Text style={styles.commentUserName}>
+                              {comment.userName}
+                            </Text>
+                          </TouchableOpacity>
                           <Text style={styles.commentTime}>
                             {comment.timeAgo}
                           </Text>

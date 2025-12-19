@@ -1,4 +1,5 @@
-import { useRouter } from "expo-router";
+// app/select-user-recipes.tsx
+import { useRouter, useLocalSearchParams } from "expo-router";
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   ScrollView,
@@ -48,7 +49,6 @@ const RECIPES_PER_PAGE = 6;
 const { width } = Dimensions.get("window");
 const CARD_WIDTH = (width - 48) / 2;
 
-// Функция для получения названия категории по mealType
 const getCategoryName = (mealType?: string): string => {
   if (!mealType) return "Другое";
   
@@ -72,7 +72,6 @@ const getCategoryName = (mealType?: string): string => {
   }
 };
 
-// Функция для форматирования времени приготовления
 const formatCookingTime = (time: any): string => {
   if (!time) return "20 мин";
   
@@ -93,6 +92,7 @@ const formatCookingTime = (time: any): string => {
 
 export default function SelectMyRecipeScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams();
   const [recipes, setRecipes] = useState<Recipe[]>([]);
   const [filteredRecipes, setFilteredRecipes] = useState<Recipe[]>([]);
   const [displayedRecipes, setDisplayedRecipes] = useState<Recipe[]>([]);
@@ -105,6 +105,13 @@ export default function SelectMyRecipeScreen() {
   const [page, setPage] = useState(0);
   const [hasMore, setHasMore] = useState(true);
   const scrollViewRef = useRef<ScrollView>(null);
+
+  // Получаем параметры для замены рецепта
+  const isReplacement = params.isReplacement === "true";
+  const mealIndex = params.mealIndex;
+  const currentMealId = params.currentMealId;
+  const currentMealCategory = params.currentMealCategory;
+  const isCustomReplacement = params.isCustomReplacement === "true";
 
   // Загрузка рецептов пользователя
   const loadUserRecipes = useCallback(async (loadMore = false) => {
@@ -143,7 +150,6 @@ export default function SelectMyRecipeScreen() {
         averageRating: recipe.averageRating || 0,
       }));
       
-      // Сортировка по дате создания (новые сначала)
       formattedRecipes.sort((a, b) => {
         const aTime = getTimestamp(a.createdAt);
         const bTime = getTimestamp(b.createdAt);
@@ -166,12 +172,10 @@ export default function SelectMyRecipeScreen() {
     }
   }, [loading, loadingMore, recipes.length]);
 
-  // Инициальная загрузка
   useEffect(() => {
     loadUserRecipes();
   }, []);
 
-  // Фильтрация рецептов
   useEffect(() => {
     let filtered = [...recipes];
 
@@ -195,7 +199,6 @@ export default function SelectMyRecipeScreen() {
     setHasMore(filtered.length > RECIPES_PER_PAGE);
   }, [recipes, selectedCategory, searchQuery]);
 
-  // Пагинация
   useEffect(() => {
     const startIndex = 0;
     const endIndex = (page + 1) * RECIPES_PER_PAGE;
@@ -210,14 +213,12 @@ export default function SelectMyRecipeScreen() {
     }
   }, [filteredRecipes, page]);
 
-  // Загрузка следующей страницы
   const loadMoreRecipes = () => {
     if (!hasMore || loadingMore) return;
     setPage(prev => prev + 1);
     setLoadingMore(true);
   };
 
-  // Обработчик скролла
   const handleScroll = (event: any) => {
     const { layoutMeasurement, contentOffset, contentSize } = event.nativeEvent;
     const paddingToBottom = 100;
@@ -231,7 +232,6 @@ export default function SelectMyRecipeScreen() {
     }
   };
 
-  // Вспомогательная функция для получения timestamp
   const getTimestamp = (dateInput: any): number => {
     if (!dateInput) return 0;
     
@@ -246,34 +246,11 @@ export default function SelectMyRecipeScreen() {
     return 0;
   };
 
-  // Форматирование даты
-  const formatDate = (dateInput: any) => {
-    try {
-      let date: Date;
-      
-      if (typeof dateInput === 'string') {
-        date = new Date(dateInput);
-      } else if (dateInput?.seconds) {
-        date = new Date(dateInput.seconds * 1000);
-      } else if (typeof dateInput === 'number') {
-        date = new Date(dateInput);
-      } else {
-        date = new Date();
-      }
-      
-      return date.toLocaleDateString("ru-RU");
-    } catch (error) {
-      return "Дата неизвестна";
-    }
-  };
-
-  // Обновление притягивания вниз
   const onRefresh = useCallback(() => {
     setRefreshing(true);
     loadUserRecipes();
   }, [loadUserRecipes]);
 
-  // Цвет для сложности
   const getDifficultyColor = (difficulty?: string) => {
     if (!difficulty) return "#6A9AA9";
     
@@ -284,7 +261,6 @@ export default function SelectMyRecipeScreen() {
     return "#6A9AA9";
   };
 
-  // Получение иконки категории
   const getCategoryIcon = (mealType?: string) => {
     const category = getCategoryName(mealType);
     switch (category.toLowerCase()) {
@@ -301,12 +277,10 @@ export default function SelectMyRecipeScreen() {
     }
   };
 
-  // Получение URL изображения
   const getImageUrl = (recipe: Recipe) => {
     return recipe.imageUrl || recipe.image || recipe.langdir1 || null;
   };
 
-  // Сброс фильтров и поиска
   const resetFiltersAndScroll = () => {
     setSearchQuery("");
     setSelectedCategory("Все");
@@ -315,45 +289,85 @@ export default function SelectMyRecipeScreen() {
     }
   };
 
-  // Функция выбора рецепта
-  // В функции handleSelectRecipe обновим код:
-const handleSelectRecipe = (recipe: Recipe) => {
-  Alert.alert(
-    "Добавить рецепт",
-    `Добавить "${recipe.title}" в дневной рацион?`,
-    [
-      { text: "Отмена", style: "cancel" },
-      { 
-        text: "Добавить", 
-        style: "default",
-        onPress: () => {
-          // Передаем данные через параметры роутера
-          router.push({
-            pathname: "/(tabs)/home",
-            params: {
-              selectedRecipe: JSON.stringify({
-                id: recipe.id,
-                title: recipe.title,
-                calories: recipe.calories || 300,
-                proteins: 0,
-                fats: 0,
-                carbohydrates: 0,
-                cookingTime: recipe.cookingTime || 20,
-                difficultyLevel: recipe.difficultyLevel || recipe.difficulty || "Легко",
-                imageUrl: recipe.imageUrl,
-                mealType: recipe.mealType,
-                weight: "250г",
-                rating: recipe.rating || 0
-              })
+  // --- ОБНОВЛЕННАЯ ФУНКЦИЯ ВЫБОРА РЕЦЕПТА ---
+  const handleSelectRecipe = (recipe: Recipe) => {
+    if (isReplacement) {
+      // Замена рецепта в существующем рационе
+      Alert.alert(
+        "Заменить рецепт",
+        `Заменить текущий рецепт на "${recipe.title}"?`,
+        [
+          { text: "Отмена", style: "cancel" },
+          { 
+            text: "Заменить", 
+            style: "default",
+            onPress: () => {
+              router.push({
+                pathname: "/(tabs)/home",
+                params: {
+                  replaceRecipe: JSON.stringify({
+                    recipeId: recipe.id,
+                    title: recipe.title,
+                    calories: recipe.calories || 300,
+                    proteins: 0,
+                    fats: 0,
+                    carbohydrates: 0,
+                    cookingTime: recipe.cookingTime || 20,
+                    difficultyLevel: recipe.difficultyLevel || recipe.difficulty || "Легко",
+                    imageUrl: recipe.imageUrl,
+                    mealType: recipe.mealType,
+                    category: currentMealCategory || recipe.mealType,
+                    weight: "250г",
+                    rating: recipe.rating || 0,
+                    isReplacement: "true",
+                    mealIndex: mealIndex,
+                    currentMealId: currentMealId,
+                    isCustomReplacement: isCustomReplacement ? "true" : "false",
+                    isFromUserRecipes: "true"
+                  })
+                }
+              });
             }
-          });
-        }
-      }
-    ]
-  );
-};
+          }
+        ]
+      );
+    } else {
+      // Добавление нового рецепта в рацион
+      Alert.alert(
+        "Добавить рецепт",
+        `Добавить "${recipe.title}" в дневной рацион?`,
+        [
+          { text: "Отмена", style: "cancel" },
+          { 
+            text: "Добавить", 
+            style: "default",
+            onPress: () => {
+              router.push({
+                pathname: "/(tabs)/home",
+                params: {
+                  selectedRecipe: JSON.stringify({
+                    id: recipe.id,
+                    title: recipe.title,
+                    calories: recipe.calories || 300,
+                    proteins: 0,
+                    fats: 0,
+                    carbohydrates: 0,
+                    cookingTime: recipe.cookingTime || 20,
+                    difficultyLevel: recipe.difficultyLevel || recipe.difficulty || "Легко",
+                    imageUrl: recipe.imageUrl,
+                    mealType: recipe.mealType,
+                    weight: "250г",
+                    rating: recipe.rating || 0
+                  })
+                }
+              });
+            }
+          }
+        ]
+      );
+    }
+  };
 
-  // Компонент загрузки внизу
   const FooterLoader = () => {
     if (!loadingMore) return null;
     
@@ -365,7 +379,6 @@ const handleSelectRecipe = (recipe: Recipe) => {
     );
   };
 
-  // Рендер карточки рецепта
   const renderRecipeCard = (recipe: Recipe) => {
     const imageUrl = getImageUrl(recipe);
     const categoryName = getCategoryName(recipe.mealType);
@@ -445,7 +458,9 @@ const handleSelectRecipe = (recipe: Recipe) => {
               style={styles.selectButton}
               onPress={() => handleSelectRecipe(recipe)}
             >
-              <Text style={styles.selectButtonText}>Выбрать</Text>
+              <Text style={styles.selectButtonText}>
+                {isReplacement ? "Заменить" : "Выбрать"}
+              </Text>
             </TouchableOpacity>
           </View>
         </TouchableOpacity>
@@ -457,7 +472,6 @@ const handleSelectRecipe = (recipe: Recipe) => {
     <View style={styles.container}>
       <StatusBar barStyle="dark-content" />
 
-      {/* Упрощенный заголовок */}
       <View style={styles.simpleHeader}>
         <TouchableOpacity 
           style={styles.backButton}
@@ -465,7 +479,9 @@ const handleSelectRecipe = (recipe: Recipe) => {
         >
           <Ionicons name="arrow-back" size={24} color="#1a1a1a" />
         </TouchableOpacity>
-        <Text style={styles.simpleHeaderText}>Выберите рецепт</Text>
+        <Text style={styles.simpleHeaderText}>
+          {isReplacement ? "Заменить рецепт" : "Выберите рецепт"}
+        </Text>
         <View style={styles.addRecipePlaceholder} />
       </View>
 
@@ -485,7 +501,6 @@ const handleSelectRecipe = (recipe: Recipe) => {
         onScroll={handleScroll}
         scrollEventThrottle={400}
       >
-        {/* Поиск и фильтры */}
         <View style={styles.searchSection}>
           <ScrollView
             horizontal
@@ -542,9 +557,7 @@ const handleSelectRecipe = (recipe: Recipe) => {
           <View style={styles.sectionDivider} />
         </View>
 
-        {/* Рецепты */}
         <View style={styles.recipesSection}>
-          {/* Заголовок с количеством рецептов */}
           <View style={styles.recipesHeader}>
             <Text style={styles.recipesTitle}>
               {filteredRecipes.length} рецептов
@@ -557,7 +570,6 @@ const handleSelectRecipe = (recipe: Recipe) => {
             </TouchableOpacity>
           </View>
 
-          {/* Сетка рецептов */}
           {loading && !refreshing ? (
             <View style={styles.loadingContainer}>
               <ActivityIndicator size="large" color="#6A9AA9" />
@@ -583,7 +595,6 @@ const handleSelectRecipe = (recipe: Recipe) => {
                 {displayedRecipes.map((recipe) => renderRecipeCard(recipe))}
               </View>
               
-              {/* Индикатор загрузки */}
               <FooterLoader />
             </>
           )}
@@ -616,7 +627,6 @@ const styles = StyleSheet.create({
     fontFamily: "Playfair Display Regular",
   },
   
-  // Упрощенный заголовок
   simpleHeader: {
     flexDirection: "row",
     alignItems: "center",
@@ -642,7 +652,6 @@ const styles = StyleSheet.create({
     width: 40,
   },
   
-  // Стили поиска и фильтров
   searchSection: {
     backgroundColor: "#FFFFFF",
     padding: 15,

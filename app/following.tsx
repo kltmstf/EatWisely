@@ -1,4 +1,4 @@
-// app/(tabs)/profile/following.tsx
+// app/following.tsx
 import { Ionicons, Feather } from "@expo/vector-icons";
 import { useFocusEffect, useRouter } from "expo-router";
 import React, { useCallback, useState } from "react";
@@ -58,29 +58,57 @@ export default function FollowingScreen() {
 
     try {
       setLoading(true);
-      console.log("Загрузка списка подписок...");
+      console.log("Загрузка списка подписок для пользователя:", userId);
 
-      // Получаем данные и явно приводим к типу
+      // Получаем данные из сервиса
       const followingList = await followService.getFollowing(userId);
+      console.log("Raw данные из сервиса:", followingList);
       
-      // Явно приводим к нужному типу
-      const typedFollowing: FollowData[] = (followingList || []).map(item => ({
-        id: item.id,
-        followerId: item.followerId || '',
-        followingId: item.followingId || '',
-        createdAt: item.createdAt || new Date(),
-        user: item.user ? {
-          id: item.user.id || '',
-          name: item.user.name || 'Пользователь',
-          email: item.user.email,
-          photoURL: item.user.photoURL,
-          description: item.user.description,
-          followersCount: item.user.followersCount || 0,
-          followingCount: item.user.followingCount || 0
-        } : undefined
-      }));
+      // Преобразуем данные, защищаясь от ошибок
+      const typedFollowing: FollowData[] = [];
+      
+      if (Array.isArray(followingList)) {
+        for (const item of followingList) {
+          try {
+            // Используем any для обхода проверки типов
+            const anyItem = item as any;
+            
+            const followData: FollowData = {
+              id: anyItem.id || '',
+              followerId: anyItem.followerId || '',
+              followingId: anyItem.followingId || '',
+              createdAt: anyItem.createdAt || new Date(),
+            };
+            
+            // Проверяем наличие user данных
+            if (anyItem.user) {
+              followData.user = {
+                id: anyItem.user.id || anyItem.followingId || '',
+                name: anyItem.user.name || 'Пользователь',
+                email: anyItem.user.email,
+                photoURL: anyItem.user.photoURL,
+                description: anyItem.user.description,
+                followersCount: anyItem.user.followersCount || 0,
+                followingCount: anyItem.user.followingCount || 0
+              };
+            } else {
+              // Если user не загружен, используем базовую информацию
+              followData.user = {
+                id: anyItem.followingId || '',
+                name: 'Пользователь',
+                followersCount: 0,
+                followingCount: 0
+              };
+            }
+            
+            typedFollowing.push(followData);
+          } catch (error) {
+            console.error("Ошибка обработки элемента:", error, item);
+          }
+        }
+      }
 
-      console.log("Получено подписок:", typedFollowing.length);
+      console.log("Обработанные подписки:", typedFollowing.length, typedFollowing);
       setFollowing(typedFollowing);
     } catch (error) {
       console.error("Ошибка загрузки подписок:", error);
@@ -120,13 +148,16 @@ export default function FollowingScreen() {
 
   // Переход к профилю пользователя
   const navigateToProfile = (userId: string) => {
-    // Создаем временное решение пока нет страницы профиля пользователя
-    if (userId === getCurrentUserId()) {
-      router.push("/(tabs)/profile");
-    } else {
-      Alert.alert("Информация", "Страница профиля пользователя в разработке");
-    }
-  };
+  if (userId === getCurrentUserId()) {
+    router.push("/(tabs)/profile");
+  } else {
+    // Используем правильный синтаксис для динамических маршрутов
+    router.push({
+      pathname: "/user/[id]",
+      params: { id: userId }
+    });
+  }
+};
 
   // Pull-to-refresh
   const onRefresh = useCallback(async () => {

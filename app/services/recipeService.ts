@@ -42,8 +42,13 @@ export interface Recipe {
   steps: string[];
   tags: string[];
   imageUrl?: string;
+  weight?: string;
+  servings?: number;
+  cloudinaryPublicId?: string;
+  imageMetadata?: any;
   createdAt: Date | Timestamp;
   updatedAt: Date | Timestamp;
+  category?: string; 
 }
 
 interface RecipesResponse {
@@ -62,6 +67,7 @@ interface Filters {
 }
 
 class RecipeService {
+  // СУЩЕСТВУЮЩИЕ МЕТОДЫ (оставляем без изменений)
   async updateRecipeRatingStats(
     recipeId: string,
     countChange: number,
@@ -177,7 +183,7 @@ class RecipeService {
                 tag.toLowerCase().includes(searchLower)
               )) ||
             (recipe.ingredientsText &&
-              recipe.ingredientsText.toLowerCase().includes(searchLower)) // Теперь ingredientsText есть в интерфейсе
+              recipe.ingredientsText.toLowerCase().includes(searchLower))
         );
       }
 
@@ -390,6 +396,220 @@ class RecipeService {
     } catch (error) {
       console.error("Error getting user recipes:", error);
       throw error;
+    }
+  }
+
+  // НОВЫЕ МЕТОДЫ ДЛЯ РАБОТЫ С ВЫБОРОМ РЕЦЕПТОВ
+
+  /**
+   * Получает все публичные рецепты + рецепты текущего пользователя
+   */
+  async getAllRecipes(): Promise<Recipe[]> {
+    try {
+      console.log('📋 Загрузка всех рецептов (публичные + пользовательские)...');
+      
+      const user = auth.currentUser;
+      if (!user) {
+        console.log('Пользователь не авторизован, загружаем только публичные рецепты');
+        // Загружаем только публичные рецепты если пользователь не авторизован
+        const publicRecipes = await this.getPublicRecipes();
+        return publicRecipes;
+      }
+
+      // Загружаем публичные рецепты
+      const publicRecipes = await this.getPublicRecipes();
+      
+      // Загружаем рецепты пользователя
+      const userRecipes = await this.getUserRecipes(user.uid);
+      
+      // Объединяем, убирая дубликаты
+      const allRecipesMap = new Map<string, Recipe>();
+      
+      // Сначала добавляем публичные
+      publicRecipes.forEach(recipe => {
+        allRecipesMap.set(recipe.id, recipe);
+      });
+      
+      // Затем добавляем рецепты пользователя (перезаписывая если есть дубликаты)
+      userRecipes.forEach(recipe => {
+        allRecipesMap.set(recipe.id, recipe);
+      });
+      
+      const allRecipes = Array.from(allRecipesMap.values());
+      
+      console.log(`✅ Загружено всего рецептов: ${allRecipes.length}`);
+      console.log(`📊 Публичных: ${publicRecipes.length}`);
+      console.log(`👤 Пользовательских: ${userRecipes.length}`);
+      
+      return allRecipes;
+    } catch (error) {
+      console.error('❌ Ошибка загрузки всех рецептов:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Получает только публичные рецепты
+   */
+  async getPublicRecipes(): Promise<Recipe[]> {
+    try {
+      console.log('📋 Загрузка публичных рецептов...');
+      
+      const recipesQuery = query(
+        collection(db, "recipes"),
+        where("isPublic", "==", true),
+        orderBy("createdAt", "desc")
+      );
+
+      const snapshot = await getDocs(recipesQuery);
+      const recipes = snapshot.docs.map(
+        (doc) =>
+          ({
+            id: doc.id,
+            ...doc.data(),
+          } as Recipe)
+      );
+
+      console.log(`✅ Загружено публичных рецептов: ${recipes.length}`);
+      return recipes;
+    } catch (error) {
+      console.error('❌ Ошибка загрузки публичных рецептов:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Ищет рецепты по названию, описанию или тегам
+   */
+  async searchRecipes(searchTerm: string, category?: string): Promise<Recipe[]> {
+    try {
+      console.log(`🔍 Поиск рецептов: "${searchTerm}"`);
+      
+      // Получаем все доступные рецепты
+      const allRecipes = await this.getAllRecipes();
+      
+      const searchLower = searchTerm.toLowerCase();
+      
+      // Фильтруем рецепты
+      let filteredRecipes = allRecipes.filter(recipe => {
+        // Поиск по названию
+        const titleMatch = recipe.title.toLowerCase().includes(searchLower);
+        
+        // Поиск по описанию
+        const descriptionMatch = recipe.description?.toLowerCase().includes(searchLower) || false;
+        
+        // Поиск по тегам
+        const tagsMatch = Array.isArray(recipe.tags) && 
+          recipe.tags.some(tag => tag.toLowerCase().includes(searchLower));
+        
+        // Поиск по типу блюда
+        const mealTypeMatch = recipe.mealType?.toLowerCase().includes(searchLower) || false;
+        
+        return titleMatch || descriptionMatch || tagsMatch || mealTypeMatch;
+      });
+      
+      // Дополнительная фильтрация по категории если указана
+      if (category) {
+        const categoryLower = category.toLowerCase();
+        filteredRecipes = filteredRecipes.filter(recipe => 
+          recipe.mealType?.toLowerCase().includes(categoryLower) ||
+          recipe.category?.toLowerCase().includes(categoryLower)
+        );
+      }
+      
+      console.log(`✅ Найдено рецептов: ${filteredRecipes.length}`);
+      return filteredRecipes;
+    } catch (error) {
+      console.error('❌ Ошибка поиска рецептов:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Получает рецепты по категории
+   */
+  async getRecipesByCategory(category: string): Promise<Recipe[]> {
+    try {
+      console.log(`📂 Загрузка рецептов категории: ${category}`);
+      
+      const allRecipes = await this.getAllRecipes();
+      
+      const categoryLower = category.toLowerCase();
+      const filteredRecipes = allRecipes.filter(recipe => {
+        return (
+          recipe.mealType?.toLowerCase().includes(categoryLower) ||
+          recipe.category?.toLowerCase().includes(categoryLower)
+        );
+      });
+      
+      console.log(`✅ Найдено рецептов в категории: ${filteredRecipes.length}`);
+      return filteredRecipes;
+    } catch (error) {
+      console.error('❌ Ошибка загрузки рецептов по категории:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Получает рецепты для дневного плана (упрощенная версия)
+   * для быстрого обновления при выборе рецепта
+   */
+  async getMealPlanRecipes(): Promise<Recipe[]> {
+    try {
+      const user = auth.currentUser;
+      if (!user) return [];
+      
+      // Получаем публичные рецепты
+      const publicQuery = query(
+        collection(db, "recipes"),
+        where("isPublic", "==", true)
+      );
+      
+      // Получаем рецепты пользователя
+      const userQuery = query(
+        collection(db, "recipes"),
+        where("userId", "==", user.uid)
+      );
+      
+      const [publicSnapshot, userSnapshot] = await Promise.all([
+        getDocs(publicQuery),
+        getDocs(userQuery)
+      ]);
+      
+      const recipesMap = new Map<string, Recipe>();
+      
+      userSnapshot.docs.forEach(doc => {
+        const recipe = { id: doc.id, ...doc.data() } as Recipe;
+        recipesMap.set(doc.id, recipe);
+      });
+      
+      publicSnapshot.docs.forEach(doc => {
+        if (!recipesMap.has(doc.id)) {
+          const recipe = { id: doc.id, ...doc.data() } as Recipe;
+          recipesMap.set(doc.id, recipe);
+        }
+      });
+      
+      return Array.from(recipesMap.values());
+    } catch (error) {
+      console.error('❌ Ошибка загрузки рецептов для плана:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Получает количество рецептов пользователя
+   */
+  async getUserRecipesCount(): Promise<number> {
+    try {
+      const user = auth.currentUser;
+      if (!user) return 0;
+      
+      const userRecipes = await this.getUserRecipes(user.uid);
+      return userRecipes.length;
+    } catch (error) {
+      console.error('❌ Ошибка получения количества рецептов:', error);
+      return 0;
     }
   }
 }

@@ -20,7 +20,7 @@ const CLOUDINARY_CONFIGS = {
   // Для аватаров
   avatars: {
     cloudName: 'df88pkxud',
-    uploadPreset: 'user_avatar_app', // ← ВАШ АВАТАР PRESET
+    uploadPreset: 'user_avatar_app',
     targetFolder: 'avatars',
     uploadUrl: 'https://api.cloudinary.com/v1_1/df88pkxud/image/upload',
   }
@@ -56,6 +56,12 @@ export interface UploadOptions {
   maxHeight?: number;
   fileName?: string;
   folder?: string;
+}
+
+export interface DeleteResult {
+  success: boolean;
+  message: string;
+  error?: string;
 }
 
 // ========== КЛАСС СЕРВИСА ==========
@@ -312,6 +318,207 @@ class CloudinaryService {
         error: `Неожиданная ошибка: ${error.message || 'Неизвестная ошибка'}`,
         errorCode: 'UNEXPECTED_ERROR',
         rawError: error,
+      };
+    }
+  }
+
+  /**
+   * Удаление изображения из Cloudinary
+   */
+  async deleteImage(publicId: string): Promise<DeleteResult> {
+    console.log(`🗑️ Удаление изображения из Cloudinary (${this.serviceType})...`);
+    console.log('Public ID:', publicId);
+    
+    try {
+      // Проверяем, что publicId не пустой
+      if (!publicId || publicId.trim() === '') {
+        return {
+          success: false,
+          message: 'Не указан Public ID для удаления',
+          error: 'EMPTY_PUBLIC_ID',
+        };
+      }
+
+      // Проверяем конфигурацию
+      if (!this.cloudName || this.cloudName === 'your-cloud-name') {
+        return {
+          success: false,
+          message: 'Cloud Name не настроен',
+          error: 'NO_CLOUD_NAME',
+        };
+      }
+
+      // Формируем URL для удаления
+      // Cloudinary API для удаления: https://api.cloudinary.com/v1_1/{cloud_name}/image/destroy
+      const deleteUrl = `https://api.cloudinary.com/v1_1/${this.cloudName}/image/destroy`;
+      
+      console.log('Delete URL:', deleteUrl);
+
+      // Для unsigned uploads достаточно public_id
+      const formData = new FormData();
+      formData.append('public_id', publicId);
+      
+      // Примечание: Для production рекомендуется использовать signed requests с API key
+      // Для этого потребуется добавить:
+      // - api_key
+      // - timestamp
+      // - signature (рассчитанная по алгоритму Cloudinary)
+      
+      console.log('📤 Отправка запроса на удаление...');
+
+      const response = await fetch(deleteUrl, {
+        method: 'POST',
+        body: formData,
+        headers: {
+          'Accept': 'application/json',
+        },
+      });
+
+      const responseText = await response.text();
+      console.log('📨 Ответ Cloudinary (удаление):', response.status, response.statusText);
+
+      if (!response.ok) {
+        console.error('❌ Ошибка удаления:', responseText);
+        
+        let errorMessage = 'Ошибка удаления изображения';
+        
+        try {
+          const errorJson = JSON.parse(responseText);
+          errorMessage = errorJson.error?.message || errorMessage;
+          
+          // Специфичные ошибки Cloudinary
+          if (errorMessage.includes('Resource not found')) {
+            errorMessage = `Изображение не найдено: ${publicId}`;
+          } else if (errorMessage.includes('Invalid signature')) {
+            errorMessage = 'Неверная подпись. Требуется аутентификация.';
+          } else if (response.status === 401) {
+            errorMessage = 'Требуется аутентификация. Настройте API Key для удаления.';
+          }
+          
+        } catch (parseError) {
+          errorMessage = `Cloudinary ошибка ${response.status}: ${responseText.substring(0, 100)}`;
+        }
+        
+        return {
+          success: false,
+          message: errorMessage,
+          error: 'DELETE_FAILED',
+        };
+      }
+
+      // Обработка успешного ответа
+      try {
+        const result = JSON.parse(responseText);
+        
+        if (result.result === 'ok' || result.result === 'not found') {
+          console.log('✅ Изображение удалено или не найдено:', result.result);
+          
+          return {
+            success: true,
+            message: result.result === 'ok' 
+              ? 'Изображение успешно удалено' 
+              : 'Изображение не найдено (возможно уже удалено)',
+          };
+        } else {
+          console.warn('⚠️ Неожиданный ответ:', result);
+          
+          return {
+            success: false,
+            message: `Неожиданный ответ: ${result.result || 'unknown'}`,
+            error: 'UNEXPECTED_RESPONSE',
+          };
+        }
+        
+      } catch (parseError) {
+        console.error('❌ Ошибка парсинга ответа:', parseError);
+        
+        return {
+          success: false,
+          message: 'Не удалось обработать ответ Cloudinary',
+          error: 'PARSE_ERROR',
+        };
+      }
+
+    } catch (error: any) {
+      console.error('❌ Неожиданная ошибка при удалении:', error);
+      
+      return {
+        success: false,
+        message: `Неожиданная ошибка: ${error.message || 'Неизвестная ошибка'}`,
+        error: 'UNEXPECTED_ERROR',
+      };
+    }
+  }
+
+  /**
+   * Удаление изображения по URL
+   * (извлекает public_id из URL Cloudinary)
+   */
+  async deleteImageByUrl(imageUrl: string): Promise<DeleteResult> {
+    try {
+      console.log(`🗑️ Удаление изображения по URL (${this.serviceType})...`);
+      console.log('Image URL:', imageUrl);
+      
+      // Извлекаем public_id из URL Cloudinary
+      // Пример URL: https://res.cloudinary.com/cloudname/image/upload/v1234567890/folder/filename.jpg
+      
+      // Проверяем, что это Cloudinary URL
+      if (!imageUrl.includes('cloudinary.com')) {
+        return {
+          success: false,
+          message: 'Неверный формат URL. Ожидается Cloudinary URL.',
+          error: 'NOT_CLOUDINARY_URL',
+        };
+      }
+
+      const urlParts = imageUrl.split('/');
+      const uploadIndex = urlParts.indexOf('upload');
+      
+      if (uploadIndex === -1 || uploadIndex >= urlParts.length - 1) {
+        return {
+          success: false,
+          message: 'Неверный формат URL Cloudinary',
+          error: 'INVALID_URL_FORMAT',
+        };
+      }
+      
+      // Получаем часть после 'upload/'
+      const pathAfterUpload = urlParts.slice(uploadIndex + 1).join('/');
+      
+      // Убираем версию если есть (v1234567890/)
+      let publicId = pathAfterUpload;
+      if (pathAfterUpload.startsWith('v')) {
+        const versionEnd = pathAfterUpload.indexOf('/');
+        if (versionEnd !== -1) {
+          publicId = pathAfterUpload.substring(versionEnd + 1);
+        }
+      }
+      
+      // Убираем расширение файла
+      const dotIndex = publicId.lastIndexOf('.');
+      if (dotIndex !== -1) {
+        publicId = publicId.substring(0, dotIndex);
+      }
+      
+      console.log('Извлеченный Public ID:', publicId);
+      
+      // Проверяем, что public_id начинается с правильной папки
+      const expectedPrefix = `${this.targetFolder}/`;
+      if (!publicId.startsWith(expectedPrefix)) {
+        console.warn(`⚠️ Public ID не начинается с папки ${this.targetFolder}`);
+        console.warn('Public ID:', publicId);
+        console.warn('Expected prefix:', expectedPrefix);
+      }
+      
+      return await this.deleteImage(publicId);
+      
+    } catch (error: any) {
+      console.error('❌ Ошибка обработки URL:', error);
+      
+      return {
+        success: false,
+        message: `Ошибка обработки URL: ${error.message}`,
+        error: 'URL_PROCESSING_ERROR',
       };
     }
   }
@@ -650,4 +857,180 @@ export const uploadRecipeImage = async (
     maxWidth: 1200,
     maxHeight: 1200,
   });
+};
+
+/**
+ * Удаление изображения сообщества
+ */
+export const deleteCommunityImage = async (
+  publicId: string
+): Promise<DeleteResult> => {
+  return await communityCloudinaryService.deleteImage(publicId);
+};
+
+/**
+ * Удаление аватара
+ */
+export const deleteAvatarImage = async (
+  publicId: string
+): Promise<DeleteResult> => {
+  return await avatarCloudinaryService.deleteImage(publicId);
+};
+
+/**
+ * Удаление изображения рецепта
+ */
+export const deleteRecipeImage = async (
+  publicId: string
+): Promise<DeleteResult> => {
+  return await recipeCloudinaryService.deleteImage(publicId);
+};
+
+/**
+ * Удаление изображения по URL (универсальный метод)
+ */
+export const deleteCloudinaryImageByUrl = async (
+  imageUrl: string,
+  serviceType: CloudinaryServiceType = 'recipes'
+): Promise<DeleteResult> => {
+  let service: CloudinaryService;
+  
+  switch (serviceType) {
+    case 'community':
+      service = communityCloudinaryService;
+      break;
+    case 'avatars':
+      service = avatarCloudinaryService;
+      break;
+    case 'recipes':
+    default:
+      service = recipeCloudinaryService;
+  }
+  
+  return await service.deleteImageByUrl(imageUrl);
+};
+
+/**
+ * Удаление нескольких изображений сообщества
+ */
+export const deleteMultipleCommunityImages = async (
+  imageUrls: string[]
+): Promise<{
+  success: boolean;
+  message: string;
+  deleted: number;
+  failed: number;
+  errors: Array<{ url: string; error: string }>;
+}> => {
+  const errors: Array<{ url: string; error: string }> = [];
+  let deleted = 0;
+  let failed = 0;
+
+  for (const url of imageUrls) {
+    try {
+      const result = await communityCloudinaryService.deleteImageByUrl(url);
+      
+      if (result.success) {
+        deleted++;
+      } else {
+        failed++;
+        errors.push({ url, error: result.message || 'Unknown error' });
+      }
+    } catch (error: any) {
+      failed++;
+      errors.push({ url, error: error.message || 'Unknown error' });
+    }
+  }
+
+  return {
+    success: failed === 0,
+    message: `Удалено ${deleted} из ${imageUrls.length} изображений`,
+    deleted,
+    failed,
+    errors,
+  };
+};
+
+/**
+ * Проверка доступности Cloudinary API для удаления
+ */
+export const checkCloudinaryDeleteAccess = async (): Promise<{
+  canDelete: boolean;
+  message: string;
+  requiresAuth: boolean;
+}> => {
+  try {
+    // Пробуем удалить несуществующее изображение для проверки API
+    const testPublicId = 'test_nonexistent_image_12345';
+    const result = await communityCloudinaryService.deleteImage(testPublicId);
+    
+    if (result.error?.includes('authentication') || result.error?.includes('signature')) {
+      return {
+        canDelete: false,
+        message: 'Требуется настройка API Key для удаления изображений',
+        requiresAuth: true,
+      };
+    }
+    
+    // Даже если изображение не найдено, API работает
+    return {
+      canDelete: true,
+      message: result.message || 'API доступен',
+      requiresAuth: false,
+    };
+    
+  } catch (error: any) {
+    return {
+      canDelete: false,
+      message: `Ошибка проверки API: ${error.message}`,
+      requiresAuth: true,
+    };
+  }
+};
+
+/**
+ * Безопасное удаление изображения сообщества (с обработкой ошибок)
+ */
+export const safeDeleteCommunityImage = async (
+  imageUrl: string
+): Promise<{
+  success: boolean;
+  message: string;
+  skipped?: boolean;
+}> => {
+  try {
+    // Проверяем, что это валидный URL Cloudinary
+    if (!imageUrl || !imageUrl.includes('cloudinary.com')) {
+      return {
+        success: true,
+        message: 'Пропущено (не Cloudinary URL)',
+        skipped: true,
+      };
+    }
+
+    const result = await communityCloudinaryService.deleteImageByUrl(imageUrl);
+    
+    // Если изображение не найдено, считаем успехом
+    if (result.message?.includes('не найдено') || result.message?.includes('not found')) {
+      return {
+        success: true,
+        message: 'Изображение уже удалено или не существует',
+      };
+    }
+    
+    return {
+      success: result.success,
+      message: result.message || (result.success ? 'Успешно удалено' : 'Ошибка удаления'),
+    };
+    
+  } catch (error: any) {
+    console.warn('Предупреждение при удалении изображения:', error);
+    
+    // Не блокируем удаление поста из-за ошибки удаления изображения
+    return {
+      success: false,
+      message: `Ошибка удаления изображения: ${error.message}`,
+      skipped: false,
+    };
+  }
 };
