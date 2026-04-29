@@ -24,6 +24,7 @@ import { getApps, getApp, initializeApp } from "firebase/app";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import recipeService from "../app/services/recipeService";
+import { favoriteService } from "../app/services/favoriteService";
 
 // --- ТИПЫ ДАННЫХ ---
 interface FullRecipeData {
@@ -45,6 +46,11 @@ interface FullRecipeData {
   instructions: string[];
   imageUrl?: string;
 }
+
+// Декларация глобальных переменных
+declare const __app_id: string | undefined;
+declare const __firebase_config: string | undefined;
+declare const __initial_auth_token: string | undefined;
 
 // Функция для получения иконки по категории
 const getCategoryIcon = (category: string | undefined) => {
@@ -143,7 +149,6 @@ export default function Meal() {
   const mealTypeParam = Array.isArray(params.mealType) ? params.mealType[0] : params.mealType || "Ошибка Типа Блюда";
   const category = Array.isArray(params.category) ? params.category[0] : params.category || mealTypeParam;
   const mealIndex = Array.isArray(params.mealIndex) ? params.mealIndex[0] : params.mealIndex || "0";
-  const initialBookmarked = Array.isArray(params.initialBookmarked) ? params.initialBookmarked[0] : params.initialBookmarked || "false";
   const mealId = Array.isArray(params.mealId) ? params.mealId[0] : params.mealId || "";
   const fromScreen = Array.isArray(params.fromScreen) ? params.fromScreen[0] : params.fromScreen || "";
   const isCustom = Array.isArray(params.isCustom) ? params.isCustom[0] : params.isCustom || "false";
@@ -185,9 +190,8 @@ export default function Meal() {
   const [userId, setUserId] = useState<string | null>(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
   const [liked, setLiked] = useState<boolean | null>(null);
-  const [isBookmarked, setIsBookmarked] = useState(
-    initialBookmarked === "true"
-  );
+  const [isBookmarked, setIsBookmarked] = useState(false);
+  const [isLoadingBookmark, setIsLoadingBookmark] = useState(true);
   const [recipeDetails, setRecipeDetails] = useState<FullRecipeData | null>(
     null
   );
@@ -239,9 +243,6 @@ export default function Meal() {
   }, []);
 
   const currentMealData: FullRecipeData | null = recipeDetails;
-  const ratingDocPath = `artifacts/${
-    typeof __app_id !== "undefined" ? __app_id : "default-app-id"
-  }/users/${userId}/mealRatings/${currentMealData?.id || "fallback-id"}`;
 
   // --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ ФОРМАТИРОВАНИЯ ---
 
@@ -375,8 +376,79 @@ export default function Meal() {
     return ["Инструкции не загружены"];
   };
 
-  // --- 3. ЛОГИКА ЗАГРУЗКИ ДЕТАЛЕЙ РЕЦЕПТА ---
+  // --- ФУНКЦИЯ ДЛЯ ПОЛУЧЕНИЯ ПУТИ К ОЦЕНКЕ ---
+  const getRatingDocPath = useCallback((recipeId: string) => {
+    const appId = typeof __app_id !== "undefined" ? __app_id : "default-app-id";
+    return `artifacts/${appId}/users/${userId}/mealRatings/${recipeId}`;
+  }, [userId]);
 
+  // --- 2. ЛОГИКА ЗАГРУЗКИ ОЦЕНКИ ---
+  const loadRating = useCallback(async () => {
+    if (!isAuthReady || !db || !userId || !currentMealData?.id) {
+      console.log("⚠️ Пропускаем загрузку оценки:", {
+        isAuthReady,
+        hasDb: !!db,
+        userId,
+        hasMealId: !!currentMealData?.id
+      });
+      return;
+    }
+
+    if (isCustomMeal) {
+      console.log("📝 Кастомный рецепт, пропускаем загрузку оценки");
+      return;
+    }
+
+    try {
+      const ratingDocPath = getRatingDocPath(currentMealData.id);
+      const docRef = doc(db, ratingDocPath);
+      const docSnap = await getDoc(docRef);
+
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        if (typeof data.liked !== "undefined") {
+          console.log("📖 Загружена сохраненная оценка:", data.liked);
+          setLiked(data.liked);
+        } else {
+          setLiked(null);
+        }
+      } else {
+        console.log("📖 Нет сохраненной оценки для этого рецепта");
+        setLiked(null);
+      }
+    } catch (error) {
+      console.error("❌ Ошибка при загрузке оценки из Firestore:", error);
+      setLiked(null);
+    }
+  }, [isAuthReady, db, userId, currentMealData?.id, isCustomMeal, getRatingDocPath]);
+
+  // --- 3. ЛОГИКА ЗАГРУЗКИ СТАТУСА ИЗБРАННОГО ---
+  const loadBookmarkStatus = useCallback(async () => {
+    if (!isAuthReady || !userId || !currentMealData?.id) {
+      return;
+    }
+
+    if (isCustomMeal) {
+      setIsLoadingBookmark(false);
+      setIsBookmarked(false);
+      return;
+    }
+
+    try {
+      setIsLoadingBookmark(true);
+      const actualRecipeId = recipeId || mealId || currentMealData.id;
+      const isFav = await favoriteService.isInFavorites(actualRecipeId, 'recipe', userId);
+      setIsBookmarked(isFav);
+      console.log(`📖 Статус избранного для ${actualRecipeId}: ${isFav}`);
+    } catch (error) {
+      console.error("Ошибка загрузки статуса избранного:", error);
+      setIsBookmarked(false);
+    } finally {
+      setIsLoadingBookmark(false);
+    }
+  }, [isAuthReady, userId, currentMealData?.id, isCustomMeal, recipeId, mealId]);
+
+  // --- 4. ЛОГИКА ЗАГРУЗКИ ДЕТАЛЕЙ РЕЦЕПТА ---
   const loadRecipeDetails = useCallback(async () => {
     if (hasLoadedRef.current) {
       console.log("🔄 MEAL.JS - Already loaded, skipping");
@@ -490,34 +562,6 @@ export default function Meal() {
     }
   }, [isAuthReady, db, mealId, recipeId, mealName, mealTypeParam, category, isCustomMeal, imageUrl, difficultyLevel, rating, calories, proteins, fats, carbohydrates, weight, cookingTime]);
 
-  // --- 2. ЛОГИКА ЗАГРУЗКИ ОЦЕНКИ ---
-  const loadRating = useCallback(async () => {
-    if (!isAuthReady || !db || !userId || !currentMealData?.id) return;
-
-    if (isCustomMeal) return;
-
-    try {
-      const docRef = doc(db, ratingDocPath);
-      const docSnap = await getDoc(docRef);
-
-      if (docSnap.exists()) {
-        const data = docSnap.data();
-        if (typeof data.liked !== "undefined") {
-          setLiked(data.liked);
-        }
-      }
-    } catch (error) {
-      console.error("Ошибка при загрузке оценки из Firestore:", error);
-    }
-  }, [
-    isAuthReady,
-    db,
-    userId,
-    ratingDocPath,
-    currentMealData?.id,
-    isCustomMeal,
-  ]);
-
   useEffect(() => {
     return () => {
       hasLoadedRef.current = false;
@@ -527,9 +571,6 @@ export default function Meal() {
   useEffect(() => {
     if (isAuthReady && db && userId) {
       loadRecipeDetails();
-      if (!isCustomMeal) {
-        loadRating();
-      }
     } else if (isAuthReady && (!mealId || !recipeId)) {
       setLoading(false);
       setRecipeDetails(
@@ -537,6 +578,176 @@ export default function Meal() {
       );
     }
   }, [isAuthReady, db, userId]);
+
+  // Загружаем оценку после загрузки деталей рецепта
+  useEffect(() => {
+    if (currentMealData?.id && !isCustomMeal) {
+      loadRating();
+    }
+  }, [currentMealData?.id, isCustomMeal, loadRating]);
+
+  // Загружаем статус избранного после загрузки деталей рецепта
+  useEffect(() => {
+    if (currentMealData?.id && !isCustomMeal && isAuthReady) {
+      loadBookmarkStatus();
+    } else if (isCustomMeal) {
+      setIsLoadingBookmark(false);
+      setIsBookmarked(false);
+    }
+  }, [currentMealData?.id, isCustomMeal, isAuthReady, loadBookmarkStatus]);
+
+  // --- ФУНКЦИЯ СОХРАНЕНИЯ ОЦЕНКИ ---
+  const saveRating = useCallback(
+    async (rating: boolean) => {
+      if (!isAuthReady || !db || !userId || !currentMealData?.id) {
+        console.log("❌ Не удалось сохранить оценку:", {
+          isAuthReady,
+          hasDb: !!db,
+          userId,
+          hasMealId: !!currentMealData?.id
+        });
+        Alert.alert("Ошибка", "Не удалось сохранить оценку. Попробуйте позже.");
+        return;
+      }
+
+      if (isCustomMeal) {
+        setLiked(rating);
+        Alert.alert("Информация", "Оценка сохранена локально");
+        return;
+      }
+
+      const ratingDocPath = getRatingDocPath(currentMealData.id);
+      const ratingDocRef = doc(db, ratingDocPath);
+      
+      try {
+        const docSnap = await getDoc(ratingDocRef);
+        const previousLikedState = docSnap.exists() ? docSnap.data().liked : null;
+
+        if (previousLikedState === rating) {
+          console.log("Оценка уже установлена:", rating);
+          return;
+        }
+
+        const isFirstVote = previousLikedState === null;
+        const totalRatingsDelta = isFirstVote ? 1 : 0;
+
+        console.log("💾 Сохранение оценки:", {
+          userId,
+          recipeId: currentMealData.id,
+          rating,
+          docPath: ratingDocPath,
+          isFirstVote,
+          totalRatingsDelta
+        });
+
+        await setDoc(
+          ratingDocRef,
+          { liked: rating, timestamp: new Date() },
+          { merge: true }
+        );
+        setLiked(rating);
+
+        if (!isCustomMeal && totalRatingsDelta !== 0) {
+          await recipeService.updateRecipeRatingStats(
+            currentMealData.id,
+            totalRatingsDelta
+          );
+          // Перезагружаем детали для обновления рейтинга
+          await loadRecipeDetails();
+        }
+        
+        console.log("✅ Оценка успешно сохранена:", rating);
+      } catch (error) {
+        console.error("❌ Ошибка при сохранении оценки:", error);
+        Alert.alert("Ошибка", "Не удалось сохранить оценку. Попробуйте позже.");
+      }
+    },
+    [isAuthReady, db, userId, currentMealData?.id, isCustomMeal, getRatingDocPath, loadRecipeDetails]
+  );
+
+  // --- ФУНКЦИЯ СБРОСА ОЦЕНКИ ---
+  const handleResetRating = useCallback(async () => {
+    if (!isAuthReady || !db || !userId || !currentMealData?.id) {
+      console.log("❌ Не удалось сбросить оценку");
+      Alert.alert("Ошибка", "Не удалось сбросить оценку. Попробуйте позже.");
+      return;
+    }
+
+    if (isCustomMeal) {
+      setLiked(null);
+      return;
+    }
+
+    const ratingDocPath = getRatingDocPath(currentMealData.id);
+    const ratingDocRef = doc(db, ratingDocPath);
+    
+    try {
+      const docSnap = await getDoc(ratingDocRef);
+      const previousLikedState = docSnap.exists() ? docSnap.data().liked : null;
+      const hadRating = previousLikedState !== null;
+
+      console.log("🔄 Сброс оценки:", {
+        userId,
+        recipeId: currentMealData.id,
+        previousLikedState,
+        hadRating,
+        docPath: ratingDocPath
+      });
+
+      await setDoc(
+        ratingDocRef,
+        { liked: null, timestamp: new Date() },
+        { merge: true }
+      );
+      setLiked(null);
+
+      if (hadRating && !isCustomMeal) {
+        await recipeService.updateRecipeRatingStats(currentMealData.id, -1);
+        // Перезагружаем детали для обновления рейтинга
+        await loadRecipeDetails();
+      }
+      
+      console.log("✅ Оценка успешно сброшена");
+    } catch (error) {
+      console.error("❌ Ошибка при сбросе оценки:", error);
+      Alert.alert("Ошибка", "Не удалось сбросить оценку. Попробуйте позже.");
+    }
+  }, [isAuthReady, db, userId, currentMealData?.id, isCustomMeal, getRatingDocPath, loadRecipeDetails]);
+
+  // --- НОВАЯ ФУНКЦИЯ ДЛЯ ИЗБРАННОГО ---
+  const handleBookmark = useCallback(async () => {
+    if (!isAuthReady || !userId) {
+      Alert.alert("Ошибка", "Вы не авторизованы");
+      return;
+    }
+
+    if (isCustomMeal) {
+      Alert.alert("Информация", "Пользовательские рецепты нельзя добавлять в избранное");
+      return;
+    }
+
+    const actualRecipeId = recipeId || mealId || currentMealData?.id;
+    
+    if (!actualRecipeId) {
+      Alert.alert("Ошибка", "ID рецепта не найден");
+      return;
+    }
+
+    try {
+      if (isBookmarked) {
+        await favoriteService.removeFromFavorites(actualRecipeId, 'recipe', userId);
+        setIsBookmarked(false);
+        Alert.alert("Успешно", "Рецепт удален из избранного");
+      } else {
+        await favoriteService.addToFavorites(actualRecipeId, 'recipe', userId);
+        setIsBookmarked(true);
+        Alert.alert("Успешно", "Рецепт добавлен в избранное");
+      }
+    } catch (error) {
+      console.error("Ошибка при изменении статуса избранного:", error);
+      Alert.alert("Ошибка", "Не удалось изменить статус избранного");
+    }
+  }, [isAuthReady, userId, isBookmarked, currentMealData?.id, recipeId, mealId, isCustomMeal]);
 
   // --- НОВАЯ ФУНКЦИЯ ДЛЯ ВЫБОРА ИСТОЧНИКА РЕЦЕПТА ---
   const handleReplaceMeal = () => {
@@ -606,93 +817,6 @@ export default function Meal() {
 
   const handleBack = () => {
     router.back();
-  };
-
-  const handleBookmark = () => {
-    const newBookmarkState = !isBookmarked;
-    setIsBookmarked(newBookmarkState);
-  };
-
-  const saveRating = useCallback(
-    async (rating: boolean) => {
-      if (!isAuthReady || !db || !userId || !currentMealData?.id) return;
-
-      if (isCustomMeal) {
-        setLiked(rating);
-        Alert.alert("Информация", "Оценка сохранена локально");
-        return;
-      }
-
-      const ratingDocRef = doc(db, ratingDocPath);
-      const docSnap = await getDoc(ratingDocRef);
-      const previousLikedState = docSnap.exists() ? docSnap.data().liked : null;
-
-      if (previousLikedState === rating) {
-        return;
-      }
-
-      const isFirstVote = previousLikedState === null;
-      const totalRatingsDelta = isFirstVote ? 1 : 0;
-
-      try {
-        await setDoc(
-          ratingDocRef,
-          { liked: rating, timestamp: new Date() },
-          { merge: true }
-        );
-        setLiked(rating);
-
-        if (!isCustomMeal) {
-          await recipeService.updateRecipeRatingStats(
-            currentMealData.id,
-            totalRatingsDelta
-          );
-
-          loadRecipeDetails();
-        }
-      } catch (error) {
-        console.error("Ошибка при сохранении оценки:", error);
-      }
-    },
-    [
-      isAuthReady,
-      db,
-      userId,
-      ratingDocPath,
-      currentMealData?.id,
-      isCustomMeal,
-      loadRecipeDetails,
-    ]
-  );
-
-  const handleResetRating = async () => {
-    if (!isAuthReady || !db || !userId || !currentMealData?.id) return;
-
-    if (isCustomMeal) {
-      setLiked(null);
-      return;
-    }
-
-    const ratingDocRef = doc(db, ratingDocPath);
-    const docSnap = await getDoc(ratingDocRef);
-    const previousLikedState = docSnap.exists() ? docSnap.data().liked : null;
-    const hadRating = previousLikedState !== null;
-
-    try {
-      await setDoc(
-        ratingDocRef,
-        { liked: null, timestamp: new Date() },
-        { merge: true }
-      );
-      setLiked(null);
-
-      if (hadRating && !isCustomMeal) {
-        await recipeService.updateRecipeRatingStats(currentMealData.id, -1);
-        loadRecipeDetails();
-      }
-    } catch (error) {
-      console.error("Ошибка при сбросе оценки в Firestore:", error);
-    }
   };
 
   const getMealIcon = () => {
@@ -798,16 +922,23 @@ export default function Meal() {
             </View>
           )}
           
-          <TouchableOpacity
-            style={styles.bookmarkButton}
-            onPress={handleBookmark}
-          >
-            <Ionicons
-              name={isBookmarked ? "bookmark" : "bookmark-outline"}
-              size={24}
-              color={isBookmarked ? "#6A9AA9" : "#6A9AA9"}
-            />
-          </TouchableOpacity>
+          {!isCustomMeal && (
+            <TouchableOpacity
+              style={styles.bookmarkButton}
+              onPress={handleBookmark}
+              disabled={isLoadingBookmark}
+            >
+              {isLoadingBookmark ? (
+                <ActivityIndicator size="small" color="#6A9AA9" />
+              ) : (
+                <Ionicons
+                  name={isBookmarked ? "bookmark" : "bookmark-outline"}
+                  size={24}
+                  color="#6A9AA9"
+                />
+              )}
+            </TouchableOpacity>
+          )}
           
           {isCustomMeal && (
             <View style={styles.customBadge}>

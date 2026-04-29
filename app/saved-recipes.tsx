@@ -1,4 +1,3 @@
-// app/saved-recipes.tsx
 import {
   Ionicons,
   Feather,
@@ -22,6 +21,7 @@ import {
 
 import { useFavorites } from "@/app/hooks/useFavorites";
 import { favoriteService } from "@/app/services/favoriteService";
+import { auth } from "@/app/firebase/config";
 
 // --- ТИПЫ ДАННЫХ ---
 type RecipeDetail = {
@@ -33,13 +33,14 @@ type RecipeDetail = {
   image: any;
   rating: number;
   difficulty: string;
+  realRecipeId?: string;
 };
 
 // Размеры для карточек
 const { width } = Dimensions.get("window");
 const CARD_WIDTH = (width - 48) / 2;
 
-const categories = ["Все", "Завтраки", "Обед", "Ужин", "Перекусы", "Салаты"];
+const categories = ["Все", "Завтраки", "Обед", "Ужин", "Перекусы"];
 
 // Функция для правильного склонения слова "минута"
 const formatMinutes = (minutes: number): string => {
@@ -62,7 +63,6 @@ const getCategoryName = (mealType: string) => {
   switch (normalizedMealType) {
     case "breakfast":
     case "завтрак":
-    case "breakfast":
       return "Завтрак";
     case "lunch":
     case "обед":
@@ -84,10 +84,7 @@ const getCategoryName = (mealType: string) => {
 export default function SavedRecipesScreen() {
   const router = useRouter();
 
-  // Используем хук без строгой типизации
   const favoritesContext = useFavorites() as any;
-  const isFavorite = favoritesContext?.isFavorite || (() => false);
-  const toggleFavorite = favoritesContext?.toggleFavorite || (async () => {});
   const favoritesLoading = favoritesContext?.loading || false;
   const favoriteRecipeIds = favoritesContext?.favoriteRecipeIds || [];
 
@@ -105,29 +102,29 @@ export default function SavedRecipesScreen() {
 
       setDataLoading(true);
       try {
-        const allFavorites = await favoriteService.getUserFavorites();
+        const userId = auth.currentUser?.uid;
+        if (!userId) {
+          setDataLoading(false);
+          return;
+        }
+
+        const allFavorites = await favoriteService.getUserFavorites(userId);
 
         if (isMounted) {
-          // Фильтруем и преобразуем данные с правильным маппингом полей
           const favoriteRecipes: RecipeDetail[] = allFavorites
             .filter((fav: any) => fav.favoriteType === 'recipe' && fav.item)
             .map((fav: any) => {
               const recipeData = fav.item;
               
-              // Получаем значения из разных возможных мест хранения данных
               const title = recipeData.title || recipeData.name || recipeData.fields?.title || "Рецепт без названия";
-              
-              // Категория - получаем из mealType или fields
               const rawCategory = recipeData.mealType || recipeData.fields?.mealType || "other";
               const category = getCategoryName(rawCategory);
               
-              // Калории
               let calories = 0;
               if (recipeData.fields?.calories !== undefined) calories = recipeData.fields.calories;
               else if (recipeData.calories !== undefined) calories = recipeData.calories;
               else if (recipeData.fields?.fscts !== undefined) calories = recipeData.fields.fscts;
               
-              // Время приготовления
               let cookingTime = "20 минут";
               const rawTime = recipeData.fields?.cookingTime || recipeData.cookingTime || recipeData.time;
               
@@ -147,10 +144,8 @@ export default function SavedRecipesScreen() {
                 }
               }
               
-              // Рейтинг
               const rating = recipeData.rating || recipeData.fields?.rating || recipeData.ratingCount || 0;
               
-              // Сложность приготовления
               let difficulty = "Легко";
               const rawDifficulty = recipeData.difficulty || recipeData.fields?.difficulty || recipeData.complexity || recipeData.difficultyLevel;
               
@@ -167,7 +162,6 @@ export default function SavedRecipesScreen() {
                 }
               }
               
-              // Изображение
               let imageUri = null;
               if (recipeData.fields?.image) imageUri = recipeData.fields.image;
               else if (recipeData.image) imageUri = recipeData.image;
@@ -184,7 +178,8 @@ export default function SavedRecipesScreen() {
                   ? { uri: imageUri }
                   : require("@/assets/images/dinner-rice.png"),
                 rating: rating,
-                difficulty: difficulty
+                difficulty: difficulty,
+                realRecipeId: fav.recipeId || recipeData.id
               };
             });
 
@@ -219,12 +214,19 @@ export default function SavedRecipesScreen() {
   }, [searchQuery, selectedCategory, recipesData]);
 
   // --- УДАЛЕНИЕ ИЗ ИЗБРАННОГО ---
-  const toggleBookmarkHandler = async (recipeId: string) => {
+  const toggleBookmarkHandler = async (recipe: RecipeDetail) => {
     try {
-      // Удаляем через сервис напрямую
-      await favoriteService.removeFromFavorites(recipeId, 'recipe');
-      // Оптимистичное обновление
-      setRecipesData((prev) => prev.filter((item) => item.id !== recipeId));
+      const userId = auth.currentUser?.uid;
+      if (!userId) {
+        Alert.alert("Ошибка", "Вы не авторизованы");
+        return;
+      }
+
+      const recipeIdToRemove = recipe.realRecipeId || recipe.id;
+      
+      await favoriteService.removeFromFavorites(recipeIdToRemove, 'recipe', userId);
+      setRecipesData((prev) => prev.filter((item) => item.id !== recipe.id));
+      Alert.alert("Успешно", "Рецепт удален из избранного");
     } catch (error) {
       console.error("Ошибка при удалении:", error);
       Alert.alert("Ошибка", "Не удалось удалить рецепт.");
@@ -235,7 +237,7 @@ export default function SavedRecipesScreen() {
     router.push({
       pathname: "/meal",
       params: {
-        mealId: recipe.id,
+        mealId: recipe.realRecipeId || recipe.id,
         mealName: recipe.name,
         category: recipe.category,
       },
@@ -416,7 +418,7 @@ export default function SavedRecipesScreen() {
                             style={styles.bookmarkButton}
                             onPress={(e) => {
                               e.stopPropagation();
-                              toggleBookmarkHandler(recipe.id);
+                              toggleBookmarkHandler(recipe);
                             }}
                           >
                             <Ionicons
@@ -497,7 +499,7 @@ const styles = StyleSheet.create({
     padding: 8,
   },
   headerTitle: {
-    fontSize: 20, // Уменьшенный шрифт
+    fontSize: 20,
     color: "#1a1a1a",
     fontFamily: "Playfair Display Bold",
     textAlign: "center",
@@ -582,10 +584,10 @@ const styles = StyleSheet.create({
     paddingBottom: 30,
   },
   recipesTitle: {
-    fontSize: 18, // Уменьшенный шрифт
+    fontSize: 18,
     color: "#212529",
     fontFamily: "Playfair Display Bold",
-    textAlign: "center", // По центру
+    textAlign: "center",
     marginBottom: 20,
   },
   emptyState: {

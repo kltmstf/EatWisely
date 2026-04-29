@@ -1,4 +1,4 @@
-import { useRouter, useFocusEffect } from "expo-router";
+import { useRouter, useFocusEffect, useLocalSearchParams } from "expo-router";
 import React, { useState, useCallback } from "react";
 import {
   Image,
@@ -13,12 +13,10 @@ import {
   Alert,
 } from "react-native";
 import { Ionicons, Feather } from "@expo/vector-icons";
+import { favoriteService } from "@/app/services/favoriteService";
+import { useAuthContext } from "@/app/contexts/AuthContext";
 import { auth } from "@/app/firebase/config";
 
-import { favoriteService } from "@/app/services/favoriteService";
-import { useFavorites } from "@/app/hooks/useFavorites";
-
-// Типы данных
 type RecipeDetail = {
   id: string;
   name: string;
@@ -28,6 +26,7 @@ type RecipeDetail = {
   image: any;
   rating: number;
   difficulty: string;
+  realRecipeId: string;
 };
 
 type PlanDetail = {
@@ -39,6 +38,7 @@ type PlanDetail = {
   mealsCount: number;
   image: any;
   savedDate: string;
+  realPlanId: string;
 };
 
 type FavoriteItem = {
@@ -64,14 +64,18 @@ type FavoriteItem = {
   };
 };
 
-// ИСПРАВЛЕНИЕ: Создаем тип для упрощенного объекта с id
-type ItemWithId = {
-  id: string;
-  [key: string]: any;
-};
+function isRecipeDetail(item: RecipeDetail | PlanDetail): item is RecipeDetail {
+  return (item as RecipeDetail).category !== undefined;
+}
+
+function isPlanDetail(item: RecipeDetail | PlanDetail): item is PlanDetail {
+  return (item as PlanDetail).description !== undefined;
+}
 
 export default function SavedScreen() {
   const router = useRouter();
+  const { userId: paramUserId } = useLocalSearchParams<{ userId: string }>();
+  const { user } = useAuthContext();
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("Все");
   const [activeTab, setActiveTab] = useState<"recipes" | "plans">("recipes");
@@ -80,26 +84,42 @@ export default function SavedScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // ИСПРАВЛЕНИЕ: Правильно получаем toggleFavorite из хука
-  const favoritesContext = useFavorites();
-  const toggleFavorite = favoritesContext?.toggleFavorite;
-
   const categories = [
-    "Все",
-    "Завтраки",
-    "Обед",
-    "Ужин",
-    "Перекусы",
-    "Супы",
-    "Салаты",
-    "Десерты",
+    "Все", "Завтраки", "Обед", "Ужин", "Перекусы", "Супы", "Салаты", "Десерты",
   ];
 
-  // Функция нормализации данных из Firestore
-  const normalizeFirestoreData = (item: any, type: "recipe" | "ration"): RecipeDetail | PlanDetail => {
+  // УСИЛЕННАЯ функция получения userId
+  const getCurrentUserId = (): string | null => {
+    // 1. Из параметров навигации
+    if (paramUserId && paramUserId !== 'undefined' && paramUserId !== 'null') {
+      console.log("✅ userId из параметров:", paramUserId);
+      return paramUserId;
+    }
+    // 2. Из контекста
+    if (user?.uid) {
+      console.log("✅ userId из контекста:", user.uid);
+      return user.uid;
+    }
+    // 3. Напрямую из auth
+    const directUserId = auth.currentUser?.uid;
+    if (directUserId) {
+      console.log("✅ userId напрямую из auth:", directUserId);
+      return directUserId;
+    }
+    
+    console.log("❌ userId не найден нигде!");
+    return null;
+  };
+
+  const normalizeFirestoreData = (
+    item: any,
+    type: "recipe" | "ration",
+    favoriteId: string,
+    realId: string
+  ): RecipeDetail | PlanDetail => {
     if (type === "recipe") {
-      const recipe: RecipeDetail = {
-        id: item.id || "",
+      return {
+        id: `${favoriteId}-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
         name: item.name || item.title || "Рецепт без названия",
         category: item.category || item.categoryId || "Без категории",
         calories: item.calories || item.calorie || 0,
@@ -109,11 +129,11 @@ export default function SavedScreen() {
           : require("@/assets/images/dinner-rice.png"),
         rating: item.rating || item.averageRating || 0,
         difficulty: item.difficulty || "Легко",
-      };
-      return recipe;
+        realRecipeId: realId,
+      } as RecipeDetail;
     } else {
-      const plan: PlanDetail = {
-        id: item.id || "",
+      return {
+        id: `${favoriteId}-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
         name: item.name || item.title || "План без названия",
         description: item.description || item.desc || "Описание отсутствует",
         totalCalories: item.totalCalories || item.dailyCalories || 0,
@@ -125,146 +145,126 @@ export default function SavedScreen() {
         savedDate: item.createdAt && item.createdAt.seconds
           ? new Date(item.createdAt.seconds * 1000).toLocaleDateString("ru-RU")
           : new Date().toLocaleDateString("ru-RU"),
-      };
-      return plan;
+        realPlanId: realId,
+      } as PlanDetail;
     }
   };
 
-  // Функция для загрузки данных из БД
   const loadFavorites = useCallback(async () => {
-    console.log("🔄 Начало загрузки избранного...");
-    console.log("Текущий пользователь:", auth.currentUser?.uid);
+    const userId = getCurrentUserId();
+    
+    if (!userId) {
+      console.log("❌ Нет userId для загрузки избранного");
+      setError("Для просмотра избранного необходимо авторизоваться");
+      setLoading(false);
+      return;
+    }
+
+    console.log("🔄 Загрузка избранного для пользователя:", userId);
     
     setLoading(true);
     setError(null);
+    
     try {
-      // Загружаем избранное через сервис
-      const allFavorites = await favoriteService.getUserFavorites();
-      console.log("📥 Получено избранных:", allFavorites?.length || 0);
+      const allFavorites = await favoriteService.getUserFavorites(userId);
 
       if (!allFavorites || allFavorites.length === 0) {
-        console.log("📭 Избранное пустое");
         setRecipesData([]);
         setPlansData([]);
         return;
       }
 
-      // Используем Map для устранения дубликатов
-      const uniqueRecipes = new Map<string, RecipeDetail>();
-      const uniquePlans = new Map<string, PlanDetail>();
+      const recipesList: RecipeDetail[] = [];
+      const plansList: PlanDetail[] = [];
 
-      // ИСПРАВЛЕНИЕ: Используем правильный тип для forEach
       (allFavorites as FavoriteItem[]).forEach((fav: FavoriteItem) => {
-        // Пропускаем элементы без данных
-        if (!fav.item) {
-          console.log(`⚠️ Пропущен элемент без данных: ${fav.id}`);
-          return;
-        }
+        if (!fav.item) return;
 
-        const itemId = fav.item.id;
-        console.log(`📋 Обработка ${fav.favoriteType}: ${itemId}`);
-
-        if (fav.favoriteType === "recipe") {
-          if (itemId && !uniqueRecipes.has(itemId)) {
-            const normalizedItem = normalizeFirestoreData(fav.item, "recipe");
-            // Проверяем, что это RecipeDetail (у него есть category)
-            if ('category' in normalizedItem) {
-              uniqueRecipes.set(itemId, normalizedItem as RecipeDetail);
-            }
-          }
-        } else if (fav.favoriteType === "ration") {
-          if (itemId && !uniquePlans.has(itemId)) {
-            const normalizedItem = normalizeFirestoreData(fav.item, "ration");
-            // Проверяем, что это PlanDetail (у него есть description)
-            if ('description' in normalizedItem) {
-              uniquePlans.set(itemId, normalizedItem as PlanDetail);
-            }
-          }
+        if (fav.favoriteType === "recipe" && fav.recipeId) {
+          const normalizedItem = normalizeFirestoreData(fav.item, "recipe", fav.id, fav.recipeId);
+          if (isRecipeDetail(normalizedItem)) recipesList.push(normalizedItem);
+        } else if (fav.favoriteType === "ration" && fav.rationPlanId) {
+          const normalizedItem = normalizeFirestoreData(fav.item, "ration", fav.id, fav.rationPlanId);
+          if (isPlanDetail(normalizedItem)) plansList.push(normalizedItem);
         }
       });
-
-      console.log(`🍳 Рецептов: ${uniqueRecipes.size}, 📅 Планов: ${uniquePlans.size}`);
       
-      setRecipesData(Array.from(uniqueRecipes.values()));
-      setPlansData(Array.from(uniquePlans.values()));
-      
+      setRecipesData(recipesList);
+      setPlansData(plansList);
     } catch (e: any) {
-      console.error("❌ Ошибка при загрузке избранного:", e);
-      const errorMessage = e?.message || "Неизвестная ошибка";
-      
-      setError(
-        errorMessage.includes("authenticated") || errorMessage.includes("auth")
-          ? "Для просмотра избранного необходимо авторизоваться."
-          : "Не удалось загрузить сохраненные данные"
-      );
-      
-      setRecipesData([]);
-      setPlansData([]);
+      console.error("Ошибка загрузки:", e);
+      setError("Не удалось загрузить сохраненные данные");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [paramUserId, user]);
 
-  // Используем useFocusEffect для перезагрузки данных при фокусе экрана
   useFocusEffect(
     useCallback(() => {
-      console.log("🎯 Экран в фокусе, загружаем избранное...");
       loadFavorites();
-      return () => {
-        console.log("👋 Экран потерял фокус");
-      };
     }, [loadFavorites])
   );
 
-  // Фильтрация рецептов
   const filteredRecipes = recipesData.filter((recipe) => {
-    const matchesSearch = recipe.name
-      .toLowerCase()
-      .includes(searchQuery.toLowerCase());
-    const matchesCategory =
-      selectedCategory === "Все" || recipe.category === selectedCategory;
+    const matchesSearch = recipe.name.toLowerCase().includes(searchQuery.toLowerCase());
+    const matchesCategory = selectedCategory === "Все" || recipe.category === selectedCategory;
     return matchesSearch && matchesCategory;
   });
 
-  // ИСПРАВЛЕНИЕ: Обработчик удаления из избранного с проверкой toggleFavorite
-  const handleToggleFavorite = async (
-    itemId: string,
-    favoriteType: "recipe" | "ration"
-  ) => {
-    console.log(`🗑️ Удаление ${favoriteType} с ID: ${itemId}`);
-    
+  // ИСПРАВЛЕННЫЙ обработчик удаления - принудительно получаем userId заново
+  const handleRemoveRecipe = async (recipe: RecipeDetail) => {
     try {
-      // Проверяем, что toggleFavorite существует
-      if (!toggleFavorite) {
-        throw new Error("Функция toggleFavorite недоступна");
-      }
-
-      // Вызываем toggleFavorite
-      await toggleFavorite(itemId, favoriteType);
-
-      // Обновляем локальное состояние для мгновенного отклика UI
-      if (favoriteType === "recipe") {
-        setRecipesData((prev) => prev.filter((recipe) => recipe.id !== itemId));
-      } else {
-        setPlansData((prev) => prev.filter((plan) => plan.id !== itemId));
+      // ПРИНУДИТЕЛЬНО получаем userId заново при каждом удалении
+      let userId = getCurrentUserId();
+      
+      // Если нет, пробуем еще раз напрямую из auth
+      if (!userId) {
+        console.log("⚠️ userId не найден, пробуем получить заново...");
+        userId = auth.currentUser?.uid || null;
       }
       
-      Alert.alert("Успешно", "Удалено из избранного", [{ text: "OK" }]);
+      console.log(`🗑️ УДАЛЕНИЕ: recipeId=${recipe.realRecipeId}, userId=${userId}`);
+      
+      if (!userId) {
+        Alert.alert("Ошибка", "Не удалось определить пользователя. Пожалуйста, перезайдите в аккаунт.");
+        return;
+      }
+
+      await favoriteService.removeFromFavorites(recipe.realRecipeId, "recipe", userId);
+      setRecipesData((prev) => prev.filter((r) => r.id !== recipe.id));
+      Alert.alert("Успешно", "Рецепт удален из избранного");
     } catch (error: any) {
-      console.error("❌ Ошибка при удалении из избранного:", error);
-      Alert.alert(
-        "Ошибка", 
-        error.message || "Не удалось удалить из избранного",
-        [{ text: "OK" }]
-      );
+      console.error("Ошибка при удалении:", error);
+      Alert.alert("Ошибка", error.message || "Не удалось удалить из избранного");
+    }
+  };
+
+  const handleRemovePlan = async (plan: PlanDetail) => {
+    try {
+      let userId = getCurrentUserId();
+      
+      if (!userId) {
+        userId = auth.currentUser?.uid || null;
+      }
+      
+      if (!userId) {
+        Alert.alert("Ошибка", "Не удалось определить пользователя");
+        return;
+      }
+
+      await favoriteService.removeFromFavorites(plan.realPlanId, "ration", userId);
+      setPlansData((prev) => prev.filter((p) => p.id !== plan.id));
+      Alert.alert("Успешно", "План удален из избранного");
+    } catch (error: any) {
+      Alert.alert("Ошибка", error.message || "Не удалось удалить из избранного");
     }
   };
 
   const navigateToRecipe = (recipe: RecipeDetail) => {
     router.push({
-      pathname: "/meal" as any,
+      pathname: "/meal",
       params: {
-        mealId: recipe.id,
+        mealId: recipe.realRecipeId,
         mealName: recipe.name,
         category: recipe.category,
       },
@@ -273,27 +273,6 @@ export default function SavedScreen() {
 
   const navigateToPlan = (plan: PlanDetail) => {
     console.log(`Переход к плану: ${plan.name}`);
-    // ИСПРАВЛЕНИЕ: Закомментировал навигацию, так как страницы пока нет
-    // router.push({
-    //   pathname: "/plan-details",
-    //   params: { planId: plan.id }
-    // });
-  };
-
-  // ИСПРАВЛЕНИЕ: Функция для навигации на страницу авторизации
-  const navigateToAuth = () => {
-    // Используем любой существующий маршрут или создаем fallback
-    try {
-      // Пробуем перейти на /login, если он существует
-      router.push("/login" as any);
-    } catch {
-      // Если /login не существует, пробуем другие варианты
-      try {
-        router.push("/" as any); // На главную
-      } catch {
-        console.log("Не удалось выполнить навигацию");
-      }
-    }
   };
 
   const clearFilters = () => {
@@ -303,87 +282,47 @@ export default function SavedScreen() {
 
   const getDifficultyColor = (difficulty: string) => {
     switch (difficulty) {
-      case "Легко":
-        return "#4CAF50";
-      case "Средне":
-        return "#FF9800";
-      case "Сложно":
-        return "#F44336";
-      default:
-        return "#6A9AA9";
+      case "Легко": return "#4CAF50";
+      case "Средне": return "#FF9800";
+      case "Сложно": return "#F44336";
+      default: return "#6A9AA9";
     }
   };
-
-  // Добавим кнопку обновления для отладки
-  const DebugHeaderButton = () => (
-    <TouchableOpacity 
-      style={styles.debugButton}
-      onPress={() => {
-        console.log("=== ДЕБАГ ИНФОРМАЦИЯ ===");
-        console.log("Текущий пользователь:", auth.currentUser?.uid);
-        console.log("Загружено рецептов:", recipesData.length);
-        console.log("Загружено планов:", plansData.length);
-        console.log("Все рецепты:", recipesData.map(r => ({id: r.id, name: r.name})));
-        console.log("Все планы:", plansData.map(p => ({id: p.id, name: p.name})));
-        loadFavorites();
-      }}
-    >
-      <Ionicons name="refresh-circle" size={28} color="#6A9AA9" />
-    </TouchableOpacity>
-  );
 
   if (loading) {
     return (
       <View style={styles.container}>
         <StatusBar barStyle="dark-content" />
         <View style={styles.header}>
-          <TouchableOpacity
-            style={styles.backButton}
-            onPress={() => router.back()}
-          >
+          <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
             <Ionicons name="arrow-back" size={24} color="#000" />
           </TouchableOpacity>
           <Text style={styles.headerTitle}>Сохраненное</Text>
-          <DebugHeaderButton />
         </View>
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color="#6A9AA9" />
-          <Text style={styles.loadingText}>Загрузка избранного...</Text>
+          <Text style={styles.loadingText}>Загрузка...</Text>
         </View>
       </View>
     );
   }
 
-  // Обработка ошибок
   if (error && recipesData.length === 0 && plansData.length === 0) {
     return (
       <View style={styles.container}>
         <StatusBar barStyle="dark-content" />
         <View style={styles.header}>
-          <TouchableOpacity
-            style={styles.backButton}
-            onPress={() => router.back()}
-          >
+          <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
             <Ionicons name="arrow-back" size={24} color="#000" />
           </TouchableOpacity>
           <Text style={styles.headerTitle}>Сохраненное</Text>
-          <DebugHeaderButton />
         </View>
         <View style={styles.loadingContainer}>
           <Ionicons name="warning-outline" size={48} color="#F44336" />
-          <Text style={styles.emptyTitle}>Произошла ошибка</Text>
+          <Text style={styles.emptyTitle}>Ошибка</Text>
           <Text style={styles.emptyText}>{error}</Text>
-          <TouchableOpacity
-            style={styles.clearFiltersButton}
-            onPress={loadFavorites}
-          >
-            <Text style={styles.clearFiltersText}>Повторить попытку</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.clearFiltersButton, { marginTop: 10, backgroundColor: "#6A9AA9" }]}
-            onPress={navigateToAuth} // ИСПРАВЛЕНИЕ: Используем функцию навигации
-          >
-            <Text style={styles.clearFiltersText}>Войти в аккаунт</Text>
+          <TouchableOpacity style={styles.clearFiltersButton} onPress={loadFavorites}>
+            <Text style={styles.clearFiltersText}>Повторить</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -393,80 +332,33 @@ export default function SavedScreen() {
   return (
     <View style={styles.container}>
       <StatusBar barStyle="dark-content" />
-
-      {/* Заголовок */}
       <View style={styles.header}>
-        <TouchableOpacity
-          style={styles.backButton}
-          onPress={() => router.back()}
-        >
+        <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
           <Ionicons name="arrow-back" size={24} color="#000" />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Сохраненное</Text>
-        <DebugHeaderButton />
       </View>
 
-      {/* Вкладки */}
       <View style={styles.tabsContainer}>
-        <TouchableOpacity
-          style={[styles.tab, activeTab === "recipes" && styles.tabActive]}
-          onPress={() => setActiveTab("recipes")}
-        >
-          <Ionicons
-            name="restaurant-outline"
-            size={20}
-            color={activeTab === "recipes" ? "#6A9AA9" : "#666"}
-          />
-          <Text
-            style={[
-              styles.tabText,
-              activeTab === "recipes" && styles.tabTextActive,
-            ]}
-          >
-            Рецепты ({recipesData.length})
-          </Text>
+        <TouchableOpacity style={[styles.tab, activeTab === "recipes" && styles.tabActive]} onPress={() => setActiveTab("recipes")}>
+          <Ionicons name="restaurant-outline" size={20} color={activeTab === "recipes" ? "#6A9AA9" : "#666"} />
+          <Text style={[styles.tabText, activeTab === "recipes" && styles.tabTextActive]}>Рецепты ({recipesData.length})</Text>
         </TouchableOpacity>
-
-        <TouchableOpacity
-          style={[styles.tab, activeTab === "plans" && styles.tabActive]}
-          onPress={() => setActiveTab("plans")}
-        >
-          <Ionicons
-            name="calendar-outline"
-            size={20}
-            color={activeTab === "plans" ? "#6A9AA9" : "#666"}
-          />
-          <Text
-            style={[
-              styles.tabText,
-              activeTab === "plans" && styles.tabTextActive,
-            ]}
-          >
-            Планы ({plansData.length})
-          </Text>
+        <TouchableOpacity style={[styles.tab, activeTab === "plans" && styles.tabActive]} onPress={() => setActiveTab("plans")}>
+          <Ionicons name="calendar-outline" size={20} color={activeTab === "plans" ? "#6A9AA9" : "#666"} />
+          <Text style={[styles.tabText, activeTab === "plans" && styles.tabTextActive]}>Планы ({plansData.length})</Text>
         </TouchableOpacity>
       </View>
 
-      <ScrollView
-        style={styles.scrollView}
-        showsVerticalScrollIndicator={false}
-      >
-        {/* Поиск и фильтры - показываются только для Рецептов */}
+      <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
         {activeTab === "recipes" && (
           <View style={styles.searchSection}>
-            {/* Поле поиска */}
             <View style={styles.searchRow}>
               <View style={styles.searchInputContainer}>
-                <Feather
-                  name="search"
-                  size={16}
-                  color="#666"
-                  style={styles.searchIcon}
-                />
+                <Feather name="search" size={16} color="#666" style={styles.searchIcon} />
                 <TextInput
                   style={styles.searchInput}
                   placeholder="Поиск..."
-                  placeholderTextColor="#666"
                   value={searchQuery}
                   onChangeText={setSearchQuery}
                 />
@@ -477,158 +369,75 @@ export default function SavedScreen() {
                 )}
               </View>
             </View>
-
-            {/* Фильтры по категориям */}
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              style={styles.categoriesContainer}
-            >
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.categoriesContainer}>
               {categories.map((category) => (
                 <TouchableOpacity
                   key={category}
-                  style={[
-                    styles.categoryButton,
-                    selectedCategory === category &&
-                      styles.categoryButtonActive,
-                  ]}
+                  style={[styles.categoryButton, selectedCategory === category && styles.categoryButtonActive]}
                   onPress={() => setSelectedCategory(category)}
                 >
-                  <Text
-                    style={[
-                      styles.categoryText,
-                      selectedCategory === category &&
-                        styles.categoryTextActive,
-                    ]}
-                  >
+                  <Text style={[styles.categoryText, selectedCategory === category && styles.categoryTextActive]}>
                     {category}
                   </Text>
                 </TouchableOpacity>
               ))}
             </ScrollView>
-
             <View style={styles.sectionDivider} />
           </View>
         )}
 
-        {/* Контент в зависимости от вкладки */}
         {activeTab === "recipes" ? (
           <View style={styles.recipesSection}>
             {filteredRecipes.length === 0 ? (
               <View style={styles.emptyState}>
                 <Ionicons name="bookmark-outline" size={64} color="#C2DAE2" />
-                <Text style={styles.emptyTitle}>В сохраненных пока пусто</Text>
+                <Text style={styles.emptyTitle}>Нет сохраненных рецептов</Text>
                 <Text style={styles.emptyText}>
-                  {searchQuery || selectedCategory !== "Все"
-                    ? "Попробуйте изменить параметры поиска или сбросить фильтры."
-                    : "Сохраняйте рецепты, нажимая на значок закладки."}
+                  {searchQuery || selectedCategory !== "Все" ? "Попробуйте другие фильтры" : "Сохраняйте рецепты, нажимая на значок закладки"}
                 </Text>
                 {(searchQuery || selectedCategory !== "Все") && (
-                  <TouchableOpacity
-                    style={styles.clearFiltersButton}
-                    onPress={clearFilters}
-                  >
-                    <Text style={styles.clearFiltersText}>Показать все</Text>
+                  <TouchableOpacity style={styles.clearFiltersButton} onPress={clearFilters}>
+                    <Text style={styles.clearFiltersText}>Сбросить фильтры</Text>
                   </TouchableOpacity>
                 )}
               </View>
             ) : (
-              <>
-                {/* Сетка рецептов 2x2 */}
-                <View style={styles.recipesGrid}>
-                  {filteredRecipes.map((recipe) => (
-                    <View key={recipe.id} style={styles.recipeColumn}>
-                      <TouchableOpacity
-                        activeOpacity={0.8}
-                        onPress={() => navigateToRecipe(recipe)}
-                        style={styles.recipeCard}
-                      >
-                        <View style={styles.imageContainer}>
-                          <Image
-                            source={recipe.image}
-                            style={styles.recipeImage}
-                            resizeMode="cover"
-                          />
-                          <View style={styles.recipeBadges}>
-                            <View style={styles.ratingBadge}>
-                              <Ionicons name="star" size={10} color="#FFD700" />
-                              <Text style={styles.ratingText}>
-                                {recipe.rating.toFixed(1)}
-                              </Text>
-                            </View>
-                            <View
-                              style={[
-                                styles.difficultyBadge,
-                                {
-                                  backgroundColor: getDifficultyColor(
-                                    recipe.difficulty
-                                  ),
-                                },
-                              ]}
-                            >
-                              <Text style={styles.difficultyText}>
-                                {recipe.difficulty}
-                              </Text>
-                            </View>
+              <View style={styles.recipesGrid}>
+                {filteredRecipes.map((recipe) => (
+                  <View key={recipe.id} style={styles.recipeColumn}>
+                    <TouchableOpacity style={styles.recipeCard} onPress={() => navigateToRecipe(recipe)}>
+                      <View style={styles.imageContainer}>
+                        <Image source={recipe.image} style={styles.recipeImage} resizeMode="cover" />
+                        <View style={styles.recipeBadges}>
+                          <View style={styles.ratingBadge}>
+                            <Ionicons name="star" size={10} color="#FFD700" />
+                            <Text style={styles.ratingText}>{recipe.rating.toFixed(1)}</Text>
                           </View>
-                          {/* Кнопка удаления из избранного */}
-                          <TouchableOpacity
-                            style={styles.bookmarkButton}
-                            onPress={(e) => {
-                              e.stopPropagation();
-                              handleToggleFavorite(recipe.id, "recipe");
-                            }}
-                          >
-                            <Ionicons
-                              name="bookmark"
-                              size={18}
-                              color="#6A9AA9"
-                            />
-                          </TouchableOpacity>
-                        </View>
-                        <View style={styles.recipeContent}>
-                          <View style={styles.recipeInfo}>
-                            <Text
-                              style={styles.recipeName}
-                              numberOfLines={2}
-                              ellipsizeMode="tail"
-                            >
-                              {recipe.name}
-                            </Text>
-                            <Text style={styles.recipeCategory}>
-                              {recipe.category}
-                            </Text>
-                            <View style={styles.recipeDetails}>
-                              <Ionicons
-                                name="flame-outline"
-                                size={12}
-                                color="#FF6B6B"
-                              />
-                              <Text style={styles.recipeCalories}>
-                                {recipe.calories} ккал
-                              </Text>
-                              <Ionicons
-                                name="time-outline"
-                                size={12}
-                                color="#6A9AA9"
-                                style={styles.timeIcon}
-                              />
-                              <Text style={styles.recipeTime}>
-                                {recipe.cookingTime}
-                              </Text>
-                            </View>
-                          </View>
-                          <View style={styles.viewButton}>
-                            <Text style={styles.viewButtonText}>
-                              Приготовить
-                            </Text>
+                          <View style={[styles.difficultyBadge, { backgroundColor: getDifficultyColor(recipe.difficulty) }]}>
+                            <Text style={styles.difficultyText}>{recipe.difficulty}</Text>
                           </View>
                         </View>
-                      </TouchableOpacity>
-                    </View>
-                  ))}
-                </View>
-              </>
+                        <TouchableOpacity style={styles.bookmarkButton} onPress={(e) => { e.stopPropagation(); handleRemoveRecipe(recipe); }}>
+                          <Ionicons name="bookmark" size={18} color="#6A9AA9" />
+                        </TouchableOpacity>
+                      </View>
+                      <View style={styles.recipeContent}>
+                        <Text style={styles.recipeName} numberOfLines={2}>{recipe.name}</Text>
+                        <Text style={styles.recipeCategory}>{recipe.category}</Text>
+                        <View style={styles.recipeDetails}>
+                          <Ionicons name="flame-outline" size={12} color="#FF6B6B" />
+                          <Text style={styles.recipeCalories}>{recipe.calories} ккал</Text>
+                          <Ionicons name="time-outline" size={12} color="#6A9AA9" style={styles.timeIcon} />
+                          <Text style={styles.recipeTime}>{recipe.cookingTime}</Text>
+                        </View>
+                        <View style={styles.viewButton}>
+                          <Text style={styles.viewButtonText}>Приготовить</Text>
+                        </View>
+                      </View>
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </View>
             )}
           </View>
         ) : (
@@ -637,79 +446,34 @@ export default function SavedScreen() {
               <View style={styles.emptyState}>
                 <Ionicons name="calendar-outline" size={64} color="#C2DAE2" />
                 <Text style={styles.emptyTitle}>Нет сохраненных планов</Text>
-                <Text style={styles.emptyText}>
-                  Сохраняйте понравившиеся планы питания для быстрого доступа
-                </Text>
+                <Text style={styles.emptyText}>Сохраняйте планы питания для быстрого доступа</Text>
               </View>
             ) : (
               <View style={styles.plansList}>
                 {plansData.map((plan) => (
-                  <TouchableOpacity
-                    key={plan.id}
-                    style={styles.planCard}
-                    onPress={() => navigateToPlan(plan)}
-                  >
-                    <Image
-                      source={plan.image}
-                      style={styles.planImage}
-                      resizeMode="cover"
-                    />
+                  <TouchableOpacity key={plan.id} style={styles.planCard} onPress={() => navigateToPlan(plan)}>
+                    <Image source={plan.image} style={styles.planImage} resizeMode="cover" />
                     <View style={styles.planContent}>
-                      <View>
-                        <Text style={styles.planName}>{plan.name}</Text>
-                        <Text style={styles.planDescription} numberOfLines={2}>
-                          {plan.description}
-                        </Text>
-                      </View>
+                      <Text style={styles.planName}>{plan.name}</Text>
+                      <Text style={styles.planDescription} numberOfLines={2}>{plan.description}</Text>
                       <View style={styles.planDetails}>
                         <View style={styles.planDetail}>
-                          <Ionicons
-                            name="flame-outline"
-                            size={14}
-                            color="#FF6B6B"
-                          />
-                          <Text style={styles.planDetailText}>
-                            {plan.totalCalories} ккал/день
-                          </Text>
+                          <Ionicons name="flame-outline" size={14} color="#FF6B6B" />
+                          <Text style={styles.planDetailText}>{plan.totalCalories} ккал/день</Text>
                         </View>
                         <View style={styles.planDetail}>
-                          <Ionicons
-                            name="time-outline"
-                            size={14}
-                            color="#6A9AA9"
-                          />
-                          <Text style={styles.planDetailText}>
-                            {plan.duration}
-                          </Text>
+                          <Ionicons name="time-outline" size={14} color="#6A9AA9" />
+                          <Text style={styles.planDetailText}>{plan.duration}</Text>
                         </View>
                         <View style={styles.planDetail}>
-                          <Ionicons
-                            name="restaurant-outline"
-                            size={14}
-                            color="#9BDF11"
-                          />
-                          <Text style={styles.planDetailText}>
-                            {plan.mealsCount} приёмов
-                          </Text>
+                          <Ionicons name="restaurant-outline" size={14} color="#9BDF11" />
+                          <Text style={styles.planDetailText}>{plan.mealsCount} приёмов</Text>
                         </View>
                       </View>
                       <View style={styles.planFooter}>
-                        <Text style={styles.planDate}>
-                          Сохранено: {plan.savedDate}
-                        </Text>
-                        <TouchableOpacity
-                          style={styles.usePlanButton}
-                          onPress={(e) => {
-                            e.stopPropagation();
-                            handleToggleFavorite(plan.id, "ration");
-                          }}
-                        >
-                          <Ionicons
-                            name="bookmark"
-                            size={16}
-                            color="#000"
-                            style={{ marginRight: 4 }}
-                          />
+                        <Text style={styles.planDate}>Сохранено: {plan.savedDate}</Text>
+                        <TouchableOpacity style={styles.usePlanButton} onPress={(e) => { e.stopPropagation(); handleRemovePlan(plan); }}>
+                          <Ionicons name="bookmark" size={16} color="#000" />
                           <Text style={styles.usePlanButtonText}>Удалить</Text>
                         </TouchableOpacity>
                       </View>
@@ -725,398 +489,68 @@ export default function SavedScreen() {
   );
 }
 
-// Стили остаются без изменений
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#FFFFFF",
-  },
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 20,
-    paddingTop: 50,
-    paddingBottom: 15,
-    backgroundColor: "#FFFFFF",
-    borderBottomWidth: 2,
-    borderBottomColor: "#6A9AA9",
-  },
-  backButton: {
-    padding: 8,
-  },
-  debugButton: {
-    padding: 8,
-  },
-  headerTitle: {
-    fontSize: 24,
-    color: "#1a1a1a",
-    fontFamily: "System",
-    textAlign: "center",
-  },
-  tabsContainer: {
-    flexDirection: "row",
-    backgroundColor: "#fff",
-    borderBottomWidth: 1,
-    borderBottomColor: "#E5E7EB",
-  },
-  tab: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 16,
-    gap: 8,
-  },
-  tabActive: {
-    borderBottomWidth: 2,
-    borderBottomColor: "#6A9AA9",
-  },
-  tabText: {
-    fontSize: 14,
-    color: "#666",
-    fontFamily: "System",
-    fontWeight: "500",
-  },
-  tabTextActive: {
-    color: "#6A9AA9",
-    fontWeight: "600",
-  },
-  scrollView: {
-    flex: 1,
-  },
-  searchSection: {
-    backgroundColor: "#FFFFFF",
-    padding: 15,
-    marginBottom: 1,
-  },
-  searchRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    marginBottom: 12,
-  },
-  searchInputContainer: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#FFFFFF",
-    borderRadius: 30,
-    borderWidth: 2,
-    borderColor: "#6A9AA9",
-    paddingHorizontal: 15,
-    paddingVertical: 6,
-  },
-  searchIcon: {
-    marginRight: 8,
-  },
-  searchInput: {
-    flex: 1,
-    fontSize: 14,
-    color: "#000",
-    paddingVertical: 4,
-    fontFamily: "System",
-  },
-  categoriesContainer: {
-    marginBottom: 12,
-  },
-  categoryButton: {
-    backgroundColor: "white",
-    borderWidth: 2,
-    borderColor: "#6A9AA9",
-    borderRadius: 20,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    marginRight: 8,
-  },
-  categoryButtonActive: {
-    backgroundColor: "#9BDF11",
-    borderColor: "#9BDF11",
-  },
-  categoryText: {
-    fontSize: 14,
-    color: "#000000",
-    fontFamily: "System",
-    fontWeight: "600",
-  },
-  categoryTextActive: {
-    color: "#000000",
-  },
-  sectionDivider: {
-    height: 2,
-    backgroundColor: "#C2DAE2",
-    marginHorizontal: -15,
-    marginTop: 12,
-  },
-  recipesSection: {
-    backgroundColor: "#FFFFFF",
-    padding: 15,
-    paddingBottom: 20,
-  },
-  recipesGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    justifyContent: "space-between",
-  },
-  recipeColumn: {
-    width: "48%",
-    marginBottom: 16,
-  },
-  recipeCard: {
-    backgroundColor: "#C2DAE2",
-    borderRadius: 16,
-    overflow: "hidden",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 3.84,
-    elevation: 5,
-    height: 280,
-  },
-  imageContainer: {
-    position: "relative",
-  },
-  recipeImage: {
-    width: "100%",
-    height: 120,
-  },
-  recipeBadges: {
-    position: "absolute",
-    top: 8,
-    left: 8,
-    flexDirection: "column",
-    gap: 4,
-  },
-  ratingBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.9)",
-    paddingHorizontal: 6,
-    paddingVertical: 3,
-    borderRadius: 10,
-  },
-  ratingText: {
-    fontSize: 10,
-    fontWeight: "bold",
-    color: "#000000",
-    fontFamily: "System",
-    marginLeft: 2,
-  },
-  difficultyBadge: {
-    paddingHorizontal: 6,
-    paddingVertical: 3,
-    borderRadius: 10,
-  },
-  difficultyText: {
-    fontSize: 9,
-    fontWeight: "bold",
-    color: "#FFFFFF",
-    fontFamily: "System",
-  },
-  bookmarkButton: {
-    position: "absolute",
-    top: 8,
-    right: 8,
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: "rgba(255, 255, 255, 0.9)",
-    alignItems: "center",
-    justifyContent: "center",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.2,
-    shadowRadius: 1.41,
-    elevation: 2,
-  },
-  recipeContent: {
-    padding: 12,
-    flex: 1,
-    justifyContent: "space-between",
-  },
-  recipeInfo: {
-    flex: 1,
-    marginBottom: 8,
-  },
-  recipeName: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: "#212529",
-    marginBottom: 4,
-    fontFamily: "System",
-    lineHeight: 18,
-    minHeight: 36,
-  },
-  recipeCategory: {
-    fontSize: 11,
-    color: "#6A9AA9",
-    fontFamily: "System",
-    fontStyle: "italic",
-    marginBottom: 6,
-  },
-  recipeDetails: {
-    flexDirection: "row",
-    alignItems: "center",
-    flexWrap: "wrap",
-  },
-  recipeCalories: {
-    fontSize: 12,
-    color: "#000000",
-    fontWeight: "normal",
-    fontFamily: "System",
-    marginLeft: 2,
-    marginRight: 8,
-  },
-  timeIcon: {
-    marginLeft: 4,
-  },
-  recipeTime: {
-    fontSize: 12,
-    color: "#6C757D",
-    marginLeft: 2,
-    fontFamily: "System",
-  },
-  viewButton: {
-    backgroundColor: "#9BDF11",
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
-    alignItems: "center",
-    justifyContent: "center",
-    minHeight: 36,
-    marginTop: 8,
-  },
-  viewButtonText: {
-    color: "#000000",
-    fontSize: 12,
-    fontWeight: "normal",
-    fontFamily: "System",
-  },
-  plansSection: {
-    backgroundColor: "#FFFFFF",
-    padding: 15,
-    paddingBottom: 20,
-  },
-  plansList: {
-    gap: 16,
-  },
-  planCard: {
-    backgroundColor: "#C2DAE2",
-    borderRadius: 16,
-    overflow: "hidden",
-    flexDirection: "row",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 3.84,
-    elevation: 5,
-    height: 140,
-  },
-  planImage: {
-    width: 120,
-    height: "100%",
-  },
-  planContent: {
-    flex: 1,
-    padding: 12,
-    justifyContent: "space-between",
-  },
-  planName: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: "#212529",
-    fontFamily: "System",
-    marginBottom: 4,
-  },
-  planDescription: {
-    fontSize: 12,
-    color: "#6A9AA9",
-    fontFamily: "System",
-    marginBottom: 8,
-  },
-  planDetails: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    marginBottom: 8,
-  },
-  planDetail: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-  },
-  planDetailText: {
-    fontSize: 10,
-    color: "#000000",
-    fontFamily: "System",
-  },
-  planFooter: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-  },
-  planDate: {
-    fontSize: 10,
-    color: "#6C757D",
-    fontFamily: "System",
-  },
-  usePlanButton: {
-    backgroundColor: "#9BDF11",
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 15,
-    flexDirection: "row",
-    alignItems: "center",
-  },
-  usePlanButtonText: {
-    color: "#000000",
-    fontSize: 12,
-    fontWeight: "600",
-    fontFamily: "System",
-  },
-  emptyState: {
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 60,
-    paddingHorizontal: 20,
-  },
-  emptyTitle: {
-    fontSize: 18,
-    fontWeight: "600",
-    color: "#000000",
-    fontFamily: "System",
-    marginTop: 16,
-    marginBottom: 8,
-    textAlign: "center",
-  },
-  emptyText: {
-    fontSize: 14,
-    color: "#6C757D",
-    fontFamily: "System",
-    textAlign: "center",
-    lineHeight: 20,
-    marginBottom: 20,
-  },
-  clearFiltersButton: {
-    backgroundColor: "#9BDF11",
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-    borderRadius: 25,
-  },
-  clearFiltersText: {
-    color: "#000000",
-    fontSize: 16,
-    fontWeight: "600",
-    fontFamily: "System",
-  },
-  loadingContainer: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  loadingText: {
-    marginTop: 10,
-    fontSize: 16,
-    color: "#6C757D",
-    fontFamily: "System",
-  },
+  container: { flex: 1, backgroundColor: "#FFFFFF" },
+  header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 20, paddingTop: 50, paddingBottom: 15, backgroundColor: "#FFFFFF", borderBottomWidth: 2, borderBottomColor: "#6A9AA9" },
+  backButton: { padding: 8 },
+  headerTitle: { fontSize: 24, color: "#1a1a1a", fontFamily: "System", textAlign: "center" },
+  tabsContainer: { flexDirection: "row", backgroundColor: "#fff", borderBottomWidth: 1, borderBottomColor: "#E5E7EB" },
+  tab: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", paddingVertical: 16, gap: 8 },
+  tabActive: { borderBottomWidth: 2, borderBottomColor: "#6A9AA9" },
+  tabText: { fontSize: 14, color: "#666", fontFamily: "System", fontWeight: "500" },
+  tabTextActive: { color: "#6A9AA9", fontWeight: "600" },
+  scrollView: { flex: 1 },
+  searchSection: { backgroundColor: "#FFFFFF", padding: 15, marginBottom: 1 },
+  searchRow: { flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 12 },
+  searchInputContainer: { flex: 1, flexDirection: "row", alignItems: "center", backgroundColor: "#FFFFFF", borderRadius: 30, borderWidth: 2, borderColor: "#6A9AA9", paddingHorizontal: 15, paddingVertical: 6 },
+  searchIcon: { marginRight: 8 },
+  searchInput: { flex: 1, fontSize: 14, color: "#000", paddingVertical: 4, fontFamily: "System" },
+  categoriesContainer: { marginBottom: 12 },
+  categoryButton: { backgroundColor: "white", borderWidth: 2, borderColor: "#6A9AA9", borderRadius: 20, paddingHorizontal: 16, paddingVertical: 8, marginRight: 8 },
+  categoryButtonActive: { backgroundColor: "#9BDF11", borderColor: "#9BDF11" },
+  categoryText: { fontSize: 14, color: "#000000", fontFamily: "System", fontWeight: "600" },
+  categoryTextActive: { color: "#000000" },
+  sectionDivider: { height: 2, backgroundColor: "#C2DAE2", marginHorizontal: -15, marginTop: 12 },
+  recipesSection: { backgroundColor: "#FFFFFF", padding: 15, paddingBottom: 20 },
+  recipesGrid: { flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between" },
+  recipeColumn: { width: "48%", marginBottom: 16 },
+  recipeCard: { backgroundColor: "#C2DAE2", borderRadius: 16, overflow: "hidden", shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 3.84, elevation: 5, height: 280 },
+  imageContainer: { position: "relative" },
+  recipeImage: { width: "100%", height: 120 },
+  recipeBadges: { position: "absolute", top: 8, left: 8, flexDirection: "column", gap: 4 },
+  ratingBadge: { flexDirection: "row", alignItems: "center", backgroundColor: "rgba(255, 255, 255, 0.9)", paddingHorizontal: 6, paddingVertical: 3, borderRadius: 10 },
+  ratingText: { fontSize: 10, fontWeight: "bold", color: "#000000", fontFamily: "System", marginLeft: 2 },
+  difficultyBadge: { paddingHorizontal: 6, paddingVertical: 3, borderRadius: 10 },
+  difficultyText: { fontSize: 9, fontWeight: "bold", color: "#FFFFFF", fontFamily: "System" },
+  bookmarkButton: { position: "absolute", top: 8, right: 8, width: 32, height: 32, borderRadius: 16, backgroundColor: "rgba(255, 255, 255, 0.9)", alignItems: "center", justifyContent: "center" },
+  recipeContent: { padding: 12, flex: 1, justifyContent: "space-between" },
+  recipeName: { fontSize: 14, fontWeight: "600", color: "#212529", marginBottom: 4, fontFamily: "System" },
+  recipeCategory: { fontSize: 11, color: "#6A9AA9", fontFamily: "System", fontStyle: "italic", marginBottom: 6 },
+  recipeDetails: { flexDirection: "row", alignItems: "center", flexWrap: "wrap" },
+  recipeCalories: { fontSize: 12, color: "#000000", marginLeft: 2, marginRight: 8 },
+  timeIcon: { marginLeft: 4 },
+  recipeTime: { fontSize: 12, color: "#6C757D", marginLeft: 2 },
+  viewButton: { backgroundColor: "#9BDF11", paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, alignItems: "center", marginTop: 8 },
+  viewButtonText: { color: "#000000", fontSize: 12 },
+  plansSection: { backgroundColor: "#FFFFFF", padding: 15, paddingBottom: 20 },
+  plansList: { gap: 16 },
+  planCard: { backgroundColor: "#C2DAE2", borderRadius: 16, overflow: "hidden", flexDirection: "row", height: 140 },
+  planImage: { width: 120, height: "100%" },
+  planContent: { flex: 1, padding: 12, justifyContent: "space-between" },
+  planName: { fontSize: 16, fontWeight: "600", color: "#212529", marginBottom: 4 },
+  planDescription: { fontSize: 12, color: "#6A9AA9", marginBottom: 8 },
+  planDetails: { flexDirection: "row", justifyContent: "space-between", marginBottom: 8 },
+  planDetail: { flexDirection: "row", alignItems: "center", gap: 4 },
+  planDetailText: { fontSize: 10, color: "#000000" },
+  planFooter: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  planDate: { fontSize: 10, color: "#6C757D" },
+  usePlanButton: { backgroundColor: "#9BDF11", paddingHorizontal: 12, paddingVertical: 6, borderRadius: 15, flexDirection: "row", alignItems: "center", gap: 4 },
+  usePlanButtonText: { color: "#000000", fontSize: 12, fontWeight: "600" },
+  emptyState: { alignItems: "center", justifyContent: "center", paddingVertical: 60, paddingHorizontal: 20 },
+  emptyTitle: { fontSize: 18, fontWeight: "600", color: "#000000", marginTop: 16, marginBottom: 8, textAlign: "center" },
+  emptyText: { fontSize: 14, color: "#6C757D", textAlign: "center", marginBottom: 20 },
+  clearFiltersButton: { backgroundColor: "#9BDF11", paddingHorizontal: 20, paddingVertical: 12, borderRadius: 25 },
+  clearFiltersText: { color: "#000000", fontSize: 16, fontWeight: "600" },
+  loadingContainer: { flex: 1, justifyContent: "center", alignItems: "center" },
+  loadingText: { marginTop: 10, fontSize: 16, color: "#6C757D" },
 });
