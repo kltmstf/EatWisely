@@ -1,4 +1,3 @@
-// app/services/rationPlanService.ts
 import { 
   doc, 
   setDoc,
@@ -9,14 +8,12 @@ import {
   query,
   where,
   getDocs,
-  Timestamp,
   addDoc,
-  orderBy
+  orderBy,
+  Timestamp
 } from 'firebase/firestore';
 import { db } from '@/app/firebase/config';
-import { recipeService } from './recipeService';
 
-// Типы
 export interface Meal {
   id: string;
   recipeId: string;
@@ -38,8 +35,8 @@ export interface Meal {
 }
 
 export interface DayPlan {
-  day: number; // 1-7 для недельных планов
-  date?: string; // Конкретная дата, если назначено
+  day: number;
+  date?: string;
   meals: Meal[];
   stats: {
     totalCalories: number;
@@ -47,8 +44,8 @@ export interface DayPlan {
     totalFats: number;
     totalCarbs: number;
     totalCookingTime: number;
-    completedMeals?: number; // Добавляем необязательное поле
-    totalMeals?: number; // Добавляем необязательное поле
+    completedMeals?: number;
+    totalMeals?: number;
   };
 }
 
@@ -61,7 +58,7 @@ export interface RationPlan {
   days: DayPlan[];
   isTemplate: boolean;
   usedDates: string[];
-  status: 'active' | 'completed' | 'archived';
+  status: 'active' | 'completed' | 'archived' | 'draft' | 'template';
   category: string;
   totalCalories: number;
   totalDuration: string;
@@ -71,971 +68,318 @@ export interface RationPlan {
   startDate?: string;
   endDate?: string;
   planDate?: string;
-  userInfo?: {
-    name: string;
-    dailyCalories: number;
-    dietType: string;
-    targetProteins: number;
-    targetFats: number;
-    targetCarbs: number;
-  };
-  stats?: { // Делаем необязательным, чтобы не было конфликта
-    totalCalories: number;
-    totalProteins: number;
-    totalFats: number;
-    totalCarbs: number;
-    totalCookingTime: number;
-    completedMeals?: number;
-    totalMeals?: number;
-  };
-  timestamps?: {
-    createdAt: string;
-    updatedAt: string;
-  };
-  isDailyPlan?: boolean;
-  sourceDay?: string;
 }
-
-// Тип для фильтрации планов
-export interface PlanFilters {
-  category?: string;
-  status?: string;
-  isTemplate?: boolean;
-  startDate?: string;
-  endDate?: string;
-  searchTerm?: string;
-}
-
-// Вспомогательные функции
-const formatDate = (date: Date): string => {
-  return date.toISOString().split('T')[0];
-};
-
-const getDayOfWeek = (date: Date): string => {
-  const days = ['воскресенье', 'понедельник', 'вторник', 'среда', 'четверг', 'пятница', 'суббота'];
-  return days[date.getDay()];
-};
 
 class RationPlanService {
   
-  /**
-   * СОЗДАТЬ НОВЫЙ ПЛАН РАЦИОНА
-   */
-  async createRationPlan(userId: string, planData: Partial<RationPlan>): Promise<string> {
+  async getActivePlanForToday(userId: string): Promise<RationPlan | null> {
     try {
-      const now = new Date().toISOString();
-      
-      const newPlan: RationPlan = {
-        userId,
-        title: planData.title || 'Новый рацион',
-        description: planData.description || '',
-        type: planData.type || 'daily',
-        days: planData.days || [],
-        isTemplate: planData.isTemplate !== undefined ? planData.isTemplate : true,
-        usedDates: planData.usedDates || [],
-        status: planData.status || 'active',
-        category: planData.category || 'Общее',
-        totalCalories: planData.totalCalories || this.calculateTotalCalories(planData.days || []),
-        totalDuration: planData.totalDuration || (planData.type === 'weekly' ? '7 дней' : '1 день'),
-        mealsCount: planData.mealsCount || this.calculateMealsCount(planData.days || []),
-        createdAt: now,
-        updatedAt: now,
-        ...planData
-      };
-
-      // Если у плана есть свой ID (например, из home.tsx), используем его
-      if (newPlan.id) {
-        const planId = newPlan.id;
-        
-        // Сохраняем в подколлекции пользователя
-        const planRef = doc(db, 'users', userId, 'ration_plans', planId);
-        
-        // Удаляем id из данных для Firestore
-        const { id, ...planWithoutId } = newPlan;
-        
-        await setDoc(planRef, planWithoutId);
-        console.log('✅ Ration plan created with custom ID:', planId);
-        
-        return planId;
-      } else {
-        // Создаем документ с авто-генерацией ID
-        const docRef = await addDoc(collection(db, 'users', userId, 'ration_plans'), newPlan);
-        console.log('✅ Ration plan created with auto ID:', docRef.id);
-        
-        return docRef.id;
-      }
-      
-    } catch (error) {
-      console.error('❌ Error creating ration plan:', error);
-      throw error;
-    }
-  }
-  
-  /**
-   * ОБНОВИТЬ ПЛАН РАЦИОНА
-   */
-  async updateRationPlan(userId: string, planId: string, planData: any): Promise<{ success: boolean, planId: string }> {
-    try {
-      // Сохраняем в подколлекции пользователя
-      const planRef = doc(db, 'users', userId, 'ration_plans', planId);
-      
-      // Проверяем, существует ли план
-      const planSnap = await getDoc(planRef);
-      
-      const now = new Date().toISOString();
-      const updateData = {
-        ...planData,
-        userId,
-        updatedAt: now,
-        // Если это новый документ, добавляем дату создания
-        ...(!planSnap.exists() && { createdAt: now })
-      };
-      
-      // Удаляем id если он есть в данных
-      const { id, ...dataWithoutId } = updateData;
-      
-      await setDoc(planRef, dataWithoutId, { merge: true });
-      console.log('✅ Ration plan updated:', planId);
-      
-      return { success: true, planId };
-      
-    } catch (error) {
-      console.error('❌ Error updating ration plan:', error);
-      throw error;
-    }
-  }
-  
-  /**
-   * ПОЛУЧИТЬ ПЛАНЫ ПОЛЬЗОВАТЕЛЯ С ФИЛЬТРАЦИЕЙ
-   */
-  async getUserRationPlans(userId: string, filters?: PlanFilters): Promise<RationPlan[]> {
-    try {
-      let q = query(
-        collection(db, 'users', userId, 'ration_plans')
+      const today = new Date().toISOString().split('T')[0];
+      const q = query(
+        collection(db, 'ration_plans'),
+        where('userId', '==', userId),
+        where('status', '==', 'active'),
+        where('startDate', '==', today)
       );
-
-      // Добавляем фильтры
-      if (filters?.isTemplate !== undefined) {
-        q = query(q, where('isTemplate', '==', filters.isTemplate));
+      const snapshot = await getDocs(q);
+      if (snapshot.empty) return null;
+      const data = snapshot.docs[0].data();
+      return { id: snapshot.docs[0].id, ...data } as RationPlan;
+    } catch (error) {
+      console.error('Ошибка получения активного плана:', error);
+      return null;
+    }
+  }
+  
+  async hasActivePlanForToday(userId: string): Promise<boolean> {
+    const activePlan = await this.getActivePlanForToday(userId);
+    return activePlan !== null;
+  }
+  
+  async activatePlanOnDate(planId: string, userId: string, date: Date): Promise<boolean> {
+    try {
+      const dateStr = date.toISOString().split('T')[0];
+      console.log(`🔄 Активация плана ${planId} на дату ${dateStr}`);
+      
+      const planRef = doc(db, 'ration_plans', planId);
+      const planSnap = await getDoc(planRef);
+      if (!planSnap.exists()) throw new Error('План не найден');
+      
+      const planData = planSnap.data();
+      
+      // Деактивируем все активные планы на эту дату
+      const activeQuery = query(
+        collection(db, 'ration_plans'),
+        where('userId', '==', userId),
+        where('status', '==', 'active'),
+        where('startDate', '==', dateStr)
+      );
+      const activeSnapshot = await getDocs(activeQuery);
+      
+      for (const doc of activeSnapshot.docs) {
+        await updateDoc(doc.ref, { 
+          status: 'completed',
+          updatedAt: new Date().toISOString()
+        });
       }
       
-      if (filters?.status) {
-        q = query(q, where('status', '==', filters.status));
-      }
+      // Получаем meals из плана
+      const meals = planData.days?.[0]?.meals || [];
+      const mealsCount = meals.length;
+      const totalCalories = meals.reduce((sum: number, m: any) => sum + (m.calories || 0), 0);
+      const totalProteins = meals.reduce((sum: number, m: any) => sum + (m.proteins || 0), 0);
+      const totalFats = meals.reduce((sum: number, m: any) => sum + (m.fats || 0), 0);
+      const totalCarbs = meals.reduce((sum: number, m: any) => sum + (m.carbohydrates || 0), 0);
       
-      if (filters?.category && filters.category !== 'Все') {
-        q = query(q, where('category', '==', filters.category));
-      }
-
-      q = query(q, orderBy('createdAt', 'desc'));
+      // Сохраняем в daily_plans для страницы Home
+      const dailyPlanRef = doc(db, 'users', userId, 'daily_plans', dateStr);
+      await setDoc(dailyPlanRef, {
+        meals: meals,
+        stats: {
+          totalCalories,
+          totalProteins,
+          totalFats,
+          totalCarbs,
+          totalCookingTime: meals.reduce((sum: number, m: any) => sum + (m.cookingTime || 0), 0)
+        },
+        updatedAt: new Date().toISOString()
+      });
       
+      // Активируем выбранный план
+      await updateDoc(planRef, {
+        status: 'active',
+        startDate: dateStr,
+        endDate: dateStr,
+        isTemplate: false,
+        mealsCount: mealsCount,
+        totalCalories: totalCalories,
+        updatedAt: new Date().toISOString()
+      });
+      
+      console.log(`✅ План активирован на ${dateStr}, блюд: ${mealsCount}`);
+      return true;
+      
+    } catch (error) {
+      console.error('❌ Ошибка активации плана на дату:', error);
+      return false;
+    }
+  }
+  
+  async deactivateAllActivePlansForToday(userId: string): Promise<void> {
+    try {
+      const today = new Date().toISOString().split('T')[0];
+      const q = query(
+        collection(db, 'ration_plans'),
+        where('userId', '==', userId),
+        where('status', '==', 'active'),
+        where('startDate', '==', today)
+      );
       const snapshot = await getDocs(q);
       
-      let plans = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      } as RationPlan));
-
-      // Фильтрация по датам (локально, так как Firestore не поддерживает сложные запросы с диапазонами)
-      if (filters?.startDate) {
-        plans = plans.filter(plan => {
-          if (!plan.startDate) return true;
-          return plan.startDate >= filters.startDate!;
+      for (const doc of snapshot.docs) {
+        await updateDoc(doc.ref, { 
+          status: 'completed',
+          updatedAt: new Date().toISOString()
         });
       }
-      
-      if (filters?.endDate) {
-        plans = plans.filter(plan => {
-          if (!plan.endDate) return true;
-          return plan.endDate <= filters.endDate!;
-        });
-      }
-
-      // Поиск по тексту (локально)
-      if (filters?.searchTerm) {
-        const searchTerm = filters.searchTerm.toLowerCase();
-        plans = plans.filter(plan => 
-          plan.title.toLowerCase().includes(searchTerm) ||
-          plan.description.toLowerCase().includes(searchTerm)
-        );
-      }
-      
-      return plans;
-      
+      console.log(`✅ Деактивировано ${snapshot.size} планов на сегодня`);
     } catch (error) {
-      console.error('❌ Error getting user ration plans:', error);
-      return [];
+      console.error('Ошибка деактивации:', error);
     }
   }
   
-  /**
-   * ПОЛУЧИТЬ ПЛАН ПО ID
-   */
-  async getRationPlanById(planId: string, userId?: string): Promise<RationPlan | null> {
-    try {
-      let planRef;
-      
-      if (userId) {
-        // Ищем в подколлекции пользователя
-        planRef = doc(db, 'users', userId, 'ration_plans', planId);
-      } else {
-        // Ищем в общей коллекции (для обратной совместимости)
-        planRef = doc(db, 'ration_plans', planId);
-      }
-      
-      const planSnap = await getDoc(planRef);
-      
-      if (planSnap.exists()) {
-        return {
-          id: planSnap.id,
-          ...planSnap.data()
-        } as RationPlan;
-      }
-      return null;
-      
-    } catch (error) {
-      console.error('❌ Error getting ration plan:', error);
-      return null;
-    }
+  async deactivateAllActivePlans(userId: string): Promise<void> {
+    await this.deactivateAllActivePlansForToday(userId);
   }
   
-  /**
-   * ОБНОВИТЬ ПЛАН
-   */
-  async updateRationPlanById(planId: string, updates: Partial<RationPlan>): Promise<void> {
-    try {
-      const planRef = doc(db, 'ration_plans', planId);
-      const updatedData = {
-        ...updates,
-        updatedAt: new Date().toISOString()
-      };
-      
-      await updateDoc(planRef, updatedData);
-      console.log('✅ Ration plan updated:', planId);
-      
-    } catch (error) {
-      console.error('❌ Error updating ration plan:', error);
-      throw error;
-    }
+  async getActivePlan(userId: string): Promise<RationPlan | null> {
+    return this.getActivePlanForToday(userId);
   }
   
-  /**
-   * УДАЛИТЬ ПЛАН
-   */
-  async deleteRationPlan(planId: string, userId?: string): Promise<void> {
-    try {
-      if (userId) {
-        // Удаляем из подколлекции пользователя
-        await deleteDoc(doc(db, 'users', userId, 'ration_plans', planId));
-      } else {
-        // Удаляем из общей коллекции (для обратной совместимости)
-        await deleteDoc(doc(db, 'ration_plans', planId));
-      }
-      console.log('✅ Ration plan deleted:', planId);
-      
-    } catch (error) {
-      console.error('❌ Error deleting ration plan:', error);
-      throw error;
-    }
-  }
-  
-  /**
-   * ИСПОЛЬЗОВАТЬ ПЛАН В УКАЗАННЫЕ ДАТЫ
-   */
-  async useRationPlan(
-    planId: string, 
-    userId: string,
-    startDate: Date, 
-    endDate: Date,
-    markAsUsed: boolean = true
-  ): Promise<void> {
-    try {
-      const plan = await this.getRationPlanById(planId, userId);
-      if (!plan) throw new Error('Plan not found');
-      
-      const updates: Partial<RationPlan> = {
-        startDate: startDate.toISOString(),
-        endDate: endDate.toISOString(),
-        isTemplate: false,
-        status: 'active'
-      };
-      
-      if (markAsUsed) {
-        // Генерируем все даты между startDate и endDate
-        const dates: string[] = [];
-        const currentDate = new Date(startDate);
-        
-        while (currentDate <= endDate) {
-          dates.push(formatDate(currentDate));
-          currentDate.setDate(currentDate.getDate() + 1);
-        }
-        
-        updates.usedDates = [...(plan.usedDates || []), ...dates];
-      }
-      
-      await this.updateRationPlan(userId, planId, updates);
-      
-      // Создаем дневные планы для каждого дня
-      await this.createDailyPlansFromRation(plan, startDate, endDate);
-      
-    } catch (error) {
-      console.error('❌ Error using ration plan:', error);
-      throw error;
-    }
-  }
-  
-  /**
-   * СОЗДАТЬ ДНЕВНЫЕ ПЛАНЫ ИЗ РАЦИОНА
-   */
-  private async createDailyPlansFromRation(
-    plan: RationPlan, 
-    startDate: Date, 
-    endDate: Date
-  ): Promise<void> {
-    try {
-      const currentDate = new Date(startDate);
-      let dayIndex = 0;
-      
-      while (currentDate <= endDate) {
-        const dayPlan = plan.type === 'weekly' 
-          ? plan.days[dayIndex % 7] 
-          : plan.days[0];
-        
-        if (dayPlan) {
-          const dailyPlan = {
-            userId: plan.userId,
-            date: formatDate(currentDate),
-            dayOfWeek: getDayOfWeek(currentDate),
-            meals: dayPlan.meals,
-            stats: dayPlan.stats,
-            sourcePlanId: plan.id,
-            timestamps: {
-              createdAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString()
-            }
-          };
-          
-          const planId = `${plan.userId}_${formatDate(currentDate)}`;
-          await setDoc(doc(db, 'ration_plan_days', planId), dailyPlan);
-        }
-        
-        currentDate.setDate(currentDate.getDate() + 1);
-        dayIndex++;
-      }
-      
-    } catch (error) {
-      console.error('❌ Error creating daily plans:', error);
-    }
-  }
-  
-  /**
-   * ДОБАВИТЬ БЛЮДО К ПЛАНУ
-   */
-  async addMealToPlan(planId: string, meal: Meal, dayIndex: number = 0, userId?: string): Promise<void> {
-    try {
-      const plan = await this.getRationPlanById(planId, userId);
-      if (!plan) throw new Error('Plan not found');
-      
-      const updatedDays = [...plan.days];
-      if (!updatedDays[dayIndex]) {
-        updatedDays[dayIndex] = {
-          day: dayIndex + 1,
-          meals: [],
-          stats: { totalCalories: 0, totalProteins: 0, totalFats: 0, totalCarbs: 0, totalCookingTime: 0 }
-        };
-      }
-      
-      updatedDays[dayIndex].meals.push(meal);
-      updatedDays[dayIndex].stats = this.calculateDayStats(updatedDays[dayIndex].meals);
-      
-      if (userId) {
-        await this.updateRationPlan(userId, planId, {
-          days: updatedDays,
-          totalCalories: this.calculateTotalCalories(updatedDays),
-          mealsCount: this.calculateMealsCount(updatedDays)
-        });
-      } else {
-        await this.updateRationPlanById(planId, {
-          days: updatedDays,
-          totalCalories: this.calculateTotalCalories(updatedDays),
-          mealsCount: this.calculateMealsCount(updatedDays)
-        });
-      }
-      
-    } catch (error) {
-      console.error('❌ Error adding meal to plan:', error);
-      throw error;
-    }
-  }
-  
-  /**
-   * УДАЛИТЬ БЛЮДО ИЗ ПЛАНА
-   */
-  async removeMealFromPlan(planId: string, mealId: string, dayIndex: number, userId?: string): Promise<void> {
-    try {
-      const plan = await this.getRationPlanById(planId, userId);
-      if (!plan || !plan.days[dayIndex]) throw new Error('Plan or day not found');
-      
-      const updatedDays = [...plan.days];
-      updatedDays[dayIndex].meals = updatedDays[dayIndex].meals.filter(meal => meal.id !== mealId);
-      updatedDays[dayIndex].stats = this.calculateDayStats(updatedDays[dayIndex].meals);
-      
-      if (userId) {
-        await this.updateRationPlan(userId, planId, {
-          days: updatedDays,
-          totalCalories: this.calculateTotalCalories(updatedDays),
-          mealsCount: this.calculateMealsCount(updatedDays)
-        });
-      } else {
-        await this.updateRationPlanById(planId, {
-          days: updatedDays,
-          totalCalories: this.calculateTotalCalories(updatedDays),
-          mealsCount: this.calculateMealsCount(updatedDays)
-        });
-      }
-      
-    } catch (error) {
-      console.error('❌ Error removing meal from plan:', error);
-      throw error;
-    }
-  }
-  
-  /**
-   * ОБНОВИТЬ КАТЕГОРИЮ БЛЮДА В ПЛАНЕ
-   */
-  async updateMealCategory(
-    planId: string, 
-    dayIndex: number, 
-    mealIndex: number, 
-    newCategory: string,
-    userId?: string
-  ): Promise<void> {
-    try {
-      const plan = await this.getRationPlanById(planId, userId);
-      if (!plan || !plan.days[dayIndex] || !plan.days[dayIndex].meals[mealIndex]) {
-        throw new Error('Plan, day or meal not found');
-      }
-      
-      const updatedDays = [...plan.days];
-      updatedDays[dayIndex].meals[mealIndex].category = newCategory;
-      
-      if (userId) {
-        await this.updateRationPlan(userId, planId, {
-          days: updatedDays
-        });
-      } else {
-        await this.updateRationPlanById(planId, {
-          days: updatedDays
-        });
-      }
-      
-    } catch (error) {
-      console.error('❌ Error updating meal category:', error);
-      throw error;
-    }
-  }
-  
-  /**
-   * ПЕРЕМЕСТИТЬ БЛЮДО МЕЖДУ ДНЯМИ
-   */
-  async moveMealBetweenDays(
-    planId: string,
-    sourceDayIndex: number,
-    targetDayIndex: number,
-    mealId: string,
-    userId?: string
-  ): Promise<void> {
-    try {
-      const plan = await this.getRationPlanById(planId, userId);
-      if (!plan) throw new Error('Plan not found');
-      
-      const updatedDays = [...plan.days];
-      
-      // Находим блюдо
-      const mealIndex = updatedDays[sourceDayIndex].meals.findIndex(meal => meal.id === mealId);
-      if (mealIndex === -1) throw new Error('Meal not found');
-      
-      // Удаляем из исходного дня
-      const [mealToMove] = updatedDays[sourceDayIndex].meals.splice(mealIndex, 1);
-      
-      // Добавляем в целевой день
-      if (!updatedDays[targetDayIndex]) {
-        updatedDays[targetDayIndex] = {
-          day: targetDayIndex + 1,
-          meals: [],
-          stats: { totalCalories: 0, totalProteins: 0, totalFats: 0, totalCarbs: 0, totalCookingTime: 0 }
-        };
-      }
-      updatedDays[targetDayIndex].meals.push(mealToMove);
-      
-      // Пересчитываем статистику для обоих дней
-      updatedDays[sourceDayIndex].stats = this.calculateDayStats(updatedDays[sourceDayIndex].meals);
-      updatedDays[targetDayIndex].stats = this.calculateDayStats(updatedDays[targetDayIndex].meals);
-      
-      if (userId) {
-        await this.updateRationPlan(userId, planId, {
-          days: updatedDays,
-          totalCalories: this.calculateTotalCalories(updatedDays),
-          mealsCount: this.calculateMealsCount(updatedDays)
-        });
-      } else {
-        await this.updateRationPlanById(planId, {
-          days: updatedDays,
-          totalCalories: this.calculateTotalCalories(updatedDays),
-          mealsCount: this.calculateMealsCount(updatedDays)
-        });
-      }
-      
-    } catch (error) {
-      console.error('❌ Error moving meal between days:', error);
-      throw error;
-    }
-  }
-  
-  /**
-   * СОЗДАТЬ ПЛАН ИЗ ШАБЛОНА
-   */
-  async createPlanFromTemplate(templateId: string, userId: string): Promise<string> {
-    try {
-      const template = await this.getRationPlanById(templateId, userId);
-      if (!template) throw new Error('Template not found');
-      
-      const newPlan: Partial<RationPlan> = {
-        title: `Копия: ${template.title}`,
-        description: template.description,
-        type: template.type,
-        days: template.days,
-        isTemplate: true,
-        category: template.category,
-        totalCalories: template.totalCalories,
-        totalDuration: template.totalDuration,
-        mealsCount: template.mealsCount
-      };
-      
-      return await this.createRationPlan(userId, newPlan);
-      
-    } catch (error) {
-      console.error('❌ Error creating plan from template:', error);
-      throw error;
-    }
-  }
-  
-  /**
-   * КОПИРОВАТЬ ПЛАН (СОЗДАНИЕ ДУБЛИКАТА)
-   */
-  async duplicatePlan(planId: string, userId: string, newTitle?: string): Promise<string> {
-    try {
-      const originalPlan = await this.getRationPlanById(planId, userId);
-      if (!originalPlan) throw new Error('Plan not found');
-      
-      const newPlanData: Partial<RationPlan> = {
-        title: newTitle || `Копия: ${originalPlan.title}`,
-        description: originalPlan.description,
-        type: originalPlan.type,
-        days: originalPlan.days,
-        isTemplate: originalPlan.isTemplate,
-        category: originalPlan.category,
-        totalCalories: originalPlan.totalCalories,
-        totalDuration: originalPlan.totalDuration,
-        mealsCount: originalPlan.mealsCount
-      };
-      
-      return await this.createRationPlan(userId, newPlanData);
-      
-    } catch (error) {
-      console.error('❌ Error duplicating plan:', error);
-      throw error;
-    }
-  }
-  
-  /**
-   * ПОЛУЧИТЬ АКТИВНЫЕ ПЛАНЫ (ТЕ, КОТОРЫЕ ИСПОЛЬЗУЮТСЯ СЕЙЧАС)
-   */
   async getActivePlans(userId: string): Promise<RationPlan[]> {
-    try {
-      const today = formatDate(new Date());
-      
-      const plansQuery = query(
-        collection(db, 'users', userId, 'ration_plans'),
-        where('status', '==', 'active'),
-        where('isTemplate', '==', false),
-        where('startDate', '<=', today),
-        where('endDate', '>=', today)
-      );
-      
-      const snapshot = await getDocs(plansQuery);
-      
-      return snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      } as RationPlan));
-      
-    } catch (error) {
-      console.error('❌ Error getting active plans:', error);
-      return [];
-    }
+    const activePlan = await this.getActivePlanForToday(userId);
+    return activePlan ? [activePlan] : [];
   }
   
-  /**
-   * ПОЛУЧИТЬ ШАБЛОНЫ ПОЛЬЗОВАТЕЛЯ
-   */
   async getUserTemplates(userId: string): Promise<RationPlan[]> {
     try {
-      const templatesQuery = query(
-        collection(db, 'users', userId, 'ration_plans'),
+      const q = query(
+        collection(db, 'ration_plans'),
+        where('userId', '==', userId),
         where('isTemplate', '==', true),
         orderBy('createdAt', 'desc')
       );
-      
-      const snapshot = await getDocs(templatesQuery);
-      
-      return snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      } as RationPlan));
-      
+      const snapshot = await getDocs(q);
+      return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as RationPlan));
     } catch (error) {
-      console.error('❌ Error getting user templates:', error);
+      console.error('Ошибка получения шаблонов:', error);
       return [];
     }
   }
   
-  /**
-   * ПОЛУЧИТЬ ЗАВЕРШЕННЫЕ ПЛАНЫ
-   */
-  async getCompletedPlans(userId: string): Promise<RationPlan[]> {
+  async getUserRationPlans(userId: string): Promise<RationPlan[]> {
     try {
-      const completedQuery = query(
-        collection(db, 'users', userId, 'ration_plans'),
-        where('status', '==', 'completed'),
+      const q = query(
+        collection(db, 'ration_plans'),
+        where('userId', '==', userId),
         orderBy('createdAt', 'desc')
       );
-      
-      const snapshot = await getDocs(completedQuery);
-      
-      return snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      } as RationPlan));
-      
+      const snapshot = await getDocs(q);
+      const plans = snapshot.docs.map(doc => {
+        const data = doc.data();
+        // Пересчитываем mealsCount если нужно
+        const mealsCount = data.days?.[0]?.meals?.length || data.mealsCount || 0;
+        return { 
+          id: doc.id, 
+          ...data,
+          mealsCount: mealsCount
+        } as RationPlan;
+      });
+      return plans;
     } catch (error) {
-      console.error('❌ Error getting completed plans:', error);
+      console.error('Ошибка получения планов:', error);
       return [];
     }
   }
   
-  /**
-   * ПОЛУЧИТЬ ПЛАНЫ ПО КАТЕГОРИИ
-   */
-  async getPlansByCategory(userId: string, category: string): Promise<RationPlan[]> {
+  async getRationPlanById(planId: string, userId?: string): Promise<RationPlan | null> {
     try {
-      const categoryQuery = query(
-        collection(db, 'users', userId, 'ration_plans'),
-        where('category', '==', category),
-        orderBy('createdAt', 'desc')
-      );
-      
-      const snapshot = await getDocs(categoryQuery);
-      
-      return snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      } as RationPlan));
-      
-    } catch (error) {
-      console.error(`❌ Error getting plans by category ${category}:`, error);
-      return [];
-    }
-  }
-  
-  /**
-   * ПОИСК ПЛАНОВ ПО НАЗВАНИЮ ИЛИ ОПИСАНИИ
-   */
-  async searchPlans(userId: string, searchTerm: string): Promise<RationPlan[]> {
-    try {
-      // Firestore не поддерживает полнотекстовый поиск, поэтому фильтруем локально
-      const allPlans = await this.getUserRationPlans(userId);
-      
-      const lowerSearchTerm = searchTerm.toLowerCase();
-      
-      return allPlans.filter(plan => 
-        plan.title.toLowerCase().includes(lowerSearchTerm) ||
-        plan.description.toLowerCase().includes(lowerSearchTerm)
-      );
-      
-    } catch (error) {
-      console.error('❌ Error searching plans:', error);
-      return [];
-    }
-  }
-  
-  /**
-   * ПОМЕТИТЬ ПЛАН КАК ЗАВЕРШЕННЫЙ
-   */
-  async markPlanAsCompleted(planId: string, userId?: string): Promise<void> {
-    if (userId) {
-      await this.updateRationPlan(userId, planId, { status: 'completed' });
-    } else {
-      await this.updateRationPlanById(planId, { status: 'completed' });
-    }
-  }
-  
-  /**
-   * ПОМЕТИТЬ ПЛАН КАК АРХИВНЫЙ
-   */
-  async markPlanAsArchived(planId: string, userId?: string): Promise<void> {
-    if (userId) {
-      await this.updateRationPlan(userId, planId, { status: 'archived' });
-    } else {
-      await this.updateRationPlanById(planId, { status: 'archived' });
-    }
-  }
-  
-  /**
-   * ПОЛУЧИТЬ ДНЕВНОЙ ПЛАН ПО ДАТЕ
-   */
-  async getDailyPlanByDate(userId: string, date: string): Promise<any | null> {
-    try {
-      const planId = `${userId}_${date}`;
-      const planRef = doc(db, 'ration_plan_days', planId);
+      const planRef = doc(db, 'ration_plans', planId);
       const planSnap = await getDoc(planRef);
-      
       if (planSnap.exists()) {
-        return {
-          id: planSnap.id,
-          ...planSnap.data()
-        };
+        const plan = { id: planSnap.id, ...planSnap.data() } as RationPlan;
+        if (userId && plan.userId !== userId) return null;
+        return plan;
       }
       return null;
-      
     } catch (error) {
-      console.error('❌ Error getting daily plan by date:', error);
+      console.error('Ошибка получения плана:', error);
       return null;
     }
   }
   
-  /**
-   * ПОЛУЧИТЬ ДНЕВНЫЕ ПЛАНЫ НА ПЕРИОД
-   */
-  async getDailyPlansForPeriod(userId: string, startDate: string, endDate: string): Promise<any[]> {
+  async createRationPlan(userId: string, planData: Partial<RationPlan>): Promise<string> {
     try {
-      // Создаем массив дат для запроса
-      const dates: string[] = [];
-      const currentDate = new Date(startDate);
-      const endDateObj = new Date(endDate);
+      const now = new Date().toISOString();
+      const meals = planData.days?.[0]?.meals || [];
+      const mealsCount = meals.length;
+      const totalCalories = meals.reduce((sum: number, m: any) => sum + (m.calories || 0), 0);
       
-      while (currentDate <= endDateObj) {
-        dates.push(formatDate(currentDate));
-        currentDate.setDate(currentDate.getDate() + 1);
-      }
-      
-      // Получаем планы для каждой даты
-      const plansPromises = dates.map(date => this.getDailyPlanByDate(userId, date));
-      const plans = await Promise.all(plansPromises);
-      
-      return plans.filter(plan => plan !== null);
-      
-    } catch (error) {
-      console.error('❌ Error getting daily plans for period:', error);
-      return [];
-    }
-  }
-  
-  /**
-   * АВТОМАТИЧЕСКОЕ СОЗДАНИЕ ПЛАНА НА НЕДЕЛЮ
-   */
-  async createWeeklyPlanFromTemplates(
-    userId: string,
-    templates: RationPlan[],
-    startDate: Date
-  ): Promise<string> {
-    try {
-      if (templates.length === 0) throw new Error('No templates provided');
-      
-      const days: DayPlan[] = [];
-      
-      // Создаем 7 дней, циклически используя шаблоны
-      for (let i = 0; i < 7; i++) {
-        const templateIndex = i % templates.length;
-        const template = templates[templateIndex];
-        
-        days.push({
-          day: i + 1,
-          meals: template.days[0]?.meals || [],
-          stats: template.days[0]?.stats || { totalCalories: 0, totalProteins: 0, totalFats: 0, totalCarbs: 0, totalCookingTime: 0 }
-        });
-      }
-      
-      const totalCalories = this.calculateTotalCalories(days);
-      const mealsCount = this.calculateMealsCount(days);
-      
-      const newPlan: Partial<RationPlan> = {
-        title: `Авто-неделя (${formatDate(startDate)})`,
-        description: 'Автоматически сгенерированный недельный план',
-        type: 'weekly',
-        days,
-        isTemplate: false,
-        category: 'Общее',
-        totalCalories,
-        totalDuration: '7 дней',
-        mealsCount
+      const newPlan = {
+        userId,
+        title: planData.title || 'Новый шаблон',
+        description: planData.description || '',
+        type: 'daily',
+        days: planData.days || [],
+        isTemplate: true,
+        usedDates: [],
+        status: 'template',
+        category: planData.category || 'Шаблон',
+        totalCalories: totalCalories,
+        totalDuration: '1 день',
+        mealsCount: mealsCount,
+        createdAt: now,
+        updatedAt: now,
       };
       
-      const planId = await this.createRationPlan(userId, newPlan);
-      
-      // Используем план на указанную дату
-      const endDate = new Date(startDate);
-      endDate.setDate(endDate.getDate() + 6);
-      await this.useRationPlan(planId, userId, startDate, endDate, false);
-      
-      return planId;
+      const docRef = await addDoc(collection(db, 'ration_plans'), newPlan);
+      console.log('✅ Шаблон создан:', docRef.id);
+      return docRef.id;
       
     } catch (error) {
-      console.error('❌ Error creating weekly plan from templates:', error);
+      console.error('Ошибка создания шаблона:', error);
       throw error;
     }
   }
   
-  /**
-   * ПОЛУЧИТЬ СТАТИСТИКУ ПОЛЬЗОВАТЕЛЯ
-   */
-  async getUserStats(userId: string): Promise<{
-    totalPlans: number;
-    totalTemplates: number;
-    activePlans: number;
-    completedPlans: number;
-    totalMeals: number;
-    averageCalories: number;
-    mostUsedCategory: string;
-  }> {
-    try {
-      const allPlans = await this.getUserRationPlans(userId);
-      
-      const totalPlans = allPlans.length;
-      const totalTemplates = allPlans.filter(plan => plan.isTemplate).length;
-      const activePlans = allPlans.filter(plan => plan.status === 'active').length;
-      const completedPlans = allPlans.filter(plan => plan.status === 'completed').length;
-      
-      const totalMeals = allPlans.reduce((sum, plan) => sum + plan.mealsCount, 0);
-      const totalCalories = allPlans.reduce((sum, plan) => sum + plan.totalCalories, 0);
-      const averageCalories = totalPlans > 0 ? Math.round(totalCalories / totalPlans) : 0;
-      
-      // Находим наиболее используемую категорию
-      const categoryCounts: Record<string, number> = {};
-      allPlans.forEach(plan => {
-        categoryCounts[plan.category] = (categoryCounts[plan.category] || 0) + 1;
-      });
-      
-      const mostUsedCategory = Object.keys(categoryCounts).reduce((a, b) => 
-        categoryCounts[a] > categoryCounts[b] ? a : b, 'Общее'
-      );
-      
-      return {
-        totalPlans,
-        totalTemplates,
-        activePlans,
-        completedPlans,
-        totalMeals,
-        averageCalories,
-        mostUsedCategory
-      };
-      
-    } catch (error) {
-      console.error('❌ Error getting user stats:', error);
-      return {
-        totalPlans: 0,
-        totalTemplates: 0,
-        activePlans: 0,
-        completedPlans: 0,
-        totalMeals: 0,
-        averageCalories: 0,
-        mostUsedCategory: 'Общее'
-      };
-    }
-  }
-  
-  /**
-   * СОХРАНИТЬ ДНЕВНОЙ РАЦИОН КАК ШАБЛОН
-   * (Специальная функция для home.tsx)
-   */
   async saveDailyRationAsTemplate(userId: string, dailyPlanData: any): Promise<string> {
     try {
       const today = new Date().toISOString().split('T')[0];
-      const planId = `saved_plan_${userId}_${today}`;
+      const meals = dailyPlanData.meals || [];
+      const mealsCount = meals.length;
       
-      const templateData = {
-        id: planId,
-        userId,
+      const templateData: Partial<RationPlan> = {
+        userId: userId,
         title: dailyPlanData.title || `Рацион на ${today}`,
         description: dailyPlanData.description || `Дневной рацион от ${new Date().toLocaleDateString('ru-RU')}`,
         type: 'daily',
         days: [{
           day: 1,
-          meals: dailyPlanData.meals || [],
+          meals: meals,
           stats: dailyPlanData.stats || {
-            totalCalories: 0,
-            totalProteins: 0,
-            totalFats: 0,
-            totalCarbs: 0,
-            totalCookingTime: 0
+            totalCalories: meals.reduce((sum: number, m: any) => sum + (m.calories || 0), 0),
+            totalProteins: meals.reduce((sum: number, m: any) => sum + (m.proteins || 0), 0),
+            totalFats: meals.reduce((sum: number, m: any) => sum + (m.fats || 0), 0),
+            totalCarbs: meals.reduce((sum: number, m: any) => sum + (m.carbohydrates || 0), 0),
+            totalCookingTime: meals.reduce((sum: number, m: any) => sum + (m.cookingTime || 0), 0)
           }
         }],
         isTemplate: true,
         usedDates: [],
-        status: 'active',
+        status: 'template',
         category: dailyPlanData.category || 'Дневной рацион',
-        totalCalories: dailyPlanData.stats?.totalCalories || 0,
+        totalCalories: meals.reduce((sum: number, m: any) => sum + (m.calories || 0), 0),
         totalDuration: '1 день',
-        mealsCount: dailyPlanData.meals?.length || 0,
-        planDate: today,
-        userInfo: dailyPlanData.userInfo,
-        stats: dailyPlanData.stats,
-        timestamps: dailyPlanData.timestamps,
-        isDailyPlan: true,
-        sourceDay: today
+        mealsCount: mealsCount,
+        planDate: today
       };
       
-      return (await this.updateRationPlan(userId, planId, templateData)).planId;
+      return await this.createRationPlan(userId, templateData);
       
     } catch (error) {
-      console.error('❌ Error saving daily ration as template:', error);
+      console.error('❌ Ошибка сохранения шаблона:', error);
       throw error;
     }
   }
   
-  /**
-   * РАССЧИТАТЬ СТАТИСТИКУ ДНЯ
-   */
-  private calculateDayStats(meals: Meal[]) {
-    return meals.reduce((stats, meal) => ({
-      totalCalories: stats.totalCalories + (meal.calories || 0),
-      totalProteins: stats.totalProteins + (meal.proteins || 0),
-      totalFats: stats.totalFats + (meal.fats || 0),
-      totalCarbs: stats.totalCarbs + (meal.carbohydrates || 0),
-      totalCookingTime: stats.totalCookingTime + (meal.cookingTime || 0)
-    }), {
-      totalCalories: 0,
-      totalProteins: 0,
-      totalFats: 0,
-      totalCarbs: 0,
-      totalCookingTime: 0
-    });
+  async updateRationPlan(userId: string, planId: string, planData: any): Promise<boolean> {
+    try {
+      const planRef = doc(db, 'ration_plans', planId);
+      const meals = planData.days?.[0]?.meals || [];
+      const mealsCount = meals.length;
+      const totalCalories = meals.reduce((sum: number, m: any) => sum + (m.calories || 0), 0);
+      
+      const updateData = {
+        ...planData,
+        mealsCount: mealsCount,
+        totalCalories: totalCalories,
+        updatedAt: new Date().toISOString()
+      };
+      delete updateData.id;
+      delete updateData.userId;
+      delete updateData.createdAt;
+      
+      await updateDoc(planRef, updateData);
+      console.log('✅ План обновлен:', planId);
+      return true;
+      
+    } catch (error) {
+      console.error('Ошибка обновления:', error);
+      return false;
+    }
   }
   
-  /**
-   * РАССЧИТАТЬ ОБЩУЮ КАЛОРИЙНОСТЬ
-   */
-  private calculateTotalCalories(days: DayPlan[]): number {
-    return days.reduce((total, day) => total + (day.stats?.totalCalories || 0), 0);
+  async deleteRationPlan(planId: string, userId?: string): Promise<void> {
+    try {
+      if (userId) {
+        const plan = await this.getRationPlanById(planId, userId);
+        if (!plan) throw new Error('План не найден');
+      }
+      await deleteDoc(doc(db, 'ration_plans', planId));
+      console.log('✅ План удален:', planId);
+    } catch (error) {
+      console.error('Ошибка удаления:', error);
+      throw error;
+    }
   }
   
-  /**
-   * РАССЧИТАТЬ ОБЩЕЕ КОЛИЧЕСТВО ПРИЕМОВ ПИЩИ
-   */
-  private calculateMealsCount(days: DayPlan[]): number {
-    return days.reduce((total, day) => total + (day.meals?.length || 0), 0);
+  async useRationPlan(planId: string, userId: string, startDate: Date, endDate: Date, markAsUsed: boolean): Promise<void> {
+    await this.activatePlanOnDate(planId, userId, startDate);
+  }
+  
+  async activatePlan(planId: string, userId: string): Promise<boolean> {
+    return this.activatePlanOnDate(planId, userId, new Date());
   }
 }
 
-// Экспорт синглтона
 export const rationPlanService = new RationPlanService();

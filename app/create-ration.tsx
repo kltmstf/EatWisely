@@ -1,5 +1,5 @@
 // app/create-ration.tsx
-import { useRouter } from "expo-router";
+import { useRouter, useLocalSearchParams } from "expo-router";
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   ScrollView,
@@ -18,10 +18,11 @@ import {
 } from "react-native";
 import { Ionicons, Feather, MaterialIcons } from "@expo/vector-icons";
 import { recipeService } from "@/app/services/recipeService";
-import { rationPlanService } from "@/app/services/rationPlanService";
+import { rationPlanService, RationPlan } from "@/app/services/rationPlanService";
 import { getAuth } from "firebase/auth";
+import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { db } from '@/app/firebase/config';
 
-// Типы данных
 type Recipe = {
   id: string;
   title: string;
@@ -69,9 +70,7 @@ const CARD_WIDTH = (width - 48) / 2;
 
 const getCategoryName = (mealType?: string): string => {
   if (!mealType) return "Другое";
-  
   const normalizedMealType = String(mealType).trim().toLowerCase();
-  
   switch (normalizedMealType) {
     case "breakfast":
     case "завтрак":
@@ -92,24 +91,22 @@ const getCategoryName = (mealType?: string): string => {
 
 const formatCookingTime = (time: any): string => {
   if (!time) return "20 мин";
-  
   if (typeof time === 'number') {
     const minutes = Math.abs(time);
     const lastDigit = minutes % 10;
     const lastTwoDigits = minutes % 100;
-
     if (lastTwoDigits >= 11 && lastTwoDigits <= 14) return `${minutes} минут`;
     if (lastDigit === 1) return `${minutes} минута`;
     if (lastDigit >= 2 && lastDigit <= 4) return `${minutes} минуты`;
     return `${minutes} минут`;
   }
-  
   const strTime = String(time);
   return strTime;
 };
 
 export default function CreateRationScreen() {
   const router = useRouter();
+  const { planId, mode, source } = useLocalSearchParams();
   const [recipes, setRecipes] = useState<Recipe[]>([]);
   const [filteredRecipes, setFilteredRecipes] = useState<Recipe[]>([]);
   const [displayedRecipes, setDisplayedRecipes] = useState<Recipe[]>([]);
@@ -118,38 +115,125 @@ export default function CreateRationScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("Все");
-
+  const [editingPlanId, setEditingPlanId] = useState<string | null>(null);
+  const [isViewMode, setIsViewMode] = useState(false);
   const [page, setPage] = useState(0);
   const [hasMore, setHasMore] = useState(true);
   const scrollViewRef = useRef<ScrollView>(null);
-
-  // Состояние для шаблона рациона
   const [templateTitle, setTemplateTitle] = useState("");
   const [templateDescription, setTemplateDescription] = useState("");
   const [selectedMeals, setSelectedMeals] = useState<MealInTemplate[]>([]);
   const [showAddRecipeModal, setShowAddRecipeModal] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [recipeSource, setRecipeSource] = useState<"all" | "user">("all");
+  const [loadingPlan, setLoadingPlan] = useState(false);
+  const [planStatus, setPlanStatus] = useState<"template" | "active" | "completed" | "archived" | "draft">("template");
+  const [isActivePlan, setIsActivePlan] = useState(false);
 
-  // Загрузка рецептов
-  const loadRecipes = useCallback(async (loadMore = false) => {
-    if (loadMore && loadingMore) return;
-    if (!loadMore && loading && recipes.length > 0) return;
+  useEffect(() => {
+    if ((mode === "edit" || mode === "view") && planId) {
+      loadPlanForEditing();
+      if (mode === "view") {
+        setIsViewMode(true);
+      }
+    }
+  }, [planId, mode]);
 
+  const loadPlanForEditing = async () => {
     try {
-      if (loadMore) {
-        setLoadingMore(true);
-      } else {
-        setLoading(true);
+      setLoadingPlan(true);
+      const auth = getAuth();
+      const userId = auth.currentUser?.uid;
+      if (!userId) {
+        Alert.alert("Ошибка", "Пользователь не авторизован");
+        return;
       }
 
-      let loadedRecipes: any[] = [];
+      const today = new Date().toISOString().split('T')[0];
+      const activePlan = await rationPlanService.getActivePlanForToday(userId);
       
+      let loadedMeals: MealInTemplate[] = [];
+      
+      // Если это активный план на сегодня, загружаем из daily_plans
+      if (activePlan && activePlan.id === planId) {
+        console.log("Загрузка активного плана из daily_plans");
+        setIsActivePlan(true);
+        const dailyPlanRef = doc(db, 'users', userId, 'daily_plans', today);
+        const dailyPlanSnap = await getDoc(dailyPlanRef);
+        
+        if (dailyPlanSnap.exists()) {
+          const dailyMeals = dailyPlanSnap.data().meals || [];
+          loadedMeals = dailyMeals.map((meal: any) => ({
+            id: meal.id || `meal-${Date.now()}-${Math.random()}`,
+            recipeId: meal.recipeId || meal.id,
+            title: meal.name || meal.title || "Без названия",
+            category: meal.category || "Обед",
+            calories: meal.calories || 0,
+            proteins: meal.proteins || 0,
+            fats: meal.fats || 0,
+            carbohydrates: meal.carbohydrates || 0,
+            weight: meal.weight || "250г",
+            cookingTime: meal.cookingTime || 20,
+            difficultyLevel: meal.difficultyLevel || "Легко",
+            imageUrl: meal.imageUrl,
+          }));
+          
+          setTemplateTitle(activePlan.title || "Активный план");
+          setTemplateDescription(activePlan.description || "Активный план на сегодня");
+          setEditingPlanId(activePlan.id || null);
+          setPlanStatus(activePlan.status as any || "active");
+        }
+      } else {
+        setIsActivePlan(false);
+        // Обычная загрузка из ration_plans
+        const plan = await rationPlanService.getRationPlanById(planId as string, userId);
+        if (plan && plan.days && plan.days[0] && plan.days[0].meals) {
+          loadedMeals = plan.days[0].meals.map((meal: any) => ({
+            id: meal.id || `meal-${Date.now()}-${Math.random()}`,
+            recipeId: meal.recipeId || meal.id,
+            title: meal.name || meal.title || "Без названия",
+            category: meal.category || "Обед",
+            calories: meal.calories || 0,
+            proteins: meal.proteins || 0,
+            fats: meal.fats || 0,
+            carbohydrates: meal.carbohydrates || 0,
+            weight: meal.weight || "250г",
+            cookingTime: meal.cookingTime || 20,
+            difficultyLevel: meal.difficultyLevel || "Легко",
+            imageUrl: meal.imageUrl,
+          }));
+          setTemplateTitle(plan.title || "План питания");
+          setTemplateDescription(plan.description || "Описание плана");
+          setEditingPlanId(plan.id || null);
+          setPlanStatus((plan.status as any) || "template");
+        } else if (plan) {
+          setTemplateTitle(plan.title || "План питания");
+          setTemplateDescription(plan.description || "Описание плана");
+          setEditingPlanId(plan.id || null);
+          setPlanStatus((plan.status as any) || "template");
+        }
+      }
+      
+      setSelectedMeals(loadedMeals);
+      
+      if (mode !== "view" && loadedMeals.length > 0) {
+        Alert.alert("Успех", `План загружен для ${mode === "edit" ? "редактирования" : "просмотра"} (${loadedMeals.length} блюд)`);
+      }
+    } catch (error) {
+      console.error("Error loading plan:", error);
+      Alert.alert("Ошибка", "Не удалось загрузить план");
+    } finally {
+      setLoadingPlan(false);
+    }
+  };
+
+  const loadRecipes = useCallback(async () => {
+    try {
+      setLoading(true);
+      let loadedRecipes: any[] = [];
       if (recipeSource === "user") {
-        // Загрузка рецептов пользователя
         loadedRecipes = await recipeService.getUserRecipes();
       } else {
-        // Загрузка всех публичных рецептов
         loadedRecipes = await recipeService.getPublicRecipes();
       }
       
@@ -183,20 +267,18 @@ export default function CreateRationScreen() {
       });
 
       setRecipes(formattedRecipes);
-      
-      if (!loadMore) {
-        setPage(0);
-        setHasMore(true);
-      }
+      setPage(0);
+      setHasMore(true);
+      setDisplayedRecipes([]);
     } catch (error) {
       console.error("Ошибка загрузки рецептов:", error);
       Alert.alert("Ошибка", "Не удалось загрузить рецепты");
     } finally {
       setLoading(false);
-      setLoadingMore(false);
       setRefreshing(false);
+      setLoadingMore(false);
     }
-  }, [loading, loadingMore, recipes.length, recipeSource]);
+  }, [recipeSource]);
 
   useEffect(() => {
     loadRecipes();
@@ -204,14 +286,12 @@ export default function CreateRationScreen() {
 
   useEffect(() => {
     let filtered = [...recipes];
-
     if (selectedCategory !== "Все") {
       filtered = filtered.filter(recipe => {
         const recipeCategory = getCategoryName(recipe.mealType);
         return recipeCategory.toLowerCase() === selectedCategory.toLowerCase();
       });
     }
-
     if (searchQuery.trim() !== "") {
       const query = searchQuery.toLowerCase();
       filtered = filtered.filter(recipe =>
@@ -219,40 +299,30 @@ export default function CreateRationScreen() {
         recipe.description?.toLowerCase().includes(query)
       );
     }
-
     setFilteredRecipes(filtered);
     setPage(0);
     setHasMore(filtered.length > RECIPES_PER_PAGE);
+    setDisplayedRecipes(filtered.slice(0, RECIPES_PER_PAGE));
   }, [recipes, selectedCategory, searchQuery]);
-
-  useEffect(() => {
-    const startIndex = 0;
-    const endIndex = (page + 1) * RECIPES_PER_PAGE;
-    const newDisplayed = filteredRecipes.slice(startIndex, endIndex);
-    
-    setDisplayedRecipes(newDisplayed);
-    
-    if (endIndex >= filteredRecipes.length) {
-      setHasMore(false);
-    } else {
-      setHasMore(true);
-    }
-  }, [filteredRecipes, page]);
 
   const loadMoreRecipes = () => {
     if (!hasMore || loadingMore) return;
-    setPage(prev => prev + 1);
     setLoadingMore(true);
+    const nextPage = page + 1;
+    const endIndex = (nextPage + 1) * RECIPES_PER_PAGE;
+    const newDisplayed = filteredRecipes.slice(0, endIndex);
+    setDisplayedRecipes(newDisplayed);
+    setPage(nextPage);
+    if (endIndex >= filteredRecipes.length) {
+      setHasMore(false);
+    }
+    setLoadingMore(false);
   };
 
   const handleScroll = (event: any) => {
     const { layoutMeasurement, contentOffset, contentSize } = event.nativeEvent;
     const paddingToBottom = 100;
-    
-    const isCloseToBottom = 
-      layoutMeasurement.height + contentOffset.y >= 
-      contentSize.height - paddingToBottom;
-
+    const isCloseToBottom = layoutMeasurement.height + contentOffset.y >= contentSize.height - paddingToBottom;
     if (isCloseToBottom && hasMore && !loadingMore) {
       loadMoreRecipes();
     }
@@ -260,15 +330,9 @@ export default function CreateRationScreen() {
 
   const getTimestamp = (dateInput: any): number => {
     if (!dateInput) return 0;
-    
-    if (typeof dateInput === 'string') {
-      return new Date(dateInput).getTime();
-    } else if (dateInput?.seconds) {
-      return dateInput.seconds * 1000;
-    } else if (typeof dateInput === 'number') {
-      return dateInput;
-    }
-    
+    if (typeof dateInput === 'string') return new Date(dateInput).getTime();
+    if (dateInput?.seconds) return dateInput.seconds * 1000;
+    if (typeof dateInput === 'number') return dateInput;
     return 0;
   };
 
@@ -279,7 +343,6 @@ export default function CreateRationScreen() {
 
   const getDifficultyColor = (difficulty?: string) => {
     if (!difficulty) return "#6A9AA9";
-    
     const lowerDifficulty = difficulty.toLowerCase();
     if (lowerDifficulty.includes("легк") || lowerDifficulty === "easy") return "#4CAF50";
     if (lowerDifficulty.includes("средн") || lowerDifficulty === "medium") return "#FF9800";
@@ -290,16 +353,11 @@ export default function CreateRationScreen() {
   const getCategoryIcon = (mealType?: string) => {
     const category = getCategoryName(mealType);
     switch (category.toLowerCase()) {
-      case "завтрак":
-        return "sunny-outline";
-      case "обед":
-        return "restaurant-outline";
-      case "ужин":
-        return "moon-outline";
-      case "перекусы":
-        return "cafe-outline";
-      default:
-        return "fast-food-outline";
+      case "завтрак": return "sunny-outline";
+      case "обед": return "restaurant-outline";
+      case "ужин": return "moon-outline";
+      case "перекусы": return "cafe-outline";
+      default: return "fast-food-outline";
     }
   };
 
@@ -315,23 +373,23 @@ export default function CreateRationScreen() {
     }
   };
 
-  // Функция добавления рецепта в шаблон
   const handleAddToTemplate = (recipe: Recipe) => {
-    // Проверяем, не добавлен ли уже этот рецепт
+    if (isViewMode) {
+      Alert.alert("Внимание", "В режиме просмотра нельзя редактировать план");
+      return;
+    }
     const isAlreadyAdded = selectedMeals.some(meal => meal.recipeId === recipe.id);
-    
     if (isAlreadyAdded) {
       Alert.alert("Внимание", "Этот рецепт уже добавлен в шаблон");
       return;
     }
-
     const newMeal: MealInTemplate = {
       id: `meal-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
       recipeId: recipe.id,
       title: recipe.title,
       category: getCategoryName(recipe.mealType),
       calories: recipe.calories || 300,
-      proteins: 0, // Можно добавить реальные данные, если они есть
+      proteins: 0,
       fats: 0,
       carbohydrates: 0,
       weight: "250г",
@@ -339,96 +397,181 @@ export default function CreateRationScreen() {
       difficultyLevel: recipe.difficultyLevel || recipe.difficulty || "Легко",
       imageUrl: recipe.imageUrl,
     };
-
     setSelectedMeals(prev => [...prev, newMeal]);
     Alert.alert("Успех", "Рецепт добавлен в шаблон");
   };
 
-  // Функция удаления рецепта из шаблона
   const handleRemoveFromTemplate = (mealId: string) => {
+    if (isViewMode) {
+      Alert.alert("Внимание", "В режиме просмотра нельзя редактировать план");
+      return;
+    }
     setSelectedMeals(prev => prev.filter(meal => meal.id !== mealId));
   };
 
-  // Функция сохранения шаблона
+  const handleArchivePlan = async () => {
+    if (!editingPlanId) return;
+    
+    try {
+      const auth = getAuth();
+      const userId = auth.currentUser?.uid;
+      if (!userId) return;
+      
+      const newStatus = planStatus === "archived" ? "template" : "archived";
+      await rationPlanService.updateRationPlan(userId, editingPlanId, { status: newStatus });
+      setPlanStatus(newStatus);
+      Alert.alert("Успех", newStatus === "archived" ? "План архивирован" : "План восстановлен из архива");
+    } catch (error) {
+      console.error("Ошибка архивации:", error);
+      Alert.alert("Ошибка", "Не удалось изменить статус плана");
+    }
+  };
+
   const handleSaveTemplate = async () => {
     if (!templateTitle.trim()) {
       Alert.alert("Ошибка", "Введите название шаблона");
       return;
     }
-
     if (selectedMeals.length === 0) {
       Alert.alert("Ошибка", "Добавьте хотя бы один рецепт в шаблон");
       return;
     }
-
     try {
       setIsSaving(true);
       const auth = getAuth();
       const userId = auth.currentUser?.uid;
-
       if (!userId) {
         Alert.alert("Ошибка", "Пользователь не авторизован");
         return;
       }
 
-      const templateData = {
-        title: templateTitle,
-        description: templateDescription || `Шаблон рациона от ${new Date().toLocaleDateString("ru-RU")}`,
-        meals: selectedMeals.map(meal => ({
-          id: meal.id,
-          recipeId: meal.recipeId,
-          name: meal.title,
-          category: meal.category,
-          calories: meal.calories,
-          proteins: meal.proteins,
-          fats: meal.fats,
-          carbohydrates: meal.carbohydrates,
-          weight: meal.weight,
-          cookingTime: meal.cookingTime,
-          difficultyLevel: meal.difficultyLevel,
-          imageUrl: meal.imageUrl,
-        })),
-        stats: {
+      if (editingPlanId) {
+        // Обновление существующего плана
+        const updateData = {
+          title: templateTitle,
+          description: templateDescription || `Шаблон рациона от ${new Date().toLocaleDateString("ru-RU")}`,
+          days: [{
+            day: 1,
+            meals: selectedMeals.map(meal => ({
+              id: meal.id,
+              recipeId: meal.recipeId,
+              name: meal.title,
+              category: meal.category,
+              calories: meal.calories,
+              proteins: meal.proteins || 0,
+              fats: meal.fats || 0,
+              carbohydrates: meal.carbohydrates || 0,
+              weight: meal.weight,
+              cookingTime: meal.cookingTime,
+              difficultyLevel: meal.difficultyLevel,
+              imageUrl: meal.imageUrl,
+            })),
+            stats: {
+              totalCalories: selectedMeals.reduce((sum, meal) => sum + meal.calories, 0),
+              totalProteins: selectedMeals.reduce((sum, meal) => sum + meal.proteins, 0),
+              totalFats: selectedMeals.reduce((sum, meal) => sum + meal.fats, 0),
+              totalCarbs: selectedMeals.reduce((sum, meal) => sum + meal.carbohydrates, 0),
+              totalCookingTime: selectedMeals.reduce((sum, meal) => sum + (meal.cookingTime || 0), 0),
+            }
+          }],
           totalCalories: selectedMeals.reduce((sum, meal) => sum + meal.calories, 0),
-          totalProteins: selectedMeals.reduce((sum, meal) => sum + meal.proteins, 0),
-          totalFats: selectedMeals.reduce((sum, meal) => sum + meal.fats, 0),
-          totalCarbs: selectedMeals.reduce((sum, meal) => sum + meal.carbohydrates, 0),
-          totalCookingTime: selectedMeals.reduce((sum, meal) => sum + (meal.cookingTime || 0), 0),
-        },
-        createdAt: new Date().toISOString(),
-        userId: userId,
-      };
-
-      await rationPlanService.createRationPlan(userId, templateData);
-
-      Alert.alert(
-        "Успех!",
-        "Шаблон рациона успешно сохранен",
-        [
-          { text: "Продолжить", style: "default" },
-          { 
-            text: "Посмотреть", 
-            onPress: () => router.push("/saved-plans") 
-          },
-        ]
-      );
-
-      // Очищаем форму
-      setTemplateTitle("");
-      setTemplateDescription("");
-      setSelectedMeals([]);
+          mealsCount: selectedMeals.length,
+          updatedAt: new Date().toISOString()
+        };
+        
+        await rationPlanService.updateRationPlan(userId, editingPlanId, updateData);
+        
+        // Если это активный план, обновляем daily_plans
+        if (isActivePlan) {
+          const today = new Date().toISOString().split('T')[0];
+          const dailyPlanRef = doc(db, 'users', userId, 'daily_plans', today);
+          await setDoc(dailyPlanRef, {
+            meals: selectedMeals.map(meal => ({
+              id: meal.id,
+              category: meal.category,
+              name: meal.title,
+              calories: meal.calories,
+              proteins: meal.proteins || 0,
+              fats: meal.fats || 0,
+              carbohydrates: meal.carbohydrates || 0,
+              weight: meal.weight,
+              marked: false,
+              cookingTime: meal.cookingTime,
+              difficultyLevel: meal.difficultyLevel,
+              rating: 0,
+              recipeId: meal.recipeId,
+              isCustom: false,
+              canBeRemoved: true,
+              imageUrl: meal.imageUrl,
+              addedAt: new Date().toISOString()
+            })),
+            updatedAt: new Date().toISOString()
+          }, { merge: true });
+        }
+        
+        Alert.alert("Успех!", "План успешно обновлен");
+      } else {
+        // Создание нового плана
+        const templateData = {
+          title: templateTitle,
+          description: templateDescription || `Шаблон рациона от ${new Date().toLocaleDateString("ru-RU")}`,
+          type: 'daily' as const,
+          days: [{
+            day: 1,
+            meals: selectedMeals.map(meal => ({
+              id: meal.id,
+              recipeId: meal.recipeId,
+              name: meal.title,
+              category: meal.category,
+              calories: meal.calories,
+              proteins: meal.proteins || 0,
+              fats: meal.fats || 0,
+              carbohydrates: meal.carbohydrates || 0,
+              weight: meal.weight,
+              cookingTime: meal.cookingTime,
+              difficultyLevel: meal.difficultyLevel,
+              imageUrl: meal.imageUrl,
+            })),
+            stats: {
+              totalCalories: selectedMeals.reduce((sum, meal) => sum + meal.calories, 0),
+              totalProteins: selectedMeals.reduce((sum, meal) => sum + meal.proteins, 0),
+              totalFats: selectedMeals.reduce((sum, meal) => sum + meal.fats, 0),
+              totalCarbs: selectedMeals.reduce((sum, meal) => sum + meal.carbohydrates, 0),
+              totalCookingTime: selectedMeals.reduce((sum, meal) => sum + (meal.cookingTime || 0), 0),
+            }
+          }],
+          isTemplate: true,
+          category: "Шаблон",
+          totalCalories: selectedMeals.reduce((sum, meal) => sum + meal.calories, 0),
+          totalDuration: "1 день",
+          mealsCount: selectedMeals.length,
+          status: "template" as const,
+        };
+        
+        await rationPlanService.createRationPlan(userId, templateData);
+        Alert.alert("Успех!", "Шаблон рациона успешно сохранен");
+      }
+      
+      goBack();
       
     } catch (error: any) {
-      console.error("❌ Error saving template:", error);
+      console.error("Error saving template:", error);
       Alert.alert("Ошибка", error.message || "Не удалось сохранить шаблон");
     } finally {
       setIsSaving(false);
     }
   };
 
+  const goBack = () => {
+    if (source === "profile") {
+      router.push("/(tabs)/profile?tab=saved");
+    } else {
+      router.push("/saved-plans");
+    }
+  };
+
   const FooterLoader = () => {
     if (!loadingMore) return null;
-    
     return (
       <View style={styles.footerLoader}>
         <ActivityIndicator size="small" color="#6A9AA9" />
@@ -447,35 +590,21 @@ export default function CreateRationScreen() {
     return (
       <View key={recipe.id} style={styles.recipeColumn}>
         <TouchableOpacity
-          style={styles.recipeCard}
+          style={[styles.recipeCard, isViewMode && styles.disabledCard]}
           onPress={() => handleAddToTemplate(recipe)}
-          disabled={isAdded}
+          disabled={isViewMode || isAdded}
         >
           <View style={styles.imageContainer}>
             {imageUrl ? (
-              <Image
-                source={{ uri: imageUrl }}
-                style={styles.recipeImage}
-                resizeMode="cover"
-              />
+              <Image source={{ uri: imageUrl }} style={styles.recipeImage} resizeMode="cover" />
             ) : (
               <View style={styles.recipeImagePlaceholder}>
-                <Ionicons 
-                  name={getCategoryIcon(recipe.mealType)} 
-                  size={32} 
-                  color="#6A9AA9" 
-                />
+                <Ionicons name={getCategoryIcon(recipe.mealType)} size={32} color="#6A9AA9" />
               </View>
             )}
-            
             <View style={styles.recipeBadges}>
-              <View style={[
-                styles.difficultyBadge,
-                { backgroundColor: getDifficultyColor(difficulty) }
-              ]}>
-                <Text style={styles.difficultyText}>
-                  {difficulty}
-                </Text>
+              <View style={[styles.difficultyBadge, { backgroundColor: getDifficultyColor(difficulty) }]}>
+                <Text style={styles.difficultyText}>{difficulty}</Text>
               </View>
               {recipe.isPublic && (
                 <View style={styles.publicBadge}>
@@ -489,52 +618,37 @@ export default function CreateRationScreen() {
               )}
             </View>
           </View>
-
           <View style={styles.recipeContent}>
             <View style={styles.recipeInfo}>
-              <Text
-                style={styles.recipeName}
-                numberOfLines={2}
-                ellipsizeMode="tail"
-              >
+              <Text style={styles.recipeName} numberOfLines={2} ellipsizeMode="tail">
                 {recipe.title}
               </Text>
-              <Text style={styles.recipeCategory}>
-                {categoryName}
-              </Text>
+              <Text style={styles.recipeCategory}>{categoryName}</Text>
               <View style={styles.recipeDetails}>
-                {recipe.calories && recipe.calories > 0 ? (
-                  <Text style={styles.recipeCalories}>
-                    {recipe.calories} ккал
-                  </Text>
-                ) : null}
-                <MaterialIcons
-                  name="access-time"
-                  size={12}
-                  color="#6A9AA9"
-                  style={styles.timeIcon}
-                />
-                <Text style={styles.recipeTime}>
-                  {cookingTime}
-                </Text>
+                {recipe.calories && recipe.calories > 0 && (
+                  <Text style={styles.recipeCalories}>{recipe.calories} ккал</Text>
+                )}
+                <MaterialIcons name="access-time" size={12} color="#6A9AA9" style={styles.timeIcon} />
+                <Text style={styles.recipeTime}>{cookingTime}</Text>
               </View>
             </View>
-            <TouchableOpacity
-              style={[styles.selectButton, isAdded && styles.selectButtonAdded]}
-              onPress={() => handleAddToTemplate(recipe)}
-              disabled={isAdded}
-            >
-              <Text style={[styles.selectButtonText, isAdded && styles.selectButtonTextAdded]}>
-                {isAdded ? "Добавлено" : "Добавить"}
-              </Text>
-            </TouchableOpacity>
+            {!isViewMode && (
+              <TouchableOpacity
+                style={[styles.selectButton, isAdded && styles.selectButtonAdded]}
+                onPress={() => handleAddToTemplate(recipe)}
+                disabled={isAdded}
+              >
+                <Text style={[styles.selectButtonText, isAdded && styles.selectButtonTextAdded]}>
+                  {isAdded ? "Добавлено" : "Добавить"}
+                </Text>
+              </TouchableOpacity>
+            )}
           </View>
         </TouchableOpacity>
       </View>
     );
   };
 
-  // Компонент модального окна выбора источника рецептов
   const AddRecipeModal = () => (
     <Modal
       animationType="slide"
@@ -546,36 +660,22 @@ export default function CreateRationScreen() {
         <View style={styles.modalContainer}>
           <View style={styles.modalHeader}>
             <Text style={styles.modalTitle}>Добавить рецепт в шаблон</Text>
-            <TouchableOpacity
-              onPress={() => setShowAddRecipeModal(false)}
-              style={styles.modalCloseButton}
-            >
+            <TouchableOpacity onPress={() => setShowAddRecipeModal(false)} style={styles.modalCloseButton}>
               <Ionicons name="close" size={24} color="#666" />
             </TouchableOpacity>
           </View>
-
           <ScrollView style={styles.modalContent}>
-            <Text style={styles.modalText}>
-              Откуда вы хотите добавить рецепт?
-            </Text>
-
+            <Text style={styles.modalText}>Откуда вы хотите добавить рецепт?</Text>
             <TouchableOpacity
               style={[styles.modalOption, recipeSource === "all" && styles.modalOptionActive]}
-              onPress={() => {
-                setRecipeSource("all");
-                setShowAddRecipeModal(false);
-              }}
+              onPress={() => { setRecipeSource("all"); setShowAddRecipeModal(false); }}
             >
               <Ionicons name="search" size={24} color="#6A9AA9" />
               <Text style={styles.modalOptionText}>Из всех рецептов</Text>
             </TouchableOpacity>
-
             <TouchableOpacity
               style={[styles.modalOption, recipeSource === "user" && styles.modalOptionActive]}
-              onPress={() => {
-                setRecipeSource("user");
-                setShowAddRecipeModal(false);
-              }}
+              onPress={() => { setRecipeSource("user"); setShowAddRecipeModal(false); }}
             >
               <Ionicons name="book" size={24} color="#FF9800" />
               <Text style={styles.modalOptionText}>Из моих рецептов</Text>
@@ -586,19 +686,35 @@ export default function CreateRationScreen() {
     </Modal>
   );
 
+  if (loadingPlan) {
+    return (
+      <View style={styles.loadingContainer}>
+        <ActivityIndicator size="large" color="#6A9AA9" />
+        <Text style={styles.loadingText}>Загрузка плана...</Text>
+      </View>
+    );
+  }
+
   return (
     <View style={styles.container}>
       <StatusBar barStyle="dark-content" />
-
       <View style={styles.simpleHeader}>
-        <TouchableOpacity 
-          style={styles.backButton}
-          onPress={() => router.back()}
-        >
+        <TouchableOpacity style={styles.backButton} onPress={goBack}>
           <Ionicons name="arrow-back" size={24} color="#1a1a1a" />
         </TouchableOpacity>
-        <Text style={styles.simpleHeaderText}>Создать шаблон рациона</Text>
-        <View style={styles.addRecipePlaceholder} />
+        <Text style={styles.simpleHeaderText}>
+          {isViewMode ? "Просмотр плана" : (editingPlanId ? "Редактировать шаблон" : "Создать шаблон рациона")}
+        </Text>
+        {!isViewMode && editingPlanId && (
+          <TouchableOpacity style={styles.archiveButton} onPress={handleArchivePlan}>
+            <Ionicons 
+              name={planStatus === "archived" ? "archive-outline" : "archive"} 
+              size={24} 
+              color={planStatus === "archived" ? "#4CAF50" : "#FF9800"} 
+            />
+          </TouchableOpacity>
+        )}
+        {!isViewMode && !editingPlanId && <View style={styles.addRecipePlaceholder} />}
       </View>
 
       <ScrollView
@@ -606,51 +722,59 @@ export default function CreateRationScreen() {
         style={styles.scrollView}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.scrollContent}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={onRefresh}
-            colors={["#6A9AA9"]}
-            tintColor="#6A9AA9"
-          />
-        }
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={["#6A9AA9"]} tintColor="#6A9AA9" />}
         onScroll={handleScroll}
         scrollEventThrottle={400}
       >
-        {/* Форма шаблона */}
         <View style={styles.templateForm}>
           <Text style={styles.sectionTitle}>Информация о шаблоне</Text>
           
+          {planStatus === "archived" && (
+            <View style={styles.archivedWarning}>
+              <Ionicons name="archive" size={20} color="#FF9800" />
+              <Text style={styles.archivedWarningText}>Этот план находится в архиве</Text>
+            </View>
+          )}
+          
           <View style={styles.inputContainer}>
-            <Text style={styles.inputLabel}>Название шаблона *</Text>
-            <TextInput
-              style={styles.textInput}
-              placeholder="Например: Здоровый завтрак"
-              value={templateTitle}
-              onChangeText={setTemplateTitle}
-            />
+            <Text style={styles.inputLabel}>Название *</Text>
+            {isViewMode ? (
+              <Text style={styles.viewText}>{templateTitle || "—"}</Text>
+            ) : (
+              <TextInput
+                style={styles.textInput}
+                placeholder="Например: Здоровый завтрак"
+                value={templateTitle}
+                onChangeText={setTemplateTitle}
+              />
+            )}
           </View>
 
           <View style={styles.inputContainer}>
             <Text style={styles.inputLabel}>Описание (необязательно)</Text>
-            <TextInput
-              style={[styles.textInput, styles.textArea]}
-              placeholder="Опишите ваш шаблон рациона..."
-              value={templateDescription}
-              onChangeText={setTemplateDescription}
-              multiline
-              numberOfLines={3}
-            />
+            {isViewMode ? (
+              <Text style={styles.viewText}>{templateDescription || "—"}</Text>
+            ) : (
+              <TextInput
+                style={[styles.textInput, styles.textArea]}
+                placeholder="Опишите ваш шаблон..."
+                value={templateDescription}
+                onChangeText={setTemplateDescription}
+                multiline
+                numberOfLines={3}
+              />
+            )}
           </View>
 
-          {/* Выбранные блюда */}
           {selectedMeals.length > 0 && (
             <View style={styles.selectedMealsSection}>
               <View style={styles.sectionHeader}>
                 <Text style={styles.sectionTitle}>Выбранные блюда ({selectedMeals.length})</Text>
-                <TouchableOpacity onPress={() => setSelectedMeals([])}>
-                  <Text style={styles.clearButton}>Очистить</Text>
-                </TouchableOpacity>
+                {!isViewMode && (
+                  <TouchableOpacity onPress={() => setSelectedMeals([])}>
+                    <Text style={styles.clearButton}>Очистить</Text>
+                  </TouchableOpacity>
+                )}
               </View>
               
               {selectedMeals.map(meal => (
@@ -660,12 +784,11 @@ export default function CreateRationScreen() {
                     <Text style={styles.selectedMealCategory}>{meal.category}</Text>
                     <Text style={styles.selectedMealCalories}>{meal.calories} ккал</Text>
                   </View>
-                  <TouchableOpacity
-                    style={styles.removeButton}
-                    onPress={() => handleRemoveFromTemplate(meal.id)}
-                  >
-                    <Ionicons name="close" size={20} color="#DC3545" />
-                  </TouchableOpacity>
+                  {!isViewMode && (
+                    <TouchableOpacity style={styles.removeButton} onPress={() => handleRemoveFromTemplate(meal.id)}>
+                      <Ionicons name="close" size={20} color="#DC3545" />
+                    </TouchableOpacity>
+                  )}
                 </View>
               ))}
 
@@ -681,129 +804,104 @@ export default function CreateRationScreen() {
             </View>
           )}
 
-          {/* Кнопка сохранения шаблона */}
-          {selectedMeals.length > 0 && (
-            <TouchableOpacity
-              style={[styles.saveButton, isSaving && styles.saveButtonDisabled]}
-              onPress={handleSaveTemplate}
-              disabled={isSaving}
-            >
+          {!isViewMode && selectedMeals.length > 0 && planStatus !== "archived" && (
+            <TouchableOpacity style={[styles.saveButton, isSaving && styles.saveButtonDisabled]} onPress={handleSaveTemplate} disabled={isSaving}>
               {isSaving ? (
                 <ActivityIndicator size="small" color="#FFFFFF" />
               ) : (
                 <>
                   <Ionicons name="save-outline" size={20} color="#FFFFFF" />
-                  <Text style={styles.saveButtonText}>Сохранить шаблон</Text>
+                  <Text style={styles.saveButtonText}>{editingPlanId ? "Обновить шаблон" : "Сохранить шаблон"}</Text>
                 </>
               )}
             </TouchableOpacity>
           )}
+          
+          {!isViewMode && selectedMeals.length > 0 && planStatus === "archived" && (
+            <TouchableOpacity style={[styles.saveButton, styles.saveButtonDisabled]} disabled={true}>
+              <Text style={styles.saveButtonText}>Архивный план нельзя редактировать</Text>
+            </TouchableOpacity>
+          )}
+          
+          {isViewMode && (
+            <View style={styles.viewModeMessage}>
+              <Ionicons name="eye-outline" size={24} color="#6A9AA9" />
+              <Text style={styles.viewModeMessageText}>
+                Режим просмотра
+              </Text>
+            </View>
+          )}
         </View>
 
-        {/* Раздел выбора рецептов */}
-        <View style={styles.recipesSection}>
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>
-              Добавить блюда в шаблон
-            </Text>
-            <TouchableOpacity 
-              style={styles.sourceButton}
-              onPress={() => setShowAddRecipeModal(true)}
-            >
-              <Text style={styles.sourceButtonText}>
-                {recipeSource === "all" ? "Все рецепты" : "Мои рецепты"}
-              </Text>
-              <Ionicons name="chevron-down" size={16} color="#6A9AA9" />
-            </TouchableOpacity>
-          </View>
+        {!isViewMode && planStatus !== "archived" && (
+          <View style={styles.recipesSection}>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>Добавить блюда в шаблон</Text>
+              <TouchableOpacity style={styles.sourceButton} onPress={() => setShowAddRecipeModal(true)}>
+                <Text style={styles.sourceButtonText}>{recipeSource === "all" ? "Все рецепты" : "Мои рецепты"}</Text>
+                <Ionicons name="chevron-down" size={16} color="#6A9AA9" />
+              </TouchableOpacity>
+            </View>
 
-          <View style={styles.searchRow}>
-            <View style={styles.searchInputContainer}>
-              <Feather
-                name="search"
-                size={16}
-                color="#666"
-                style={styles.searchIcon}
-              />
-              <TextInput
-                style={styles.searchInput}
-                placeholder="Поиск рецептов..."
-                placeholderTextColor="#666"
-                value={searchQuery}
-                onChangeText={setSearchQuery}
-              />
-              {(searchQuery || selectedCategory !== "Все") && (
+            <View style={styles.searchRow}>
+              <View style={styles.searchInputContainer}>
+                <Feather name="search" size={16} color="#666" style={styles.searchIcon} />
+                <TextInput
+                  style={styles.searchInput}
+                  placeholder="Поиск рецептов..."
+                  placeholderTextColor="#666"
+                  value={searchQuery}
+                  onChangeText={setSearchQuery}
+                />
+                {(searchQuery || selectedCategory !== "Все") && (
+                  <TouchableOpacity onPress={resetFiltersAndScroll} style={styles.clearFilterButton}>
+                    <Feather name="x" size={16} color="#666" />
+                  </TouchableOpacity>
+                )}
+              </View>
+            </View>
+
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.categoriesContainer}>
+              {categories.map((category) => (
                 <TouchableOpacity
-                  onPress={resetFiltersAndScroll}
-                  style={styles.clearFilterButton}
+                  key={category}
+                  style={[styles.categoryButton, selectedCategory === category && styles.categoryButtonActive]}
+                  onPress={() => setSelectedCategory(category)}
                 >
-                  <Feather name="x" size={16} color="#666" />
+                  <Text style={[styles.categoryText, selectedCategory === category && styles.categoryTextActive]}>
+                    {category}
+                  </Text>
                 </TouchableOpacity>
+              ))}
+            </ScrollView>
+
+            <View style={styles.recipesGrid}>
+              {loading && !refreshing ? (
+                <View style={styles.loadingContainer}>
+                  <ActivityIndicator size="large" color="#6A9AA9" />
+                  <Text style={styles.loadingText}>Загрузка рецептов...</Text>
+                </View>
+              ) : displayedRecipes.length === 0 ? (
+                <View style={styles.emptyState}>
+                  <Ionicons name="restaurant-outline" size={64} color="#C2DAE2" />
+                  <Text style={styles.emptyStateText}>
+                    {searchQuery || selectedCategory !== "Все" ? "Рецепты не найдены" : recipeSource === "user" ? "У вас пока нет рецептов" : "Рецепты не найдены"}
+                  </Text>
+                  <Text style={styles.emptyStateSubtext}>
+                    {searchQuery || selectedCategory !== "Все" ? "Попробуйте изменить параметры поиска" : recipeSource === "user" ? "Создайте свой первый рецепт!" : "Попробуйте выбрать другой источник"}
+                  </Text>
+                </View>
+              ) : (
+                <>
+                  {displayedRecipes.map((recipe) => renderRecipeCard(recipe))}
+                  <FooterLoader />
+                </>
               )}
             </View>
           </View>
-
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            style={styles.categoriesContainer}
-          >
-            {categories.map((category) => (
-              <TouchableOpacity
-                key={category}
-                style={[
-                  styles.categoryButton,
-                  selectedCategory === category && styles.categoryButtonActive,
-                ]}
-                onPress={() => setSelectedCategory(category)}
-              >
-                <Text
-                  style={[
-                    styles.categoryText,
-                    selectedCategory === category && styles.categoryTextActive,
-                  ]}
-                >
-                  {category}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
-
-          <View style={styles.recipesGrid}>
-            {loading && !refreshing ? (
-              <View style={styles.loadingContainer}>
-                <ActivityIndicator size="large" color="#6A9AA9" />
-                <Text style={styles.loadingText}>Загрузка рецептов...</Text>
-              </View>
-            ) : displayedRecipes.length === 0 ? (
-              <View style={styles.emptyState}>
-                <Ionicons name="restaurant-outline" size={64} color="#C2DAE2" />
-                <Text style={styles.emptyStateText}>
-                  {searchQuery || selectedCategory !== "Все" 
-                    ? "Рецепты не найдены" 
-                    : recipeSource === "user" 
-                      ? "У вас пока нет рецептов" 
-                      : "Рецепты не найдены"}
-                </Text>
-                <Text style={styles.emptyStateSubtext}>
-                  {searchQuery || selectedCategory !== "Все"
-                    ? "Попробуйте изменить параметры поиска"
-                    : recipeSource === "user"
-                      ? "Создайте свой первый рецепт!"
-                      : "Попробуйте выбрать другой источник"}
-                </Text>
-              </View>
-            ) : (
-              <>
-                {displayedRecipes.map((recipe) => renderRecipeCard(recipe))}
-                <FooterLoader />
-              </>
-            )}
-          </View>
-        </View>
+        )}
       </ScrollView>
 
-      {/* Модальное окно выбора источника рецептов */}
       <AddRecipeModal />
     </View>
   );
@@ -813,7 +911,7 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: "#FFFFFF",
-    position: 'relative',
+    position: "relative",
   },
   scrollView: {
     flex: 1,
@@ -822,8 +920,10 @@ const styles = StyleSheet.create({
     paddingBottom: 40,
   },
   loadingContainer: {
-    padding: 40,
+    flex: 1,
+    justifyContent: "center",
     alignItems: "center",
+    padding: 40,
   },
   loadingText: {
     marginTop: 10,
@@ -831,7 +931,7 @@ const styles = StyleSheet.create({
     color: "#6A9AA9",
     fontFamily: "Playfair Display Regular",
   },
-  
+
   simpleHeader: {
     flexDirection: "row",
     alignItems: "center",
@@ -856,7 +956,25 @@ const styles = StyleSheet.create({
   addRecipePlaceholder: {
     width: 40,
   },
-  
+  archiveButton: {
+    padding: 8,
+  },
+  archivedWarning: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#FFF3E0",
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 16,
+    gap: 8,
+  },
+  archivedWarningText: {
+    fontSize: 14,
+    color: "#FF9800",
+    fontFamily: "Playfair Display Regular",
+    flex: 1,
+  },
+
   templateForm: {
     padding: 16,
     backgroundColor: "#FFFFFF",
@@ -890,16 +1008,24 @@ const styles = StyleSheet.create({
   },
   textArea: {
     minHeight: 80,
-    textAlignVertical: 'top',
+    textAlignVertical: "top",
+  },
+  viewText: {
+    fontSize: 16,
+    color: "#1a1a1a",
+    fontFamily: "Playfair Display Regular",
+    padding: 12,
+    backgroundColor: "#F5F5F5",
+    borderRadius: 8,
   },
   selectedMealsSection: {
     marginTop: 20,
     marginBottom: 20,
   },
   sectionHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
     marginBottom: 12,
   },
   clearButton: {
@@ -908,9 +1034,9 @@ const styles = StyleSheet.create({
     fontFamily: "Playfair Display Regular",
   },
   selectedMealItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
     backgroundColor: "#F8F9FA",
     padding: 12,
     borderRadius: 8,
@@ -960,9 +1086,9 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   saveButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
     backgroundColor: "#6A9AA9",
     padding: 16,
     borderRadius: 12,
@@ -971,20 +1097,36 @@ const styles = StyleSheet.create({
   },
   saveButtonDisabled: {
     opacity: 0.7,
+    backgroundColor: "#C2DAE2",
   },
   saveButtonText: {
     fontSize: 16,
     color: "#FFFFFF",
     fontFamily: "Playfair Display Bold",
   },
-  
+  viewModeMessage: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#E5F0F5",
+    padding: 12,
+    borderRadius: 8,
+    marginTop: 16,
+    gap: 12,
+  },
+  viewModeMessageText: {
+    flex: 1,
+    fontSize: 14,
+    color: "#6A9AA9",
+    fontFamily: "Playfair Display Regular",
+  },
+
   recipesSection: {
     padding: 16,
     backgroundColor: "#FFFFFF",
   },
   sourceButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     gap: 4,
     paddingHorizontal: 12,
     paddingVertical: 6,
@@ -1075,12 +1217,15 @@ const styles = StyleSheet.create({
     elevation: 5,
     height: 260,
   },
+  disabledCard: {
+    opacity: 0.6,
+  },
   imageContainer: {
     position: "relative",
     height: 120,
     backgroundColor: "#F8F8F8",
-    justifyContent: 'center',
-    alignItems: 'center',
+    justifyContent: "center",
+    alignItems: "center",
   },
   recipeImage: {
     width: "100%",
@@ -1116,14 +1261,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 5,
     paddingVertical: 3,
     borderRadius: 10,
-    alignSelf: 'flex-start',
+    alignSelf: "flex-start",
   },
   addedBadge: {
     backgroundColor: "rgba(76, 175, 80, 0.9)",
     paddingHorizontal: 5,
     paddingVertical: 3,
     borderRadius: 10,
-    alignSelf: 'flex-start',
+    alignSelf: "flex-start",
   },
   recipeContent: {
     padding: 12,
@@ -1193,7 +1338,7 @@ const styles = StyleSheet.create({
     color: "#666",
   },
   emptyState: {
-    width: '100%',
+    width: "100%",
     alignItems: "center",
     padding: 40,
     marginTop: 20,
@@ -1204,7 +1349,7 @@ const styles = StyleSheet.create({
     fontFamily: "Playfair Display Regular",
     marginBottom: 8,
     marginTop: 16,
-    textAlign: 'center',
+    textAlign: "center",
   },
   emptyStateSubtext: {
     fontSize: 14,
@@ -1214,10 +1359,10 @@ const styles = StyleSheet.create({
     marginBottom: 24,
   },
   footerLoader: {
-    width: '100%',
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
+    width: "100%",
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
     paddingVertical: 20,
     gap: 10,
   },
@@ -1226,7 +1371,7 @@ const styles = StyleSheet.create({
     color: "#6A9AA9",
     fontFamily: "Playfair Display Regular",
   },
-  
+
   modalOverlay: {
     flex: 1,
     backgroundColor: "rgba(0, 0, 0, 0.5)",

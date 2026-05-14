@@ -1,7 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useFocusEffect, useRouter } from "expo-router";
-import React, { useCallback, useMemo, useState } from "react";
+import { useFocusEffect, useRouter, useLocalSearchParams } from "expo-router";
+import React, { useCallback, useMemo, useState, useEffect } from "react";
 import {
   ActivityIndicator,
   Image,
@@ -151,10 +151,13 @@ const defaultProfileData: ProfileData = {
 
 export default function ProfileScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams();
   const { user, userProfile, loading: authLoading } = useAuthContext();
   const [profileData, setProfileData] = useState<ProfileData>(defaultProfileData);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<"profile" | "saved">("profile");
+  const [activeTab, setActiveTab] = useState<"profile" | "saved">(
+    params.tab === "saved" ? "saved" : "profile"
+  );
   const [favoriteRecipes, setFavoriteRecipes] = useState<Recipe[]>([]);
   const [savedPlans, setSavedPlans] = useState<Plan[]>([]);
   const [myRecipesCount, setMyRecipesCount] = useState<number>(0);
@@ -167,6 +170,12 @@ export default function ProfileScreen() {
   });
   const [postsCount, setPostsCount] = useState(0);
   const [followStatsLoading, setFollowStatsLoading] = useState(false);
+
+  useEffect(() => {
+    if (params.tab === "saved") {
+      setActiveTab("saved");
+    }
+  }, [params.tab]);
 
   const getCurrentUserId = useCallback((): string | null => {
     return user?.uid || auth.currentUser?.uid || null;
@@ -533,22 +542,15 @@ export default function ProfileScreen() {
   };
 
   const handlePlanPress = (plan: Plan) => {
-    router.push({
-      pathname: "/create-ration",
-      params: { planId: plan.id },
-    });
-  };
-
-  const handleUsePlan = (plan: Plan) => {
-    Alert.alert(
-      "Использовать план",
-      `Хотите начать использовать план "${plan.name}"?`,
-      [
-        { text: "Отмена", style: "cancel" },
-        { text: "Использовать", onPress: () => Alert.alert("Успешно", `План "${plan.name}" теперь активен!`) },
-      ]
-    );
-  };
+  router.push({
+    pathname: "/create-ration",
+    params: { 
+      planId: plan.id,
+      mode: "view",
+      source: "profile"
+    },
+  });
+};
 
   const getDifficultyColor = (difficulty: string) => {
     if (!difficulty) return "#6A9AA9";
@@ -646,8 +648,8 @@ export default function ProfileScreen() {
         </View>
         <View style={styles.planFooter}>
           <Text style={styles.planDate}>Создан: {plan.savedDate}</Text>
-          <TouchableOpacity style={styles.usePlanButton} onPress={() => handleUsePlan(plan)}>
-            <Text style={styles.usePlanButtonText}>Использовать</Text>
+          <TouchableOpacity style={styles.viewPlanButton} onPress={() => handlePlanPress(plan)}>
+            <Text style={styles.viewPlanButtonText}>Просмотр</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -882,8 +884,8 @@ const styles = StyleSheet.create({
   planDetailText: { fontSize: 10, color: "#000000", fontFamily: "Playfair Display Regular" },
   planFooter: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   planDate: { fontSize: 10, color: "#6C757D", fontFamily: "Playfair Display Regular" },
-  usePlanButton: { backgroundColor: "#9BDF11", paddingHorizontal: 12, paddingVertical: 6, borderRadius: 15 },
-  usePlanButtonText: { color: "#000000", fontSize: 12, fontWeight: "600", fontFamily: "Playfair Display Regular" },
+  viewPlanButton: { backgroundColor: "#9BDF11", paddingHorizontal: 12, paddingVertical: 6, borderRadius: 15 },
+  viewPlanButtonText: { color: "#000000", fontSize: 12, fontWeight: "600", fontFamily: "Playfair Display Regular" },
   createPlanButton: { backgroundColor: "#6A9AA9", paddingHorizontal: 20, paddingVertical: 12, borderRadius: 25, marginTop: 16 },
   createPlanButtonText: { color: "#FFFFFF", fontSize: 14, fontWeight: "600", fontFamily: "Playfair Display Regular" },
   emptyState: { alignItems: "center", justifyContent: "center", paddingVertical: 40, backgroundColor: "#fff", borderRadius: 12, padding: 20, borderWidth: 1, borderColor: "#E5E7EB" },

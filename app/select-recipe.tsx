@@ -521,82 +521,57 @@ export default function SelectRecipeScreen() {
     }
   };
 
-  // --- ОБНОВЛЕННАЯ ФУНКЦИЯ ВЫБОРА РЕЦЕПТА ---
+  // --- ФУНКЦИЯ ВЫБОРА РЕЦЕПТА ДЛЯ ЗАМЕНЫ ---
   const handleSelectRecipe = (recipe: Recipe) => {
     if (isReplacement) {
-      // Замена рецепта в существующем рационе
-      Alert.alert(
-        "Заменить рецепт",
-        `Заменить текущий рецепт на "${recipe.title}"?`,
-        [
-          { text: "Отмена", style: "cancel" },
-          { 
-            text: "Заменить", 
-            style: "default",
-            onPress: () => {
-              // Передаем данные через параметры для замены
-              router.push({
-                pathname: "/(tabs)/home",
-                params: {
-                  replaceRecipe: JSON.stringify({
-                    recipeId: recipe.id,
-                    title: recipe.title,
-                    calories: recipe.calories || 300,
-                    proteins: 0,
-                    fats: 0,
-                    carbohydrates: 0,
-                    cookingTime: recipe.cookingTime || 20,
-                    difficultyLevel: recipe.difficultyLevel || recipe.difficulty || "Легко",
-                    imageUrl: recipe.imageUrl,
-                    mealType: recipe.mealType,
-                    category: currentMealCategory || recipe.mealType,
-                    weight: "250г",
-                    rating: recipe.rating || 0,
-                    isReplacement: "true",
-                    mealIndex: mealIndex,
-                    currentMealId: currentMealId,
-                    isCustomReplacement: isCustomReplacement ? "true" : "false"
-                  })
-                }
-              });
-            }
-          }
-        ]
-      );
+      // Переходим на страницу meal с параметрами для замены
+      router.push({
+        pathname: "/meal",
+        params: {
+          selectedRecipe: JSON.stringify({
+            id: recipe.id,
+            title: recipe.title,
+            calories: recipe.calories || 300,
+            proteins: 0,
+            fats: 0,
+            carbohydrates: 0,
+            cookingTime: recipe.cookingTime || 20,
+            difficultyLevel: recipe.difficultyLevel || "Легко",
+            imageUrl: recipe.imageUrl,
+            mealType: recipe.mealType,
+            category: getCategoryName(recipe.mealType),
+            weight: "250г",
+            rating: recipe.rating || 0
+          }),
+          returnTo: "meal",
+          mealIndex: mealIndex,
+          currentMealId: currentMealId,
+          currentMealCategory: currentMealCategory,
+          isReplacement: "true",
+          isCustomReplacement: isCustomReplacement ? "true" : "false"
+        }
+      });
     } else {
-      // Добавление нового рецепта в рацион
-      Alert.alert(
-        "Добавить рецепт",
-        `Добавить "${recipe.title}" в дневной рацион?`,
-        [
-          { text: "Отмена", style: "cancel" },
-          { 
-            text: "Добавить", 
-            style: "default",
-            onPress: () => {
-              router.push({
-                pathname: "/(tabs)/home",
-                params: {
-                  selectedRecipe: JSON.stringify({
-                    id: recipe.id,
-                    title: recipe.title,
-                    calories: recipe.calories || 300,
-                    proteins: 0,
-                    fats: 0,
-                    carbohydrates: 0,
-                    cookingTime: recipe.cookingTime || 20,
-                    difficultyLevel: recipe.difficultyLevel || recipe.difficulty || "Легко",
-                    imageUrl: recipe.imageUrl,
-                    mealType: recipe.mealType,
-                    weight: "250г",
-                    rating: recipe.rating || 0
-                  })
-                }
-              });
-            }
-          }
-        ]
-      );
+      // Обычное добавление на главную
+      router.push({
+        pathname: "/",
+        params: {
+          selectedRecipe: JSON.stringify({
+            id: recipe.id,
+            title: recipe.title,
+            calories: recipe.calories || 300,
+            proteins: 0,
+            fats: 0,
+            carbohydrates: 0,
+            cookingTime: recipe.cookingTime || 20,
+            difficultyLevel: recipe.difficultyLevel || "Легко",
+            imageUrl: recipe.imageUrl,
+            mealType: recipe.mealType,
+            weight: "250г",
+            rating: recipe.rating || 0
+          })
+        }
+      });
     }
   };
 

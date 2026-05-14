@@ -1,7 +1,6 @@
-// app/(tabs)/profile/saved-plans.tsx
 import { Ionicons, Feather } from "@expo/vector-icons";
-import { Stack, useRouter } from "expo-router";
-import React, { useState, useMemo, useEffect } from "react";
+import { Stack, useRouter, useFocusEffect } from "expo-router";
+import React, { useState, useMemo, useCallback, useEffect } from "react";
 import {
   ScrollView,
   StyleSheet,
@@ -13,6 +12,7 @@ import {
   Alert,
   Dimensions,
   Platform,
+  ActivityIndicator,
 } from "react-native";
 import {
   rationPlanService,
@@ -22,50 +22,27 @@ import DateTimePicker, {
   DateTimePickerEvent,
 } from "@react-native-community/datetimepicker";
 import { auth } from "@/app/firebase/config";
+import { getFirestore, doc, setDoc, collection, query, where, getDocs, deleteDoc } from "firebase/firestore";
+import { getApps, getApp, initializeApp } from "firebase/app";
 
-type PlanType = {
-  id: number;
-  name: string;
-  description: string;
-  totalCalories: number;
-  duration: string;
-  mealsCount: number;
-  savedDate: string;
-  category: string;
-  originalPlan?: RationPlan;
-  createdAt?: number;
-};
+declare const __firebase_config: string | undefined;
 
-const categories = [
-  "Все",
-  "Похудение",
-  "Энергия",
-  "Здоровье",
-  "Спорт",
-  "Шаблоны",
-  "Активные",
-  "Завершенные",
-];
+const categories = ["Все", "Шаблоны", "Активные и запланированные", "Завершенные", "Архивные"];
 
-// Вспомогательная функция форматирования даты
 const formatDate = (dateInput: any) => {
   try {
     let date: Date;
-    
     if (typeof dateInput === 'string') {
       date = new Date(dateInput);
     } else if (dateInput?.seconds) {
-      // Если это объект Firestore Timestamp
       date = new Date(dateInput.seconds * 1000);
     } else if (typeof dateInput === 'number') {
       date = new Date(dateInput);
     } else {
       date = new Date();
     }
-    
     return date.toLocaleDateString("ru-RU");
   } catch (error) {
-    console.error("Ошибка форматирования даты:", error);
     return new Date().toLocaleDateString("ru-RU");
   }
 };
@@ -75,40 +52,48 @@ export default function SavedPlansScreen() {
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("Все");
   const [showUsePlanModal, setShowUsePlanModal] = useState(false);
+  const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [selectedPlan, setSelectedPlan] = useState<RationPlan | null>(null);
-  const [startDate, setStartDate] = useState(new Date());
-  const [endDate, setEndDate] = useState(new Date());
-  const [showStartDatePicker, setShowStartDatePicker] = useState(false);
-  const [showEndDatePicker, setShowEndDatePicker] = useState(false);
+  const [selectedDate, setSelectedDate] = useState(new Date());
+  const [showDatePicker, setShowDatePicker] = useState(false);
   const [userPlans, setUserPlans] = useState<RationPlan[]>([]);
   const [loading, setLoading] = useState(true);
+  const [firestoreDb, setFirestoreDb] = useState<any>(null);
 
+  // Инициализация Firebase
   useEffect(() => {
-    loadUserPlans();
+    const initFirebase = async () => {
+      try {
+        const firebaseConfig = typeof __firebase_config !== "undefined"
+          ? JSON.parse(__firebase_config as string)
+          : {};
+        const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
+        setFirestoreDb(getFirestore(app));
+      } catch (error) {
+        console.error("Firebase init error:", error);
+      }
+    };
+    initFirebase();
   }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadUserPlans();
+    }, [])
+  );
 
   const loadUserPlans = async () => {
     try {
       setLoading(true);
       const currentUser = auth.currentUser;
       if (!currentUser) {
-        Alert.alert("Ошибка", "Пользователь не авторизован");
         setUserPlans([]);
         return;
       }
 
-      // Загружаем планы пользователя из ration_plans
       const plans = await rationPlanService.getUserRationPlans(currentUser.uid);
-      console.log("Загружено планов пользователя:", plans?.length || 0);
-      
-      // Сортируем планы по дате создания (от новых к старым)
-      const sortedPlans = plans.sort((a, b) => {
-        const aTime = getTimestamp(a.createdAt);
-        const bTime = getTimestamp(b.createdAt);
-        return bTime - aTime;
-      });
-      
-      setUserPlans(sortedPlans);
+      console.log("Загружено планов:", plans?.length || 0);
+      setUserPlans(plans);
     } catch (error) {
       console.error("Error loading plans:", error);
       Alert.alert("Ошибка", "Не удалось загрузить планы");
@@ -117,56 +102,38 @@ export default function SavedPlansScreen() {
     }
   };
 
-  // Вспомогательная функция для получения timestamp
-  const getTimestamp = (dateInput: any): number => {
-    if (!dateInput) return 0;
-    
-    if (typeof dateInput === 'string') {
-      return new Date(dateInput).getTime();
-    } else if (dateInput?.seconds) {
-      return dateInput.seconds * 1000;
-    } else if (typeof dateInput === 'number') {
-      return dateInput;
-    }
-    
-    return 0;
-  };
-
-  // Функция определения иконки типа плана
-  const getPlanTypeIcon = (type: string) => {
-    return type === "weekly" ? "calendar-outline" : "today-outline";
-  };
-
-  // Функция определения цвета статуса
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case "active":
-        return "#6BCF7F";
-      case "completed":
-        return "#6A9AA9";
-      case "archived":
-        return "#999";
-      default:
-        return "#6A9AA9";
-    }
-  };
-
   const filteredPlans = useMemo(() => {
+    const today = new Date().toISOString().split('T')[0];
+    
     const allPlans = userPlans.map((plan) => {
-      // Определяем дату создания для сортировки
-      const createdAt = getTimestamp(plan.createdAt);
+      const isActiveToday = plan.status === 'active' && plan.startDate?.split('T')[0] === today;
+      const isScheduled = plan.status === 'active' && plan.startDate?.split('T')[0] !== today && !!plan.startDate;
+      const isArchived = plan.status === 'archived';
+      const isTemplate = plan.isTemplate === true && plan.status !== 'archived';
       
+      let displayCategory = plan.category || "Обычный";
+      if (isTemplate) displayCategory = "Шаблон";
+      if (isActiveToday) displayCategory = "Активный";
+      if (isScheduled) displayCategory = "Запланированный";
+      if (plan.status === "completed") displayCategory = "Завершенный";
+      if (isArchived) displayCategory = "Архивный";
+
       return {
-        id: parseInt(plan.id?.substring(plan.id.length - 3) || "0") || Date.now(),
+        id: plan.id || `plan-${Date.now()}`,
         name: plan.title || "План без названия",
         description: plan.description || "Описание отсутствует",
         totalCalories: plan.totalCalories || 0,
-        duration: plan.totalDuration || plan.totalDuration || "0 дней",
         mealsCount: plan.mealsCount || 0,
         savedDate: formatDate(plan.createdAt),
-        category: plan.category || "Обычный",
+        category: displayCategory,
         originalPlan: plan,
-        createdAt: createdAt,
+        isTemplate: isTemplate,
+        status: plan.status || "archived",
+        isActiveToday: isActiveToday,
+        isScheduled: isScheduled,
+        isArchived: isArchived,
+        activeDate: plan.startDate ? formatDate(plan.startDate) : null,
+        meals: plan.days?.[0]?.meals || []
       };
     });
 
@@ -177,15 +144,10 @@ export default function SavedPlansScreen() {
 
       const matchesCategory = (() => {
         if (selectedCategory === "Все") return true;
-        if (selectedCategory === "Шаблоны")
-          return plan.originalPlan?.isTemplate === true;
-        if (selectedCategory === "Активные")
-          return (
-            plan.originalPlan?.status === "active" &&
-            !plan.originalPlan?.isTemplate
-          );
-        if (selectedCategory === "Завершенные")
-          return plan.originalPlan?.status === "completed";
+        if (selectedCategory === "Шаблоны") return plan.isTemplate === true;
+        if (selectedCategory === "Активные и запланированные") return plan.isActiveToday === true || plan.isScheduled === true;
+        if (selectedCategory === "Завершенные") return plan.status === "completed";
+        if (selectedCategory === "Архивные") return plan.isArchived === true;
         return plan.category === selectedCategory;
       })();
 
@@ -193,12 +155,43 @@ export default function SavedPlansScreen() {
     });
   }, [searchQuery, selectedCategory, userPlans]);
 
-  const navigateToPlan = (plan: any) => {
-    console.log(`Переход к плану: ${plan.name}`);
-    // Переход к деталям плана или редактированию
+  const handleViewPlan = (plan: any) => {
     router.push({
       pathname: "/create-ration",
-      params: { planId: plan.originalPlan?.id }
+      params: { 
+        planId: plan.originalPlan?.id,
+        mode: "view",
+        source: "saved-plans"
+      },
+    });
+  };
+
+  const handleEditPlan = (plan: RationPlan, isActiveToday: boolean, isArchived: boolean, isScheduled: boolean) => {
+    if (isActiveToday) {
+      Alert.alert(
+        "Редактирование недоступно",
+        "Активный план нельзя редактировать. Вы можете просмотреть его или создать новый план на основе этого.",
+        [{ text: "OK", style: "default" }]
+      );
+      return;
+    }
+    
+    if (isArchived) {
+      Alert.alert(
+        "Архивный план",
+        "Архивные планы нельзя редактировать. Сначала восстановите план из архива.",
+        [{ text: "OK", style: "default" }]
+      );
+      return;
+    }
+    
+    router.push({
+      pathname: "/create-ration",
+      params: { 
+        planId: plan.id,
+        mode: "edit",
+        source: "saved-plans"
+      },
     });
   };
 
@@ -207,51 +200,190 @@ export default function SavedPlansScreen() {
     setSelectedCategory("Все");
   };
 
-  const handleUsePlan = (plan: any) => {
-    setSelectedPlan(plan.originalPlan);
-    setStartDate(new Date());
-    const endDate = new Date();
-    endDate.setDate(
-      endDate.getDate() + (plan.originalPlan?.type === "weekly" ? 6 : 0)
+  const handleRestoreFromArchive = async (plan: any) => {
+    Alert.alert(
+      "Восстановить план",
+      `Восстановить план "${plan.name}" из архива?`,
+      [
+        { text: "Отмена", style: "cancel" },
+        {
+          text: "Восстановить",
+          onPress: async () => {
+            try {
+              const currentUser = auth.currentUser;
+              if (!currentUser) return;
+              
+              await rationPlanService.updateRationPlan(currentUser.uid, plan.originalPlan.id, { 
+                status: 'template',
+                isTemplate: true
+              });
+              await loadUserPlans();
+              Alert.alert("Успех", "План восстановлен из архива");
+            } catch (error) {
+              console.error("Ошибка восстановления:", error);
+              Alert.alert("Ошибка", "Не удалось восстановить план");
+            }
+          }
+        }
+      ]
     );
-    setEndDate(endDate);
+  };
+
+  // Активация плана в коллекцию ration_plan_days
+  const activatePlanDirectly = async (plan: any, date: Date) => {
+    if (!firestoreDb) {
+      Alert.alert("Ошибка", "База данных не инициализирована");
+      return false;
+    }
+
+    const currentUser = auth.currentUser;
+    if (!currentUser) {
+      Alert.alert("Ошибка", "Пользователь не авторизован");
+      return false;
+    }
+
+    try {
+      const dateStr = date.toISOString().split('T')[0];
+      const planMeals = plan.meals || [];
+      
+      // Форматируем блюда для сохранения
+      const formattedMeals = planMeals.map((meal: any) => ({
+        id: meal.id || `meal-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+        category: meal.category || "Обед",
+        name: meal.name || meal.title || "Рецепт",
+        calories: meal.calories || 0,
+        proteins: meal.proteins || 0,
+        fats: meal.fats || 0,
+        carbohydrates: meal.carbohydrates || 0,
+        weight: meal.weight || "250г",
+        marked: false,
+        cookingTime: meal.cookingTime || 20,
+        difficultyLevel: meal.difficultyLevel || "Легко",
+        rating: meal.rating || 0,
+        recipeId: meal.recipeId || meal.id || '',
+        isCustom: meal.isCustom || false,
+        canBeRemoved: true,
+        imageUrl: meal.imageUrl || null,
+        addedAt: new Date().toISOString()
+      }));
+
+      // Удаляем старый активный план на эту дату, если есть
+      const daysQuery = query(
+        collection(firestoreDb, 'ration_plan_days'),
+        where('userId', '==', currentUser.uid),
+        where('date', '==', dateStr)
+      );
+      const daysSnap = await getDocs(daysQuery);
+      
+      // Удаляем все существующие планы на эту дату
+      for (const docSnap of daysSnap.docs) {
+        await deleteDoc(doc(firestoreDb, 'ration_plan_days', docSnap.id));
+      }
+
+      // Создаем новый план
+      const newPlanId = `${currentUser.uid}_${dateStr}_${Date.now()}`;
+      await setDoc(doc(firestoreDb, 'ration_plan_days', newPlanId), {
+        userId: currentUser.uid,
+        date: dateStr,
+        meals: formattedMeals,
+        planName: plan.name,
+        planId: plan.originalPlan?.id,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        isActive: true
+      });
+
+      // Также обновляем статус выбранного плана в ration_plans, чтобы отметить его как активный
+      if (plan.originalPlan?.id) {
+        await rationPlanService.updateRationPlan(currentUser.uid, plan.originalPlan.id, {
+          status: 'active',
+          startDate: dateStr,
+          isTemplate: false
+        });
+      }
+
+      return true;
+    } catch (error) {
+      console.error("Error activating plan:", error);
+      return false;
+    }
+  };
+
+  const handleUsePlan = (plan: any) => {
+    if (plan.isArchived) {
+      Alert.alert(
+        "Архивный план",
+        "Этот план в архиве. Восстановите его перед использованием.",
+        [
+          { text: "Отмена", style: "cancel" },
+          { text: "Восстановить", onPress: () => handleRestoreFromArchive(plan) }
+        ]
+      );
+      return;
+    }
+    setSelectedPlan(plan.originalPlan);
+    setSelectedDate(new Date());
     setShowUsePlanModal(true);
   };
 
   const handleUsePlanConfirm = async () => {
-    if (!selectedPlan?.id) return;
+    if (!selectedPlan?.id) {
+      Alert.alert("Ошибка", "План не выбран");
+      return;
+    }
 
     try {
-      await rationPlanService.useRationPlan(
-        selectedPlan.id,
-        startDate,
-        endDate
-      );
+      const currentUser = auth.currentUser;
+      if (!currentUser) {
+        Alert.alert("Ошибка", "Пользователь не авторизован");
+        return;
+      }
 
-      Alert.alert("Успешно", "План назначен на выбранные даты!", [
-        {
-          text: "OK",
-          onPress: () => {
-            setShowUsePlanModal(false);
-            loadUserPlans();
-          },
-        },
-      ]);
-    } catch (error) {
-      Alert.alert("Ошибка", "Не удалось использовать план");
+      // Находим выбранный план с данными
+      const plan = filteredPlans.find(p => p.originalPlan?.id === selectedPlan.id);
+      if (!plan || !plan.meals || plan.meals.length === 0) {
+        Alert.alert("Ошибка", "В плане нет блюд для активации");
+        return;
+      }
+
+      // Активируем план напрямую в ration_plan_days
+      const success = await activatePlanDirectly(plan, selectedDate);
+
+      if (success) {
+        await loadUserPlans();
+        setShowUsePlanModal(false);
+        setShowSuccessModal(true);
+      } else {
+        Alert.alert("Ошибка", "Не удалось активировать план");
+      }
+      
+    } catch (error: any) {
+      console.error("Error using plan:", error);
+      Alert.alert("Ошибка", error.message || "Не удалось использовать план");
     }
   };
 
-  const handleDeletePlan = (planId: string) => {
-    Alert.alert("Удалить план", "Вы уверены, что хотите удалить этот план?", [
+  const handleDeletePlan = (planId: string, isActiveToday: boolean, isArchived: boolean, isScheduled: boolean) => {
+    let message = "Вы уверены, что хотите удалить этот план?";
+    if (isActiveToday) {
+      message = "Этот план активен на сегодня. Если вы удалите его, сегодняшний рацион станет пустым. Продолжить?";
+    } else if (isScheduled) {
+      message = "Этот план запланирован на будущую дату. Удалить его?";
+    }
+    
+    Alert.alert("Удалить план", message, [
       { text: "Отмена", style: "cancel" },
       {
         text: "Удалить",
         style: "destructive",
         onPress: async () => {
           try {
-            await rationPlanService.deleteRationPlan(planId);
-            loadUserPlans();
+            const currentUser = auth.currentUser;
+            if (!currentUser) return;
+            
+            await rationPlanService.deleteRationPlan(planId, currentUser.uid);
+            await loadUserPlans();
+            Alert.alert("Успех", "План удален");
           } catch (error) {
             Alert.alert("Ошибка", "Не удалось удалить план");
           }
@@ -260,75 +392,59 @@ export default function SavedPlansScreen() {
     ]);
   };
 
-  const handleEditPlan = (plan: RationPlan) => {
-    router.push({
-      pathname: "/create-ration",
-      params: { planId: plan.id },
-    });
-  };
-
   const navigateToCreateRation = () => {
     router.push("/create-ration");
   };
 
-  const handleStartDateChange = (event: DateTimePickerEvent, date?: Date) => {
-    setShowStartDatePicker(false);
+  const handleDateChange = (event: DateTimePickerEvent, date?: Date) => {
+    setShowDatePicker(false);
     if (date) {
-      setStartDate(date);
-      if (date > endDate) {
-        setEndDate(date);
-      }
-    }
-  };
-
-  const handleEndDateChange = (event: DateTimePickerEvent, date?: Date) => {
-    setShowEndDatePicker(false);
-    if (date) {
-      setEndDate(date);
+      setSelectedDate(date);
     }
   };
 
   const handlePlanPress = (plan: any) => {
-    if (plan.originalPlan?.isTemplate) {
-      handleUsePlan(plan);
-    } else {
-      navigateToPlan(plan);
-    }
+    handleViewPlan(plan);
   };
+
+  const goToProfileSavedTab = () => {
+    router.push("/(tabs)/profile?tab=saved");
+  };
+
+  const goToHome = () => {
+    setShowSuccessModal(false);
+    router.push({
+      pathname: "/home",
+      params: { refreshHome: Date.now().toString() }
+    });
+  };
+
+  if (loading) {
+    return (
+      <View style={styles.loadingContainer}>
+        <ActivityIndicator size="large" color="#6A9AA9" />
+        <Text style={styles.loadingText}>Загрузка планов...</Text>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
-      <Stack.Screen
-        options={{
-          headerTitle: "Сохраненные планы",
-          headerBackTitle: "Назад",
-        }}
-      />
+      <Stack.Screen options={{ headerShown: false }} />
 
       <View style={styles.header}>
-        <TouchableOpacity
-          style={styles.backButton}
-          onPress={() => router.back()}
-        >
-          <Ionicons name="arrow-back" size={24} color="#000" />
+        <TouchableOpacity style={styles.backButton} onPress={goToProfileSavedTab}>
+          <Ionicons name="arrow-back" size={24} color="#1a1a1a" />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Мои планы питания</Text>
-        <View style={styles.headerPlaceholder} />
+        <View style={{ width: 40 }} />
       </View>
 
-      <ScrollView
-        style={styles.scrollContainer}
-        showsVerticalScrollIndicator={false}
-      >
+      <ScrollView style={styles.scrollContainer} showsVerticalScrollIndicator={false}>
         <View style={styles.searchSection}>
           <View style={styles.searchRow}>
             <View style={styles.searchInputContainer}>
-              <Feather
-                name="search"
-                size={16}
-                color="#666"
-                style={styles.searchIcon}
-              />
+              <Feather name="search" size={16} color="#666" style={styles.searchIcon} />
               <TextInput
                 style={styles.searchInput}
                 placeholder="Поиск планов..."
@@ -339,11 +455,7 @@ export default function SavedPlansScreen() {
             </View>
           </View>
 
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            style={styles.categoriesContainer}
-          >
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.categoriesContainer}>
             {categories.map((category) => (
               <TouchableOpacity
                 key={category}
@@ -353,12 +465,7 @@ export default function SavedPlansScreen() {
                 ]}
                 onPress={() => setSelectedCategory(category)}
               >
-                <Text
-                  style={[
-                    styles.categoryText,
-                    selectedCategory === category && styles.categoryTextActive,
-                  ]}
-                >
+                <Text style={[styles.categoryText, selectedCategory === category && styles.categoryTextActive]}>
                   {category}
                 </Text>
               </TouchableOpacity>
@@ -369,11 +476,12 @@ export default function SavedPlansScreen() {
         </View>
 
         <View style={styles.plansSection}>
-          {loading ? (
-            <View style={styles.emptyState}>
-              <Text style={styles.emptyText}>Загрузка...</Text>
-            </View>
-          ) : filteredPlans.length === 0 ? (
+          <TouchableOpacity style={styles.createPlanMainButton} onPress={navigateToCreateRation}>
+            <Ionicons name="add-circle-outline" size={24} color="#FFFFFF" />
+            <Text style={styles.createPlanMainButtonText}>Создать новый план питания</Text>
+          </TouchableOpacity>
+
+          {filteredPlans.length === 0 ? (
             <View style={styles.emptyState}>
               <Ionicons name="calendar-outline" size={64} color="#C2DAE2" />
               <Text style={styles.emptyTitle}>Планы не найдены</Text>
@@ -383,714 +491,733 @@ export default function SavedPlansScreen() {
                   : "Создайте свой первый план питания!"}
               </Text>
               {searchQuery || selectedCategory !== "Все" ? (
-                <TouchableOpacity
-                  style={styles.clearFiltersButton}
-                  onPress={clearFilters}
-                >
-                  <Text style={styles.clearFiltersText}>
-                    Показать все планы
-                  </Text>
+                <TouchableOpacity style={styles.clearFiltersButton} onPress={clearFilters}>
+                  <Text style={styles.clearFiltersText}>Показать все планы</Text>
                 </TouchableOpacity>
-              ) : (
-                <TouchableOpacity
-                  style={styles.clearFiltersButton}
-                  onPress={navigateToCreateRation}
-                >
-                  <Text style={styles.clearFiltersText}>Создать план</Text>
-                </TouchableOpacity>
-              )}
+              ) : null}
             </View>
           ) : (
             <>
               <View style={styles.plansHeader}>
                 <Text style={styles.plansTitle}>
-                  {filteredPlans.length}{" "}
-                  {getPlanCountText(filteredPlans.length)}
+                  {filteredPlans.length} {getPlanCountText(filteredPlans.length)}
                 </Text>
-                <TouchableOpacity
-                  style={styles.createPlanButton}
-                  onPress={navigateToCreateRation}
-                >
-                  <Ionicons name="add" size={20} color="#000" />
-                  <Text style={styles.createPlanButtonText}>Новый план</Text>
-                </TouchableOpacity>
               </View>
 
               <View style={styles.plansList}>
-                {filteredPlans.map((plan) => (
-                  <TouchableOpacity
-                    key={plan.id}
-                    style={styles.planCard}
-                    onPress={() => handlePlanPress(plan)}
-                  >
-                    <View style={styles.planIconContainer}>
-                      <Ionicons 
-                        name={getPlanTypeIcon(plan.originalPlan?.type || "daily")} 
-                        size={32} 
-                        color="#6A9AA9" 
-                      />
-                    </View>
-                    <View style={styles.planContent}>
-                      <View style={styles.planHeader}>
-                        <View style={styles.planTitleRow}>
-                          <Text style={styles.planName}>{plan.name}</Text>
-                        </View>
-                        <View style={styles.planActions}>
-                          {!plan.originalPlan?.isTemplate && (
-                            <View
-                              style={[
-                                styles.planStatusBadge,
-                                {
-                                  backgroundColor: getStatusColor(
-                                    plan.originalPlan?.status || "active"
-                                  ),
-                                },
-                              ]}
-                            >
-                              <Text style={styles.planStatusText}>
-                                {plan.originalPlan?.status === "active"
-                                  ? "Активный"
-                                  : plan.originalPlan?.status === "completed"
-                                  ? "Завершен"
-                                  : "Архив"}
-                              </Text>
-                            </View>
-                          )}
-                          <TouchableOpacity
-                            style={styles.actionButton}
-                            onPress={(e) => {
-                              e.stopPropagation();
-                              handleEditPlan(plan.originalPlan!);
-                            }}
-                          >
-                            <Feather name="edit-2" size={16} color="#6A9AA9" />
-                          </TouchableOpacity>
-                          <TouchableOpacity
-                            style={styles.actionButton}
-                            onPress={(e) => {
-                              e.stopPropagation();
-                              handleDeletePlan(plan.originalPlan!.id!);
-                            }}
-                          >
-                            <Feather name="trash-2" size={16} color="#FF6B6B" />
-                          </TouchableOpacity>
-                        </View>
-                      </View>
-
-                      <Text style={styles.planDescription}>
-                        {plan.description}
-                      </Text>
-
-                      <View style={styles.planDetails}>
-                        <View style={styles.planDetail}>
-                          <Ionicons
-                            name="flame-outline"
-                            size={14}
-                            color="#FF6B6B"
-                          />
-                          <Text style={styles.planDetailText}>
-                            {plan.totalCalories} ккал/день
-                          </Text>
-                        </View>
-                        <View style={styles.planDetail}>
-                          <Ionicons
-                            name="time-outline"
-                            size={14}
-                            color="#6A9AA9"
-                          />
-                          <Text style={styles.planDetailText}>
-                            {plan.duration}
-                          </Text>
-                        </View>
-                        <View style={styles.planDetail}>
-                          <Ionicons
-                            name="restaurant-outline"
-                            size={14}
-                            color="#9BDF11"
-                          />
-                          <Text style={styles.planDetailText}>
-                            {plan.mealsCount} приёмов
-                          </Text>
-                        </View>
-                      </View>
-
-                      <View style={styles.planFooter}>
-                        <View style={styles.planFooterLeft}>
-                          <View
-                            style={[
-                              styles.planCategoryBadge,
-                              {
-                                backgroundColor: getCategoryColor(
-                                  plan.category
-                                ),
-                              },
-                            ]}
-                          >
-                            <Text style={styles.planCategoryText}>
-                              {plan.category}
-                            </Text>
+                {filteredPlans.map((plan) => {
+                  const isActiveToday = plan.isActiveToday;
+                  const isArchived = plan.isArchived;
+                  const isScheduled = plan.isScheduled;
+                  
+                  return (
+                    <TouchableOpacity
+                      key={plan.id}
+                      style={[styles.planCard, isActiveToday && styles.activePlanCard, isArchived && styles.archivedPlanCard, isScheduled && styles.scheduledPlanCard]}
+                      onPress={() => handlePlanPress(plan)}
+                      activeOpacity={0.7}
+                    >
+                      <View style={styles.planContent}>
+                        <View style={styles.planHeader}>
+                          <View style={styles.planTitleRow}>
+                            <Text style={styles.planName} numberOfLines={1}>{plan.name}</Text>
+                            {isActiveToday && (
+                              <View style={styles.activeBadge}>
+                                <Ionicons name="checkmark-circle" size={14} color="#FFFFFF" />
+                                <Text style={styles.activeBadgeText}>Активен сегодня</Text>
+                              </View>
+                            )}
+                            {isScheduled && (
+                              <View style={styles.scheduledBadge}>
+                                <Ionicons name="calendar" size={12} color="#FFFFFF" />
+                                <Text style={styles.activeBadgeText}>на {plan.activeDate}</Text>
+                              </View>
+                            )}
+                            {isArchived && (
+                              <View style={styles.archivedBadge}>
+                                <Ionicons name="archive" size={12} color="#FFFFFF" />
+                                <Text style={styles.activeBadgeText}>Архивный</Text>
+                              </View>
+                            )}
                           </View>
-                          <Text style={styles.planDate}>
-                            Создан: {plan.savedDate}
-                          </Text>
+                          <View style={styles.planActions}>
+                            {isArchived && (
+                              <TouchableOpacity
+                                style={styles.actionButton}
+                                onPress={(e) => {
+                                  e.stopPropagation();
+                                  handleRestoreFromArchive(plan);
+                                }}
+                              >
+                                <Ionicons name="refresh-outline" size={18} color="#4CAF50" />
+                              </TouchableOpacity>
+                            )}
+                            {!isActiveToday && (
+                              <TouchableOpacity
+                                style={styles.actionButton}
+                                onPress={(e) => {
+                                  e.stopPropagation();
+                                  handleEditPlan(plan.originalPlan!, isActiveToday, isArchived, isScheduled);
+                                }}
+                              >
+                                <Feather name="edit-2" size={16} color={isArchived ? "#999" : "#6A9AA9"} />
+                              </TouchableOpacity>
+                            )}
+                            {isActiveToday && (
+                              <View style={styles.disabledActionButton}>
+                                <Feather name="edit-2" size={16} color="#999" />
+                              </View>
+                            )}
+                            <TouchableOpacity
+                              style={styles.actionButton}
+                              onPress={(e) => {
+                                e.stopPropagation();
+                                handleDeletePlan(plan.originalPlan!.id!, isActiveToday, isArchived, isScheduled);
+                              }}
+                            >
+                              <Feather name="trash-2" size={16} color="#FF6B6B" />
+                            </TouchableOpacity>
+                          </View>
                         </View>
 
-                        <View style={styles.planFooterRight}>
-                          {plan.originalPlan?.isTemplate ? (
-                            <TouchableOpacity
-                              style={styles.usePlanButton}
-                              onPress={(e) => {
-                                e.stopPropagation();
-                                handleUsePlan(plan);
-                              }}
-                            >
-                              <Text style={styles.usePlanButtonText}>
-                                Использовать
-                              </Text>
-                            </TouchableOpacity>
-                          ) : (
-                            <TouchableOpacity
-                              style={[
-                                styles.usePlanButton,
-                                styles.activePlanButton,
-                              ]}
-                              onPress={(e) => {
-                                e.stopPropagation();
-                                navigateToPlan(plan);
-                              }}
-                            >
-                              <Text style={styles.usePlanButtonText}>
-                                {plan.originalPlan?.status === "active"
-                                  ? "Просмотр"
-                                  : "Повторить"}
-                              </Text>
-                            </TouchableOpacity>
-                          )}
+                        {isActiveToday && (
+                          <View style={styles.editWarning}>
+                            <Ionicons name="information-circle" size={14} color="#FF9800" />
+                            <Text style={styles.editWarningText}>Активный план нельзя редактировать</Text>
+                          </View>
+                        )}
+
+                        <Text style={styles.planDescription} numberOfLines={2}>
+                          {plan.description}
+                        </Text>
+
+                        <View style={styles.planDetails}>
+                          <View style={styles.planDetail}>
+                            <Ionicons name="flame-outline" size={14} color="#FF6B6B" />
+                            <Text style={styles.planDetailText}>{plan.totalCalories} ккал/день</Text>
+                          </View>
+                          <View style={styles.planDetail}>
+                            <Ionicons name="restaurant-outline" size={14} color="#9BDF11" />
+                            <Text style={styles.planDetailText}>{plan.mealsCount} приёмов</Text>
+                          </View>
                         </View>
+
+                        <View style={styles.planFooter}>
+                          <View style={[styles.planCategoryBadge, isArchived && styles.archivedCategoryBadge, isScheduled && styles.scheduledCategoryBadge]}>
+                            <Text style={[styles.planCategoryText, isArchived && styles.archivedCategoryText, isScheduled && styles.scheduledCategoryText]}>{plan.category}</Text>
+                          </View>
+                          <Text style={styles.planDate}>Создан: {plan.savedDate}</Text>
+                          <TouchableOpacity
+                            style={[
+                              styles.usePlanButton, 
+                              isActiveToday && styles.usePlanButtonActive,
+                              isArchived && styles.usePlanButtonArchived
+                            ]}
+                            onPress={(e) => {
+                              e.stopPropagation();
+                              if (!isActiveToday) {
+                                handleUsePlan(plan);
+                              }
+                            }}
+                            disabled={isActiveToday}
+                          >
+                            <Text style={[
+                              styles.usePlanButtonText, 
+                              isActiveToday && styles.usePlanButtonTextActive,
+                              isArchived && styles.usePlanButtonTextArchived
+                            ]}>
+                              {isActiveToday ? "Активен" : (isArchived ? "В архиве" : "Использовать")}
+                            </Text>
+                          </TouchableOpacity>
+                        </View>
+                        
+                        {isArchived && (
+                          <Text style={styles.archivedNote}>
+                            Нажмите на иконку восстановления, чтобы вернуть план из архива
+                          </Text>
+                        )}
                       </View>
-                    </View>
-                  </TouchableOpacity>
-                ))}
+                    </TouchableOpacity>
+                  );
+                })}
               </View>
             </>
           )}
         </View>
       </ScrollView>
 
-      <Modal
-        animationType="slide"
-        transparent={true}
-        visible={showUsePlanModal}
-        onRequestClose={() => setShowUsePlanModal(false)}
-      >
+      <Modal animationType="slide" transparent={true} visible={showUsePlanModal} onRequestClose={() => setShowUsePlanModal(false)}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContainer}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Использовать план</Text>
-              <TouchableOpacity
-                style={styles.modalCloseButton}
-                onPress={() => setShowUsePlanModal(false)}
-              >
-                <Ionicons name="close" size={24} color="#000" />
+              <TouchableOpacity style={styles.modalCloseButton} onPress={() => setShowUsePlanModal(false)}>
+                <Ionicons name="close" size={24} color="#1a1a1a" />
               </TouchableOpacity>
             </View>
 
             <View style={styles.modalContent}>
               <Text style={styles.modalPlanName}>{selectedPlan?.title}</Text>
-              <Text style={styles.modalPlanDescription}>
-                {selectedPlan?.description}
-              </Text>
+              <Text style={styles.modalPlanDescription}>{selectedPlan?.description}</Text>
 
               <View style={styles.datePickerSection}>
-                <Text style={styles.datePickerLabel}>Начало:</Text>
-                <TouchableOpacity
-                  style={styles.datePickerButton}
-                  onPress={() => setShowStartDatePicker(true)}
-                >
+                <Text style={styles.datePickerLabel}>Дата активации:</Text>
+                <TouchableOpacity style={styles.datePickerButton} onPress={() => setShowDatePicker(true)}>
                   <Ionicons name="calendar" size={20} color="#6A9AA9" />
-                  <Text style={styles.datePickerText}>
-                    {startDate.toLocaleDateString("ru-RU")}
-                  </Text>
+                  <Text style={styles.datePickerText}>{selectedDate.toLocaleDateString("ru-RU")}</Text>
                 </TouchableOpacity>
               </View>
 
-              <View style={styles.datePickerSection}>
-                <Text style={styles.datePickerLabel}>Окончание:</Text>
-                <TouchableOpacity
-                  style={styles.datePickerButton}
-                  onPress={() => setShowEndDatePicker(true)}
-                >
-                  <Ionicons name="calendar" size={20} color="#6A9AA9" />
-                  <Text style={styles.datePickerText}>
-                    {endDate.toLocaleDateString("ru-RU")}
-                  </Text>
-                </TouchableOpacity>
+              <View style={styles.warningContainer}>
+                <Ionicons name="information-circle" size={20} color="#FF9800" />
+                <Text style={styles.warningText}>
+                  {selectedDate.toDateString() === new Date().toDateString() 
+                    ? "План будет активирован на сегодня" 
+                    : `План будет активирован на ${selectedDate.toLocaleDateString("ru-RU")}`}
+                </Text>
               </View>
-
-              <Text style={styles.durationText}>
-                Длительность:{" "}
-                {Math.ceil(
-                  (endDate.getTime() - startDate.getTime()) / (1000 * 3600 * 24)
-                ) + 1}{" "}
-                дней
-              </Text>
             </View>
 
             <View style={styles.modalButtons}>
-              <TouchableOpacity
-                style={[styles.modalButton, styles.cancelButton]}
-                onPress={() => setShowUsePlanModal(false)}
-              >
+              <TouchableOpacity style={[styles.modalButton, styles.cancelButton]} onPress={() => setShowUsePlanModal(false)}>
                 <Text style={styles.cancelButtonText}>Отмена</Text>
               </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.modalButton, styles.confirmButton]}
-                onPress={handleUsePlanConfirm}
-              >
-                <Text style={styles.confirmButtonText}>Подтвердить</Text>
+              <TouchableOpacity style={[styles.modalButton, styles.confirmButton]} onPress={handleUsePlanConfirm}>
+                <Text style={styles.confirmButtonText}>Активировать</Text>
               </TouchableOpacity>
             </View>
           </View>
         </View>
 
-        {showStartDatePicker && (
-          <DateTimePicker
-            value={startDate}
-            mode="date"
-            display={Platform.OS === "ios" ? "spinner" : "default"}
-            onChange={handleStartDateChange}
+        {showDatePicker && (
+          <DateTimePicker 
+            value={selectedDate} 
+            mode="date" 
+            display={Platform.OS === "ios" ? "spinner" : "default"} 
+            onChange={handleDateChange} 
           />
         )}
+      </Modal>
 
-        {showEndDatePicker && (
-          <DateTimePicker
-            value={endDate}
-            mode="date"
-            display={Platform.OS === "ios" ? "spinner" : "default"}
-            minimumDate={startDate}
-            onChange={handleEndDateChange}
-          />
-        )}
+      <Modal animationType="fade" transparent={true} visible={showSuccessModal} onRequestClose={() => setShowSuccessModal(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.successModalContainer}>
+            <View style={styles.successIconContainer}>
+              <Ionicons name="checkmark-circle" size={60} color="#4CAF50" />
+            </View>
+            <Text style={styles.successTitle}>План активирован!</Text>
+            <Text style={styles.successMessage}>
+              План "{selectedPlan?.title}" активирован на {selectedDate.toLocaleDateString("ru-RU")}
+            </Text>
+            
+            <View style={styles.successButtons}>
+              <TouchableOpacity 
+                style={[styles.successButton, styles.stayButton]} 
+                onPress={() => {
+                  setShowSuccessModal(false);
+                  loadUserPlans();
+                }}
+              >
+                <Text style={styles.stayButtonText}>Остаться здесь</Text>
+              </TouchableOpacity>
+              <TouchableOpacity 
+                style={[styles.successButton, styles.goToRationButton]} 
+                onPress={goToHome}
+              >
+                <Text style={styles.goToRationButtonText}>Перейти к рациону</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
       </Modal>
     </View>
   );
 }
 
-// Вспомогательные функции
-const getCategoryColor = (category: string) => {
-  switch (category) {
-    case "Похудение":
-      return "#FF6B6B";
-    case "Энергия":
-      return "#FFD93D";
-    case "Здоровье":
-      return "#6BCF7F";
-    case "Спорт":
-      return "#4D96FF";
-    default:
-      return "#6A9AA9";
-  }
-};
-
 const getPlanCountText = (count: number) => {
-  if (count % 10 === 1 && count % 100 !== 11) return "план найден";
-  if ([2, 3, 4].includes(count % 10) && ![12, 13, 14].includes(count % 100))
-    return "плана найдено";
-  return "планов найдено";
+  if (count % 10 === 1 && count % 100 !== 11) return "план";
+  if ([2, 3, 4].includes(count % 10) && ![12, 13, 14].includes(count % 100)) return "плана";
+  return "планов";
 };
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#FFFFFF",
+  container: { flex: 1, backgroundColor: "#FFFFFF" },
+  loadingContainer: { flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: "#FFFFFF" },
+  loadingText: { marginTop: 16, fontSize: 16, color: "#6A9AA9", fontFamily: "Playfair Display Regular" },
+  header: { 
+    flexDirection: "row", 
+    alignItems: "center", 
+    justifyContent: "space-between", 
+    paddingHorizontal: 16, 
+    paddingTop: 50, 
+    paddingBottom: 15, 
+    backgroundColor: "#FFFFFF", 
+    borderBottomWidth: 2, 
+    borderBottomColor: "#6A9AA9" 
   },
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 20,
-    paddingTop: 50,
-    paddingBottom: 15,
-    backgroundColor: "#FFFFFF",
-    borderBottomWidth: 2,
-    borderBottomColor: "#6A9AA9",
-  },
-  backButton: {
-    padding: 8,
-  },
-  headerTitle: {
-    fontSize: 24,
-    color: "#1a1a1a",
-    fontFamily: "Playfair Display Bold",
+  backButton: { padding: 8, minWidth: 40 },
+  headerTitle: { 
+    fontSize: 20, 
+    color: "#1a1a1a", 
+    fontFamily: "Playfair Display Bold", 
     textAlign: "center",
+    flex: 1 
   },
-  headerPlaceholder: {
-    width: 40,
+  scrollContainer: { flex: 1 },
+  searchSection: { backgroundColor: "#FFFFFF", padding: 15, marginBottom: 1 },
+  searchRow: { flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 12 },
+  searchInputContainer: { 
+    flex: 1, 
+    flexDirection: "row", 
+    alignItems: "center", 
+    backgroundColor: "#FFFFFF", 
+    borderRadius: 30, 
+    borderWidth: 2, 
+    borderColor: "#6A9AA9", 
+    paddingHorizontal: 15, 
+    paddingVertical: 6 
   },
-  scrollContainer: {
-    flex: 1,
+  searchIcon: { marginRight: 8 },
+  searchInput: { 
+    flex: 1, 
+    fontSize: 14, 
+    color: "#000", 
+    paddingVertical: 4, 
+    fontFamily: "Playfair Display Regular" 
   },
-  searchSection: {
-    backgroundColor: "#FFFFFF",
-    padding: 15,
-    marginBottom: 1,
+  categoriesContainer: { marginBottom: 12 },
+  categoryButton: { 
+    backgroundColor: "white", 
+    borderWidth: 2, 
+    borderColor: "#6A9AA9", 
+    borderRadius: 20, 
+    paddingHorizontal: 16, 
+    paddingVertical: 8, 
+    marginRight: 8 
   },
-  searchRow: {
+  categoryButtonActive: { backgroundColor: "#9BDF11", borderColor: "#9BDF11" },
+  categoryText: { 
+    fontSize: 14, 
+    color: "#000000", 
+    fontFamily: "Playfair Display Regular", 
+    fontWeight: "600" 
+  },
+  categoryTextActive: { color: "#000000" },
+  sectionDivider: { height: 2, backgroundColor: "#6A9AA9", marginHorizontal: -15, marginTop: 12 },
+  plansSection: { backgroundColor: "#FFFFFF", padding: 15, paddingBottom: 20 },
+  createPlanMainButton: {
     flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    marginBottom: 12,
-  },
-  searchInputContainer: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#FFFFFF",
-    borderRadius: 30,
-    borderWidth: 2,
-    borderColor: "#6A9AA9",
-    paddingHorizontal: 15,
-    paddingVertical: 6,
-  },
-  searchIcon: {
-    marginRight: 8,
-  },
-  searchInput: {
-    flex: 1,
-    fontSize: 14,
-    color: "#000",
-    paddingVertical: 4,
-    fontFamily: "Playfair Display Regular",
-  },
-  categoriesContainer: {
-    marginBottom: 12,
-  },
-  categoryButton: {
-    backgroundColor: "white",
-    borderWidth: 2,
-    borderColor: "#6A9AA9",
-    borderRadius: 20,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    marginRight: 8,
-  },
-  categoryButtonActive: {
-    backgroundColor: "#9BDF11",
-    borderColor: "#9BDF11",
-  },
-  categoryText: {
-    fontSize: 14,
-    color: "#000000",
-    fontFamily: "Playfair Display Regular",
-    fontWeight: "600",
-  },
-  categoryTextActive: {
-    color: "#000000",
-  },
-  sectionDivider: {
-    height: 2,
-    backgroundColor: "#6A9AA9",
-    marginHorizontal: -15,
-    marginTop: 12,
-  },
-  plansSection: {
-    backgroundColor: "#FFFFFF",
-    padding: 15,
-    paddingBottom: 20,
-  },
-  plansHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 16,
-  },
-  plansTitle: {
-    fontSize: 16,
-    color: "#000000ff",
-    fontWeight: "500",
-    fontFamily: "Playfair Display Regular",
-  },
-  createPlanButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#9BDF11",
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 20,
-    gap: 6,
-  },
-  createPlanButtonText: {
-    color: "#000000",
-    fontSize: 14,
-    fontWeight: "600",
-    fontFamily: "Playfair Display Regular",
-  },
-  emptyState: {
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 60,
-  },
-  emptyTitle: {
-    fontSize: 18,
-    color: "#6C757D",
-    fontFamily: "Playfair Display Regular",
-    marginBottom: 8,
-  },
-  emptyText: {
-    fontSize: 14,
-    color: "#6C757D",
-    fontFamily: "Playfair Display Regular",
-    textAlign: "center",
-    marginBottom: 20,
-  },
-  clearFiltersButton: {
-    backgroundColor: "#9BDF11",
+    backgroundColor: "#6A9AA9",
+    paddingVertical: 14,
     paddingHorizontal: 20,
-    paddingVertical: 12,
-    borderRadius: 25,
-  },
-  clearFiltersText: {
-    color: "#000000",
-    fontSize: 16,
-    fontWeight: "600",
-    fontFamily: "Playfair Display Regular",
-  },
-  plansList: {
-    gap: 16,
-  },
-  planCard: {
-    backgroundColor: "#C2DAE2",
-    borderRadius: 16,
-    overflow: "hidden",
-    flexDirection: "row",
+    borderRadius: 12,
+    marginBottom: 20,
+    gap: 10,
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.1,
-    shadowRadius: 3.84,
-    elevation: 5,
-    height: 140,
+    shadowRadius: 4,
+    elevation: 3,
   },
-  planIconContainer: {
-    width: 80,
-    height: "100%",
-    backgroundColor: "#C2DAE2",
-    justifyContent: "center",
-    alignItems: "center",
+  createPlanMainButtonText: {
+    fontSize: 16,
+    color: "#FFFFFF",
+    fontFamily: "Playfair Display Bold",
   },
-  planContent: {
-    flex: 1,
-    padding: 12,
-    justifyContent: "space-between",
+  plansHeader: { 
+    flexDirection: "row", 
+    justifyContent: "space-between", 
+    alignItems: "center", 
+    marginBottom: 16 
   },
-  planHeader: {
+  plansTitle: { 
+    fontSize: 16, 
+    color: "#000000", 
+    fontWeight: "500", 
+    fontFamily: "Playfair Display Regular" 
+  },
+  emptyState: { alignItems: "center", justifyContent: "center", paddingVertical: 60 },
+  emptyTitle: { 
+    fontSize: 18, 
+    color: "#6C757D", 
+    fontFamily: "Playfair Display Regular", 
+    marginBottom: 8 
+  },
+  emptyText: { 
+    fontSize: 14, 
+    color: "#6C757D", 
+    fontFamily: "Playfair Display Regular", 
+    textAlign: "center", 
+    marginBottom: 20 
+  },
+  clearFiltersButton: { 
+    backgroundColor: "#9BDF11", 
+    paddingHorizontal: 20, 
+    paddingVertical: 12, 
+    borderRadius: 25 
+  },
+  clearFiltersText: { 
+    color: "#000000", 
+    fontSize: 16, 
+    fontWeight: "600", 
+    fontFamily: "Playfair Display Regular" 
+  },
+  plansList: { gap: 12 },
+  planCard: { 
+    backgroundColor: "#C2DAE2", 
+    borderRadius: 16, 
+    overflow: "hidden", 
+    shadowColor: "#000", 
+    shadowOffset: { width: 0, height: 2 }, 
+    shadowOpacity: 0.1, 
+    shadowRadius: 3.84, 
+    elevation: 5 
+  },
+  activePlanCard: {
+    borderWidth: 2,
+    borderColor: "#6BCF7F",
+    backgroundColor: "#D4E8D4",
+  },
+  archivedPlanCard: {
+    borderWidth: 1,
+    borderColor: "#FF9800",
+    backgroundColor: "#F5F5F5",
+    opacity: 0.85,
+  },
+  scheduledPlanCard: {
+    borderWidth: 1,
+    borderColor: "#2196F3",
+    backgroundColor: "#E3F2FD",
+  },
+  planContent: { padding: 14, justifyContent: "space-between" },
+  planHeader: { 
+    flexDirection: "row", 
+    justifyContent: "space-between", 
+    alignItems: "center", 
+    marginBottom: 8 
+  },
+  planTitleRow: { 
+    flexDirection: "row", 
+    alignItems: "center", 
+    flex: 1, 
+    gap: 8, 
+    flexWrap: "wrap" 
+  },
+  planName: { 
+    fontSize: 16, 
+    fontWeight: "600", 
+    color: "#212529", 
+    fontFamily: "Playfair Display Bold",
+    flex: 1 
+  },
+  activeBadge: { 
     flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "flex-start",
-    marginBottom: 4,
+    alignItems: "center",
+    backgroundColor: "#6BCF7F", 
+    paddingHorizontal: 8, 
+    paddingVertical: 3, 
+    borderRadius: 12,
+    gap: 4
   },
-  planTitleRow: {
+  archivedBadge: {
     flexDirection: "row",
     alignItems: "center",
-    flex: 1,
+    backgroundColor: "#FF9800", 
+    paddingHorizontal: 8, 
+    paddingVertical: 3, 
+    borderRadius: 12,
+    gap: 4
+  },
+  scheduledBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#2196F3", 
+    paddingHorizontal: 8, 
+    paddingVertical: 3, 
+    borderRadius: 12,
+    gap: 4
+  },
+  activeBadgeText: { 
+    fontSize: 10, 
+    fontWeight: "bold", 
+    color: "#FFFFFF", 
+    fontFamily: "Playfair Display Regular" 
+  },
+  planActions: { 
+    flexDirection: "row", 
+    alignItems: "center", 
+    gap: 12 
+  },
+  actionButton: { padding: 4 },
+  disabledActionButton: { padding: 4, opacity: 0.5 },
+  planDescription: { 
+    fontSize: 13, 
+    color: "#4a6a7a", 
+    fontFamily: "Playfair Display Regular", 
+    marginBottom: 10, 
+    lineHeight: 18 
+  },
+  editWarning: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#FFF3E0",
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    marginBottom: 8,
     gap: 6,
   },
-  planName: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: "#212529",
+  editWarningText: {
+    fontSize: 11,
+    color: "#FF9800",
     fontFamily: "Playfair Display Regular",
     flex: 1,
   },
-  planActions: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
+  planDetails: { 
+    flexDirection: "row", 
+    justifyContent: "flex-start", 
+    gap: 16, 
+    marginBottom: 10 
   },
-  actionButton: {
-    padding: 4,
+  planDetail: { 
+    flexDirection: "row", 
+    alignItems: "center", 
+    gap: 6 
   },
-  planStatusBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 12,
+  planDetailText: { 
+    fontSize: 12, 
+    color: "#212529", 
+    fontFamily: "Playfair Display Regular" 
   },
-  planStatusText: {
-    fontSize: 10,
-    fontWeight: "bold",
-    color: "#FFFFFF",
-    fontFamily: "Playfair Display Regular",
-  },
-  planDescription: {
-    fontSize: 12,
-    color: "#6A9AA9",
-    fontFamily: "Playfair Display Regular",
-    marginBottom: 8,
-    lineHeight: 14,
-  },
-  planDetails: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    marginBottom: 8,
-  },
-  planDetail: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-  },
-  planDetailText: {
-    fontSize: 10,
-    color: "#000000",
-    fontFamily: "Playfair Display Regular",
-  },
-  planFooter: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-  },
-  planFooterLeft: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  planFooterRight: {
-    alignItems: "flex-end",
-  },
-  planCategoryBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 12,
-  },
-  planCategoryText: {
-    fontSize: 10,
-    fontWeight: "bold",
-    color: "#FFFFFF",
-    fontFamily: "Playfair Display Regular",
-  },
-  planDate: {
-    fontSize: 10,
-    color: "#6C757D",
-    fontFamily: "Playfair Display Regular",
-  },
-  usePlanButton: {
-    backgroundColor: "#9BDF11",
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 15,
-  },
-  activePlanButton: {
-    backgroundColor: "#6A9AA9",
-  },
-  usePlanButtonText: {
-    color: "#000000",
-    fontSize: 12,
-    fontWeight: "600",
-    fontFamily: "Playfair Display Regular",
-  },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: "rgba(0, 0, 0, 0.5)",
-    justifyContent: "flex-end",
-  },
-  modalContainer: {
-    backgroundColor: "#FFFFFF",
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    paddingBottom: 30,
-    maxHeight: Dimensions.get("window").height * 0.8,
-  },
-  modalHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    padding: 20,
-    borderBottomWidth: 2,
-    borderBottomColor: "#6A9AA9",
-  },
-  modalTitle: {
-    fontSize: 20,
-    fontFamily: "Playfair Display Bold",
-    color: "#1a1a1a",
-  },
-  modalCloseButton: {
-    padding: 4,
-  },
-  modalContent: {
-    padding: 20,
-  },
-  modalPlanName: {
-    fontSize: 18,
-    fontFamily: "Playfair Display Bold",
-    color: "#1a1a1a",
-    marginBottom: 8,
-  },
-  modalPlanDescription: {
-    fontSize: 14,
-    color: "#6A9AA9",
-    fontFamily: "Playfair Display Regular",
-    marginBottom: 20,
-  },
-  datePickerSection: {
-    marginBottom: 16,
-  },
-  datePickerLabel: {
-    fontSize: 14,
-    color: "#000000",
-    fontFamily: "Playfair Display Regular",
-    marginBottom: 8,
-  },
-  datePickerButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#FFFFFF",
-    borderWidth: 2,
-    borderColor: "#6A9AA9",
-    borderRadius: 10,
-    paddingHorizontal: 15,
-    paddingVertical: 12,
+  planFooter: { 
+    flexDirection: "row", 
+    alignItems: "center", 
     gap: 10,
+    flexWrap: "wrap"
   },
-  datePickerText: {
-    fontSize: 16,
-    color: "#000000",
-    fontFamily: "Playfair Display Regular",
+  planCategoryBadge: { 
+    backgroundColor: "rgba(107, 207, 127, 0.2)", 
+    paddingHorizontal: 10, 
+    paddingVertical: 4, 
+    borderRadius: 12 
   },
-  durationText: {
-    fontSize: 14,
+  archivedCategoryBadge: {
+    backgroundColor: "rgba(255, 152, 0, 0.2)",
+  },
+  scheduledCategoryBadge: {
+    backgroundColor: "rgba(33, 150, 243, 0.2)",
+  },
+  planCategoryText: { 
+    fontSize: 11, 
+    fontWeight: "600", 
+    color: "#2e7d32", 
+    fontFamily: "Playfair Display Regular" 
+  },
+  archivedCategoryText: {
+    color: "#E65100",
+  },
+  scheduledCategoryText: {
+    color: "#1565C0",
+  },
+  planDate: { 
+    fontSize: 11, 
+    color: "#6C757D", 
+    fontFamily: "Playfair Display Regular" 
+  },
+  usePlanButton: { 
+    backgroundColor: "#9BDF11", 
+    paddingHorizontal: 14, 
+    paddingVertical: 6, 
+    borderRadius: 15,
+    marginLeft: "auto"
+  },
+  usePlanButtonActive: {
+    backgroundColor: "#E5F0F5",
+  },
+  usePlanButtonArchived: {
+    backgroundColor: "#D3D3D3",
+  },
+  usePlanButtonText: { 
+    color: "#000000", 
+    fontSize: 12, 
+    fontWeight: "600", 
+    fontFamily: "Playfair Display Regular" 
+  },
+  usePlanButtonTextActive: {
     color: "#6A9AA9",
+  },
+  usePlanButtonTextArchived: {
+    color: "#999",
+  },
+  archivedNote: {
+    fontSize: 11,
+    color: "#FF9800",
     fontFamily: "Playfair Display Regular",
     marginTop: 8,
+    fontStyle: "italic",
+  },
+  modalOverlay: { 
+    flex: 1, 
+    backgroundColor: "rgba(0, 0, 0, 0.5)", 
+    justifyContent: "center", 
+    alignItems: "center" 
+  },
+  modalContainer: { 
+    backgroundColor: "#FFFFFF", 
+    borderRadius: 20, 
+    width: "90%", 
+    maxHeight: Dimensions.get("window").height * 0.8,
+    overflow: "hidden"
+  },
+  successModalContainer: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 20,
+    width: "85%",
+    padding: 24,
+    alignItems: "center",
+  },
+  successIconContainer: {
+    marginBottom: 16,
+  },
+  successTitle: {
+    fontSize: 22,
+    fontFamily: "Playfair Display Bold",
+    color: "#1a1a1a",
+    marginBottom: 8,
+  },
+  successMessage: {
+    fontSize: 14,
+    color: "#666",
+    fontFamily: "Playfair Display Regular",
     textAlign: "center",
+    marginBottom: 24,
   },
-  modalButtons: {
+  successButtons: {
     flexDirection: "row",
-    paddingHorizontal: 20,
     gap: 12,
+    width: "100%",
   },
-  modalButton: {
+  successButton: {
     flex: 1,
-    paddingVertical: 14,
+    paddingVertical: 12,
     borderRadius: 25,
     alignItems: "center",
   },
-  cancelButton: {
+  stayButton: {
     backgroundColor: "#FFFFFF",
     borderWidth: 2,
     borderColor: "#6A9AA9",
   },
-  confirmButton: {
+  goToRationButton: {
     backgroundColor: "#9BDF11",
   },
-  cancelButtonText: {
-    color: "#000000",
-    fontSize: 16,
+  stayButtonText: {
+    color: "#6A9AA9",
+    fontSize: 14,
     fontWeight: "600",
     fontFamily: "Playfair Display Regular",
   },
-  confirmButtonText: {
+  goToRationButtonText: {
     color: "#000000",
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: "600",
     fontFamily: "Playfair Display Regular",
+  },
+  modalHeader: { 
+    flexDirection: "row", 
+    justifyContent: "space-between", 
+    alignItems: "center", 
+    padding: 20, 
+    borderBottomWidth: 2, 
+    borderBottomColor: "#6A9AA9" 
+  },
+  modalTitle: { 
+    fontSize: 20, 
+    fontFamily: "Playfair Display Bold", 
+    color: "#1a1a1a" 
+  },
+  modalCloseButton: { padding: 4 },
+  modalContent: { padding: 20 },
+  modalPlanName: { 
+    fontSize: 18, 
+    fontFamily: "Playfair Display Bold", 
+    color: "#1a1a1a", 
+    marginBottom: 8 
+  },
+  modalPlanDescription: { 
+    fontSize: 14, 
+    color: "#6A9AA9", 
+    fontFamily: "Playfair Display Regular", 
+    marginBottom: 20 
+  },
+  datePickerSection: { marginBottom: 16 },
+  datePickerLabel: { 
+    fontSize: 14, 
+    color: "#000000", 
+    fontFamily: "Playfair Display Regular", 
+    marginBottom: 8 
+  },
+  datePickerButton: { 
+    flexDirection: "row", 
+    alignItems: "center", 
+    backgroundColor: "#FFFFFF", 
+    borderWidth: 2, 
+    borderColor: "#6A9AA9", 
+    borderRadius: 10, 
+    paddingHorizontal: 15, 
+    paddingVertical: 12, 
+    gap: 10 
+  },
+  datePickerText: { 
+    fontSize: 16, 
+    color: "#000000", 
+    fontFamily: "Playfair Display Regular" 
+  },
+  warningContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#FFF3E0",
+    padding: 12,
+    borderRadius: 8,
+    gap: 8,
+    marginTop: 16,
+  },
+  warningText: {
+    flex: 1,
+    fontSize: 12,
+    color: "#FF9800",
+    fontFamily: "Playfair Display Regular",
+  },
+  modalButtons: { 
+    flexDirection: "row", 
+    paddingHorizontal: 20, 
+    paddingBottom: 20,
+    gap: 12 
+  },
+  modalButton: { 
+    flex: 1, 
+    paddingVertical: 14, 
+    borderRadius: 25, 
+    alignItems: "center" 
+  },
+  cancelButton: { 
+    backgroundColor: "#FFFFFF", 
+    borderWidth: 2, 
+    borderColor: "#6A9AA9" 
+  },
+  confirmButton: { backgroundColor: "#9BDF11" },
+  cancelButtonText: { 
+    color: "#000000", 
+    fontSize: 16, 
+    fontWeight: "600", 
+    fontFamily: "Playfair Display Regular" 
+  },
+  confirmButtonText: { 
+    color: "#000000", 
+    fontSize: 16, 
+    fontWeight: "600", 
+    fontFamily: "Playfair Display Regular" 
   },
 });
