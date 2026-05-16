@@ -1,4 +1,3 @@
-// app/select-recipe.tsx
 import { useRouter, useLocalSearchParams } from "expo-router";
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -66,51 +65,10 @@ interface Recipe {
   difficultyLevel?: string;
   difficulty?: string; 
   createdAt?: any;
-  proteins?: number;      // Добавлено
-  fats?: number;          // Добавлено
-  carbohydrates?: number; // Добавлено
+  proteins?: number;
+  fats?: number;
+  carbohydrates?: number;
 }
-
-// --- КОМПОНЕНТ АВАТАРА ---
-interface AvatarProps {
-  photoURL?: string | null;
-  size?: number;
-}
-
-const Avatar: React.FC<AvatarProps> = ({ photoURL, size = 55 }) => {
-  if (photoURL) {
-    return (
-      <Image
-        source={{ uri: photoURL }}
-        style={{
-          width: size,
-          height: size,
-          borderRadius: size / 2,
-          borderWidth: 2,
-          borderColor: "#9BDF11",
-        }}
-        resizeMode="cover"
-      />
-    );
-  }
-
-  return (
-    <View
-      style={{
-        width: size,
-        height: size,
-        borderRadius: size / 2,
-        backgroundColor: "#E5F0F5",
-        justifyContent: "center",
-        alignItems: "center",
-        borderWidth: 2,
-        borderColor: "#9BDF11",
-      }}
-    >
-      <Feather name="user" size={size * 0.4} color="#6A9AA9" />
-    </View>
-  );
-};
 
 const formatMinutes = (minutes: number): string => {
   const absMinutes = Math.abs(minutes);
@@ -175,7 +133,6 @@ export default function SelectRecipeScreen() {
 
   const { user } = useAuthContext();
   const userId = user?.uid || null;
-  const [userPhotoURL, setUserPhotoURL] = useState<string | null>(null);
 
   const categories = ["Все", "Завтрак", "Обед", "Ужин", "Перекусы"];
   const scrollViewRef = useRef<ScrollView>(null);
@@ -215,30 +172,6 @@ export default function SelectRecipeScreen() {
       isComponentMounted.current = false;
     };
   }, []);
-
-  // --- Загрузка фото профиля ---
-  useEffect(() => {
-    if (!userId) return;
-
-    const loadPhoto = async () => {
-      try {
-        const profileData = await userService.fetchUserProfile(userId);
-        if (profileData?.photoURL) {
-          setUserPhotoURL(profileData.photoURL);
-          return;
-        }
-
-        const auth = getAuth();
-        if (auth.currentUser?.photoURL) {
-          setUserPhotoURL(auth.currentUser.photoURL);
-        }
-      } catch (error) {
-        console.error("Ошибка загрузки фото профиля:", error);
-      }
-    };
-
-    loadPhoto();
-  }, [userId]);
 
   // --- Вспомогательные функции ---
   const getDifficultyColor = (difficulty: string | undefined) => {
@@ -412,6 +345,7 @@ export default function SelectRecipeScreen() {
     setRefreshing(false);
   }, [db, loadRecipes, refreshing]);
 
+  // Фильтрация применяется ко ВСЕМ загруженным рецептам
   const filteredRecipes = recipes.filter((recipe) => {
     const matchesSearch =
       recipe.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -500,12 +434,6 @@ export default function SelectRecipeScreen() {
     }
   };
 
-  const navigateToProfile = () => {
-    if (userId) {
-      router.back();
-    }
-  };
-
   const resetFiltersAndScroll = () => {
     setSearchQuery("");
     setSelectedCategory("Все");
@@ -524,75 +452,72 @@ export default function SelectRecipeScreen() {
     }
   };
 
-  // --- ФУНКЦИЯ ВЫБОРА РЕЦЕПТА ДЛЯ ЗАМЕНЫ ---
-// --- ФУНКЦИЯ ВЫБОРА РЕЦЕПТА ---
-const handleSelectRecipe = (recipe: Recipe) => {
-  const recipeData = {
-    id: recipe.id,
-    title: recipe.title,
-    calories: recipe.calories || 300,
-    proteins: recipe.proteins || 20,
-    fats: recipe.fats || 10,
-    carbohydrates: recipe.carbohydrates || 30,
-    cookingTime: recipe.cookingTime || 20,
-    difficultyLevel: recipe.difficultyLevel || "Легко",
-    imageUrl: recipe.imageUrl,
-    mealType: recipe.mealType,
-    category: getCategoryName(recipe.mealType),
-    weight: "250г",
-    rating: recipe.rating || 0,
-    isCustom: false
+  // --- ФУНКЦИЯ ВЫБОРА РЕЦЕПТА ---
+  const handleSelectRecipe = (recipe: Recipe) => {
+    const recipeData = {
+      id: recipe.id,
+      title: recipe.title,
+      calories: recipe.calories || 300,
+      proteins: recipe.proteins || 20,
+      fats: recipe.fats || 10,
+      carbohydrates: recipe.carbohydrates || 30,
+      cookingTime: recipe.cookingTime || 20,
+      difficultyLevel: recipe.difficultyLevel || "Легко",
+      imageUrl: recipe.imageUrl,
+      mealType: recipe.mealType,
+      category: getCategoryName(recipe.mealType),
+      weight: "250г",
+      rating: recipe.rating || 0,
+      isCustom: false
+    };
+
+    console.log("📦 Выбран рецепт:", recipeData);
+    console.log("🔄 Режим замены:", isReplacement);
+
+    if (isReplacement) {
+      console.log("➡️ Возвращаемся на home для замены блюда");
+      router.push({
+        pathname: "/home",
+        params: {
+          replaceMeal: JSON.stringify({
+            index: parseInt(mealIndex as string),
+            meal: {
+              id: currentMealId || `meal-${Date.now()}`,
+              category: recipeData.category,
+              name: recipeData.title,
+              calories: recipeData.calories,
+              proteins: recipeData.proteins,
+              fats: recipeData.fats,
+              carbohydrates: recipeData.carbohydrates,
+              weight: recipeData.weight,
+              marked: false,
+              bookmarked: false,
+              cookingTime: recipeData.cookingTime,
+              difficultyLevel: recipeData.difficultyLevel,
+              rating: recipeData.rating,
+              recipeId: recipeData.id,
+              isCustom: false,
+              canBeRemoved: true,
+              imageUrl: recipeData.imageUrl,
+              addedAt: new Date().toISOString()
+            }
+          }),
+          refreshHome: Date.now().toString(),
+          fromScreen: "select-recipe"
+        }
+      });
+    } else {
+      console.log("➡️ Возвращаемся на home для добавления");
+      router.push({
+        pathname: "/home",
+        params: {
+          selectedRecipe: JSON.stringify(recipeData),
+          refreshHome: Date.now().toString(),
+          fromScreen: "select-recipe"
+        }
+      });
+    }
   };
-
-  console.log("📦 Выбран рецепт:", recipeData);
-  console.log("🔄 Режим замены:", isReplacement);
-
-  if (isReplacement) {
-    // При замене - сразу отправляем на home с параметрами для замены
-    console.log("➡️ Возвращаемся на home для замены блюда");
-    router.push({
-      pathname: "/home",
-      params: {
-        replaceMeal: JSON.stringify({
-          index: parseInt(mealIndex as string),
-          meal: {
-            id: currentMealId || `meal-${Date.now()}`,
-            category: recipeData.category,
-            name: recipeData.title,
-            calories: recipeData.calories,
-            proteins: recipeData.proteins,
-            fats: recipeData.fats,
-            carbohydrates: recipeData.carbohydrates,
-            weight: recipeData.weight,
-            marked: false,
-            bookmarked: false,
-            cookingTime: recipeData.cookingTime,
-            difficultyLevel: recipeData.difficultyLevel,
-            rating: recipeData.rating,
-            recipeId: recipeData.id,
-            isCustom: false,
-            canBeRemoved: true,
-            imageUrl: recipeData.imageUrl,
-            addedAt: new Date().toISOString()
-          }
-        }),
-        refreshHome: Date.now().toString(),
-        fromScreen: "select-recipe"
-      }
-    });
-  } else {
-    // Обычное добавление - идем на home
-    console.log("➡️ Возвращаемся на home для добавления");
-    router.push({
-      pathname: "/home",
-      params: {
-        selectedRecipe: JSON.stringify(recipeData),
-        refreshHome: Date.now().toString(),
-        fromScreen: "select-recipe"
-      }
-    });
-  }
-};
 
   if (loading && !refreshing) {
     return (
@@ -626,9 +551,8 @@ const handleSelectRecipe = (recipe: Recipe) => {
           </Text>
         </View>
 
-        <View style={styles.userInfo}>
-          <Avatar photoURL={userPhotoURL} size={55} />
-        </View>
+        {/* Аватар удален - оставлен только пустой View для отступа */}
+        <View style={{ width: 40 }} />
       </View>
 
       <ScrollView
@@ -689,7 +613,7 @@ const handleSelectRecipe = (recipe: Recipe) => {
                 value={searchQuery}
                 onChangeText={setSearchQuery}
               />
-              {(searchQuery || selectedCategory !== "Все") && (
+              {(searchQuery !== "" || selectedCategory !== "Все") && (
                 <TouchableOpacity
                   onPress={resetFiltersAndScroll}
                   style={styles.clearFilterButton}
@@ -827,7 +751,7 @@ const handleSelectRecipe = (recipe: Recipe) => {
               <Ionicons name="restaurant-outline" size={64} color="#C2DAE2" />
               <Text style={styles.emptyStateText}>Рецепты не найдены</Text>
               <Text style={styles.emptyStateSubtext}>
-                {searchQuery || selectedCategory !== "Все"
+                {searchQuery !== "" || selectedCategory !== "Все"
                   ? "Попробуйте изменить параметры поиска"
                   : "Публичных рецептов пока нет"}
               </Text>
@@ -911,17 +835,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: "#666",
     fontFamily: "Playfair Display Regular",
-  },
-  userInfo: {
-    alignItems: "center",
-    minWidth: 60,
-  },
-  userName: {
-    fontSize: 12,
-    color: "#666",
-    fontFamily: "Playfair Display Regular",
-    marginTop: 4,
-    textAlign: "center",
   },
   searchSection: {
     backgroundColor: "#FFFFFF",
