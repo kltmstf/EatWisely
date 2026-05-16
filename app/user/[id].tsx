@@ -352,18 +352,6 @@ export default function UserProfileScreen() {
                 {isFollowing && !isFriend && " Ожидайте, когда пользователь подпишется на вас в ответ."}
               </Text>
               
-              {/* Кнопка для подписки */}
-              {!isFollowing && (
-                <TouchableOpacity
-                  style={styles.followToViewButton}
-                  onPress={handleFollowToggle}
-                  disabled={followLoading}
-                >
-                  <Ionicons name="person-add" size={16} color="#fff" />
-                  <Text style={styles.followToViewButtonText}>Подписаться</Text>
-                </TouchableOpacity>
-              )}
-              
               {/* Сообщение о дружбе */}
               {isFollowing && !isFriend && (
                 <View style={styles.friendshipInfo}>

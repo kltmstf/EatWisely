@@ -707,7 +707,7 @@ export default function CreateRecipeModal() {
                     </View>
 
                     <View style={[styles.inputGroup, styles.equalInput]}>
-                      <Text style={styles.label}>Вес *</Text>
+                      <Text style={styles.label}>Вес (гр) *</Text>
                       <TextInput
                         style={styles.smallInput}
                         placeholder="300 гр"

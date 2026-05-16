@@ -636,7 +636,7 @@ export default function Meal() {
           <View style={styles.detailsRow}>
             <View style={styles.detailItem}>
               <MaterialIcons name="access-time" size={28} color="#6A9AA9" />
-              <Text style={styles.detailText}>{currentMealData.cookingTime}</Text>
+              <Text style={styles.detailText}>{currentMealData.cookingTime} мин.</Text>
               <Text style={styles.detailLabel}>время</Text>
             </View>
             <View style={styles.detailItem}>

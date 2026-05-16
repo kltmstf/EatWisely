@@ -66,6 +66,9 @@ interface Recipe {
   difficultyLevel?: string;
   difficulty?: string; 
   createdAt?: any;
+  proteins?: number;      // Добавлено
+  fats?: number;          // Добавлено
+  carbohydrates?: number; // Добавлено
 }
 
 // --- КОМПОНЕНТ АВАТАРА ---
@@ -522,58 +525,74 @@ export default function SelectRecipeScreen() {
   };
 
   // --- ФУНКЦИЯ ВЫБОРА РЕЦЕПТА ДЛЯ ЗАМЕНЫ ---
-  const handleSelectRecipe = (recipe: Recipe) => {
-    if (isReplacement) {
-      // Переходим на страницу meal с параметрами для замены
-      router.push({
-        pathname: "/meal",
-        params: {
-          selectedRecipe: JSON.stringify({
-            id: recipe.id,
-            title: recipe.title,
-            calories: recipe.calories || 300,
-            proteins: 0,
-            fats: 0,
-            carbohydrates: 0,
-            cookingTime: recipe.cookingTime || 20,
-            difficultyLevel: recipe.difficultyLevel || "Легко",
-            imageUrl: recipe.imageUrl,
-            mealType: recipe.mealType,
-            category: getCategoryName(recipe.mealType),
-            weight: "250г",
-            rating: recipe.rating || 0
-          }),
-          returnTo: "meal",
-          mealIndex: mealIndex,
-          currentMealId: currentMealId,
-          currentMealCategory: currentMealCategory,
-          isReplacement: "true",
-          isCustomReplacement: isCustomReplacement ? "true" : "false"
-        }
-      });
-    } else {
-      // Обычное добавление на главную
-      router.push({
-        pathname: "/",
-        params: {
-          selectedRecipe: JSON.stringify({
-            id: recipe.id,
-            title: recipe.title,
-            calories: recipe.calories || 300,
-            proteins: 0,
-            fats: 0,
-            carbohydrates: 0,
-            cookingTime: recipe.cookingTime || 20,
-            difficultyLevel: recipe.difficultyLevel || "Легко",
-            imageUrl: recipe.imageUrl,
-            mealType: recipe.mealType,
-            weight: "250г",
-            rating: recipe.rating || 0
-          })
-        }
-      });
-    }
+// --- ФУНКЦИЯ ВЫБОРА РЕЦЕПТА ---
+const handleSelectRecipe = (recipe: Recipe) => {
+  const recipeData = {
+    id: recipe.id,
+    title: recipe.title,
+    calories: recipe.calories || 300,
+    proteins: recipe.proteins || 20,
+    fats: recipe.fats || 10,
+    carbohydrates: recipe.carbohydrates || 30,
+    cookingTime: recipe.cookingTime || 20,
+    difficultyLevel: recipe.difficultyLevel || "Легко",
+    imageUrl: recipe.imageUrl,
+    mealType: recipe.mealType,
+    category: getCategoryName(recipe.mealType),
+    weight: "250г",
+    rating: recipe.rating || 0,
+    isCustom: false
   };
+
+  console.log("📦 Выбран рецепт:", recipeData);
+  console.log("🔄 Режим замены:", isReplacement);
+
+  if (isReplacement) {
+    // При замене - сразу отправляем на home с параметрами для замены
+    console.log("➡️ Возвращаемся на home для замены блюда");
+    router.push({
+      pathname: "/home",
+      params: {
+        replaceMeal: JSON.stringify({
+          index: parseInt(mealIndex as string),
+          meal: {
+            id: currentMealId || `meal-${Date.now()}`,
+            category: recipeData.category,
+            name: recipeData.title,
+            calories: recipeData.calories,
+            proteins: recipeData.proteins,
+            fats: recipeData.fats,
+            carbohydrates: recipeData.carbohydrates,
+            weight: recipeData.weight,
+            marked: false,
+            bookmarked: false,
+            cookingTime: recipeData.cookingTime,
+            difficultyLevel: recipeData.difficultyLevel,
+            rating: recipeData.rating,
+            recipeId: recipeData.id,
+            isCustom: false,
+            canBeRemoved: true,
+            imageUrl: recipeData.imageUrl,
+            addedAt: new Date().toISOString()
+          }
+        }),
+        refreshHome: Date.now().toString(),
+        fromScreen: "select-recipe"
+      }
+    });
+  } else {
+    // Обычное добавление - идем на home
+    console.log("➡️ Возвращаемся на home для добавления");
+    router.push({
+      pathname: "/home",
+      params: {
+        selectedRecipe: JSON.stringify(recipeData),
+        refreshHome: Date.now().toString(),
+        fromScreen: "select-recipe"
+      }
+    });
+  }
+};
 
   if (loading && !refreshing) {
     return (
