@@ -42,6 +42,9 @@ type Recipe = {
   savesCount?: number;
   averageRating?: number;
   rating?: number; 
+  proteins?: number;
+  fats?: number;
+  carbohydrates?: number;
 };
 
 const categories = ["Все", "Завтрак", "Обед", "Ужин", "Перекусы"];
@@ -128,27 +131,32 @@ export default function SelectMyRecipeScreen() {
       const userRecipes = await recipeService.getUserRecipes();
       
       const formattedRecipes: Recipe[] = userRecipes.map((recipe: any) => ({
-        id: recipe.id,
-        title: recipe.title || "Без названия",
-        description: recipe.description || "",
-        mealType: recipe.mealType,
-        category: getCategoryName(recipe.mealType),
-        calories: recipe.calories || 0,
-        cookingTime: recipe.cookingTime,
-        difficultyLevel: recipe.difficultyLevel || recipe.difficulty || "Легко",
-        ingredients: recipe.ingredients,
-        instructions: recipe.instructions,
-        image: recipe.image,
-        imageUrl: recipe.imageUrl,
-        langdir1: recipe.langdir1,
-        createdAt: recipe.createdAt,
-        updatedAt: recipe.updatedAt,
-        userId: recipe.userId,
-        isPublic: recipe.isPublic || false,
-        likesCount: recipe.likesCount || 0,
-        savesCount: recipe.savesCount || 0,
-        averageRating: recipe.averageRating || 0,
-      }));
+  id: recipe.id,
+  title: recipe.title || "Без названия",
+  description: recipe.description || "",
+  mealType: recipe.mealType,
+  category: getCategoryName(recipe.mealType),
+  calories: recipe.calories || 0,
+  // 🌟 ДОБАВЛЯЕМ СЮДА:
+  proteins: recipe.proteins || 0,
+  fats: recipe.fats || 0,
+  carbohydrates: recipe.carbohydrates || recipe.carbs || 0,
+  // -----------------
+  cookingTime: recipe.cookingTime,
+  difficultyLevel: recipe.difficultyLevel || recipe.difficulty || "Легко",
+  ingredients: recipe.ingredients,
+  instructions: recipe.instructions,
+  image: recipe.image,
+  imageUrl: recipe.imageUrl,
+  langdir1: recipe.langdir1,
+  createdAt: recipe.createdAt,
+  updatedAt: recipe.updatedAt,
+  userId: recipe.userId,
+  isPublic: recipe.isPublic || false,
+  likesCount: recipe.likesCount || 0,
+  savesCount: recipe.savesCount || 0,
+  averageRating: recipe.averageRating || 0,
+}));
       
       formattedRecipes.sort((a, b) => {
         const aTime = getTimestamp(a.createdAt);
@@ -289,56 +297,70 @@ export default function SelectMyRecipeScreen() {
     }
   };
 
-  // --- ФУНКЦИЯ ВЫБОРА РЕЦЕПТА ДЛЯ ЗАМЕНЫ ---
+  // --- ФУНКЦИЯ ВЫБОРА РЕЦЕПТА (ПОЛНАЯ СИНХРОНИЗАЦИЯ СО ВСЕМИ РЕЦЕПТАМИ) ---
   const handleSelectRecipe = (recipe: Recipe) => {
+    const recipeData = {
+      id: recipe.id,
+      title: recipe.title,
+      calories: recipe.calories || 300,
+      proteins: recipe.proteins || 20,
+      fats: recipe.fats || 10,
+      carbohydrates: recipe.carbohydrates || 30,
+      cookingTime: recipe.cookingTime || 20,
+      difficultyLevel: recipe.difficultyLevel || "Легко",
+      imageUrl: recipe.imageUrl || recipe.image || null, // Подстраховка для обоих полей картинок
+      mealType: recipe.mealType,
+      category: getCategoryName(recipe.mealType),
+      weight: "250г",
+      rating: recipe.rating || 0,
+      isCustom: false
+    };
+
+    console.log("📦 [МОИ РЕЦЕПТЫ] Выбран рецепт:", recipeData);
+    console.log("🔄 [МОИ РЕЦЕПТЫ] Режим замены:", isReplacement);
+
     if (isReplacement) {
-      // Переходим на страницу meal с параметрами для замены
+      console.log("➡️ [МОИ РЕЦЕПТЫ] Возвращаемся на home для замены блюда");
       router.push({
-        pathname: "/meal",
+        pathname: "/home", // Строго на /home, как во всех рецептах!
         params: {
-          selectedRecipe: JSON.stringify({
-            id: recipe.id,
-            title: recipe.title,
-            calories: recipe.calories || 300,
-            proteins: 0,
-            fats: 0,
-            carbohydrates: 0,
-            cookingTime: recipe.cookingTime || 20,
-            difficultyLevel: recipe.difficultyLevel || recipe.difficulty || "Легко",
-            imageUrl: recipe.imageUrl,
-            mealType: recipe.mealType,
-            category: getCategoryName(recipe.mealType),
-            weight: "250г",
-            rating: recipe.rating || 0
+          replaceMeal: JSON.stringify({
+            index: parseInt(mealIndex as string),
+            meal: {
+              // Жестко привязываем старый ID, чтобы Home понял, какую карточку обновить
+              id: currentMealId || `meal-${Date.now()}`, 
+              category: recipeData.category,
+              name: recipeData.title,
+              calories: recipeData.calories,
+              proteins: recipeData.proteins,
+              fats: recipeData.fats,
+              carbohydrates: recipeData.carbohydrates,
+              weight: recipeData.weight,
+              marked: false,
+              bookmarked: false,
+              cookingTime: recipeData.cookingTime,
+              difficultyLevel: recipeData.difficultyLevel,
+              rating: recipeData.rating,
+              recipeId: recipeData.id,
+              isCustom: false,
+              canBeRemoved: true,
+              imageUrl: recipeData.imageUrl,
+              addedAt: new Date().toISOString()
+            }
           }),
-          returnTo: "meal",
-          mealIndex: mealIndex,
-          currentMealId: currentMealId,
-          currentMealCategory: currentMealCategory,
-          isReplacement: "true",
-          isCustomReplacement: isCustomReplacement ? "true" : "false",
-          isFromUserRecipes: "true"
+          refreshHome: Date.now().toString(),
+          fromScreen: "select-recipe" // Маскируемся под рабочий экран, чтобы Home не сомневался
         }
       });
     } else {
-      // Обычное добавление на главную
+      console.log("➡️ [МОИ РЕЦЕПТЫ] Возвращаемся на home для добавления");
       router.push({
-        pathname: "/",
+        pathname: "/home",
         params: {
-          selectedRecipe: JSON.stringify({
-            id: recipe.id,
-            title: recipe.title,
-            calories: recipe.calories || 300,
-            proteins: 0,
-            fats: 0,
-            carbohydrates: 0,
-            cookingTime: recipe.cookingTime || 20,
-            difficultyLevel: recipe.difficultyLevel || recipe.difficulty || "Легко",
-            imageUrl: recipe.imageUrl,
-            mealType: recipe.mealType,
-            weight: "250г",
-            rating: recipe.rating || 0
-          })
+          // Шлем selectedRecipe — именно его ждет твой изначальный код добавления!
+          selectedRecipe: JSON.stringify(recipeData), 
+          refreshHome: Date.now().toString(),
+          fromScreen: "select-recipe"
         }
       });
     }

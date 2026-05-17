@@ -348,6 +348,8 @@ export default function Home() {
     
     try {
       const finalCategory = recipeData.category || recipeData.mealType || "Обед";
+      
+      // 🌟 Безопасно собираем объект, заменяя undefined на null
       const newMeal: Meal = {
         id: generateUniqueId(),
         category: finalCategory,
@@ -364,9 +366,12 @@ export default function Home() {
         difficultyLevel: recipeData.difficultyLevel || "Легко",
         rating: recipeData.rating || 0,
         recipeId: recipeData.id || '',
+        
+        // 🌟 Выставляем оба флага, чтобы разметка карточки гарантированно его увидела
         isCustom: true,
-        canBeRemoved: true,
-        imageUrl: recipeData.imageUrl || null,
+        canBeRemoved: true, 
+        
+        imageUrl: recipeData.imageUrl || null, // Защита от undefined
         addedAt: new Date().toISOString()
       };
       
@@ -380,15 +385,17 @@ export default function Home() {
         fats: acc.fats + (m.fats || 0), 
         carbohydrates: acc.carbohydrates + (m.carbohydrates || 0) 
       }), { proteins: 0, fats: 0, carbohydrates: 0 }));
+      
+      // Не дергаем лишний раз глобальное изменение шаблона, если это просто кастомный донос еды на сегодня
       setHasChanges(true);
       setIsTemplateSaved(false);
-      setActivePlanSourceId(null);
 
       console.log("💾 Сохраняем в БД полный список из", nextMeals.length, "блюд");
       await savePlanToDatabase(nextMeals);
 
     } catch (error) {
       console.error("❌ Ошибка добавления:", error);
+      Alert.alert("Ошибка", "Не удалось добавить рецепт в рацион");
     } finally {
       isAddingRecipeRef.current = false;
     }
@@ -833,52 +840,91 @@ export default function Home() {
     }
   }, [currentUser, firestoreDb, isGeneratingPlan, activePlanId]);
 
-  // Обработка замены блюда
+  // 🌟 ИСПРАВЛЕНО: Полностью изолированный эффект без зацикливания стейта meals
   useEffect(() => { 
-    if (params.replaceMeal && currentUser && firestoreDb && isInitialLoadDone && !isReplacingMealRef.current) { 
+    if (!currentUser || !firestoreDb || !isInitialLoadDone) return;
+
+    // --- СЦЕНАРИЙ 1: ОБРАБОТКА ЗАМЕНЫ БЛЮДА ---
+    if (params.replaceMeal && !isReplacingMealRef.current) { 
       isReplacingMealRef.current = true;
-      console.log("🔵 [ЭФФЕКТ ЗАМЕНЫ] Поймали replaceMeal, база данных загружена. Начинаем замену...");
+      console.log("🔵 [ЭФФЕКТ ЗАМЕНЫ] Поймали replaceMeal. Начинаем замену...");
       
       try { 
         const { index, meal } = JSON.parse(params.replaceMeal as string);
         const updatedMeal = convertToUIMeal(meal);
         
-        const currentMeals = Array.isArray(meals) ? [...meals] : [];
-        
-        if (index >= 0 && index < currentMeals.length) {
-          console.log(`🔄 Заменяем блюдо на позиции [${index}]: ${currentMeals[index].name} -> ${updatedMeal.name}`);
+        // Используем функциональный апдейт setMeals, чтобы не зависеть от внешнего meals
+        setMeals(prevMeals => {
+          const currentMeals = Array.isArray(prevMeals) ? [...prevMeals] : [];
           
-          updatedMeal.id = currentMeals[index].id; 
-          currentMeals[index] = updatedMeal;
-          
-          setMeals(currentMeals);
-          setRecommendedKBRU({
-            proteins: currentMeals.reduce((sum, m) => sum + (m.proteins || 0), 0),
-            fats: currentMeals.reduce((sum, m) => sum + (m.fats || 0), 0),
-            carbohydrates: currentMeals.reduce((sum, m) => sum + (m.carbohydrates || 0), 0),
-          });
-          setUserData(prev => ({ 
-            ...prev, 
-            consumedCalories: currentMeals.filter(m => m.marked).reduce((sum, m) => sum + (m.calories || 0), 0) 
-          }));
-          setHasChanges(true);
-          setIsTemplateSaved(false);
-          
-          console.log("💾 Сохраняем замененный рацион в БД. Всего блюд в массиве:", currentMeals.length);
-          savePlanToDatabase(currentMeals);
-        } else {
-          console.warn(`⚠️ Индекс замены ${index} невалиден для массива длиной ${currentMeals.length}`);
-        }
+          if (index >= 0 && index < currentMeals.length) {
+            console.log(`🔄 Заменяем блюдо на позиции [${index}]: ${currentMeals[index].name} -> ${updatedMeal.name}`);
+            
+            updatedMeal.id = currentMeals[index].id; 
+            currentMeals[index] = updatedMeal;
+            
+            // Пересчитываем КБЖУ на основе свежего массива
+            setRecommendedKBRU({
+              proteins: currentMeals.reduce((sum, m) => sum + (m.proteins || 0), 0),
+              fats: currentMeals.reduce((sum, m) => sum + (m.fats || 0), 0),
+              carbohydrates: currentMeals.reduce((sum, m) => sum + (m.carbohydrates || 0), 0),
+            });
+
+            setUserData(prev => ({ 
+              ...prev, 
+              consumedCalories: currentMeals.filter(m => m.marked).reduce((sum, m) => sum + (m.calories || 0), 0) 
+            }));
+
+            setHasChanges(true);
+            setIsTemplateSaved(false);
+            
+            console.log("💾 Сохраняем замененный рацион в БД. Всего блюд:", currentMeals.length);
+            savePlanToDatabase(currentMeals);
+            
+            return currentMeals;
+          } else {
+            console.warn(`⚠️ Индекс замены ${index} невалиден для массива длиной ${currentMeals.length}`);
+            return prevMeals;
+          }
+        });
 
         router.setParams({ replaceMeal: undefined });
-        isReplacingMealRef.current = false;
+        
+        // Разблокируем реф чуть позже, чтобы роутер успел стереть параметры
+        setTimeout(() => {
+          isReplacingMealRef.current = false;
+        }, 100);
 
       } catch (e) { 
         console.error("❌ Ошибка при замене блюда:", e); 
         isReplacingMealRef.current = false;
       } 
     } 
-  }, [params.replaceMeal, currentUser, firestoreDb, isInitialLoadDone, meals, savePlanToDatabase, router]);
+
+    // --- СЦЕНАРИЙ 2: ОБРАБОТКА ДОБАВЛЕНИЯ НОВОГО БЛЮДА ---
+    if (params.addMeal && !isAddingRecipeRef.current) {
+      isAddingRecipeRef.current = true;
+      console.log("🟢 [ЭФФЕКТ ДОБАВЛЕНИЯ] Поймали addMeal из параметров. Начинаем добавление...");
+
+      try {
+        const recipeData = typeof params.addMeal === 'string'
+          ? JSON.parse(params.addMeal)
+          : params.addMeal;
+
+        addRecipeToPlan(recipeData);
+        router.setParams({ addMeal: undefined });
+        
+        setTimeout(() => {
+          isAddingRecipeRef.current = false;
+        }, 100);
+
+      } catch (e) {
+        console.error("❌ Ошибка при добавлении блюда из эффекта:", e);
+        isAddingRecipeRef.current = false;
+      }
+    }
+
+  }, [params.replaceMeal, params.addMeal, currentUser, firestoreDb, isInitialLoadDone, savePlanToDatabase, addRecipeToPlan, router]);
 
   const handleToggleBookmark = useCallback(async (mealId: string) => {
     const meal = meals.find(m => m.id === mealId);
@@ -1177,11 +1223,11 @@ export default function Home() {
                         <TouchableOpacity style={styles.bookmarkButton} onPress={() => handleToggleBookmark(meal.id)} disabled={isUpdatingBookmark === meal.id}>
                           <Ionicons name={meal.bookmarked ? "bookmark" : "bookmark-outline"} size={18} color={meal.bookmarked ? "#FFD700" : "#6A9AA9"} />
                         </TouchableOpacity>
-                        {meal.canBeRemoved && (
-                          <TouchableOpacity style={styles.deleteButton} onPress={(e) => { e.stopPropagation(); removeMeal(meal.id); }}>
-                            <Ionicons name="trash-outline" size={16} color="#FFF" />
-                          </TouchableOpacity>
-                        )}
+                        {meal.isCustom && (
+  <TouchableOpacity style={styles.deleteButton} onPress={(e) => { e.stopPropagation(); removeMeal(meal.id); }}>
+    <Ionicons name="trash-outline" size={16} color="#FFF" />
+  </TouchableOpacity>
+)}
                         {meal.rating > 0 && (
                           <View style={styles.ratingBadge}>
                             <FontAwesome name="star" size={10} color="#FFD700" />

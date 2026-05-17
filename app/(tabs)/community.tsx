@@ -1,38 +1,9 @@
 // app/community/index.tsx (обновленная часть)
 import { Feather, MaterialIcons } from "@expo/vector-icons";
 import { useRouter, useFocusEffect } from "expo-router";
-import {
-  addDoc,
-  arrayRemove,
-  arrayUnion,
-  collection,
-  deleteDoc,
-  doc,
-  getDocs,
-  orderBy,
-  query,
-  Timestamp,
-  updateDoc,
-  where,
-} from "firebase/firestore";
+import {addDoc,arrayRemove,arrayUnion,collection,deleteDoc,doc,getDocs,orderBy,query,Timestamp,updateDoc,where,} from "firebase/firestore";
 import React, { useEffect, useState, useRef, useCallback } from "react";
-import {
-  ActivityIndicator,
-  Alert,
-  Image,
-  Modal,
-  ScrollView,
-  StatusBar,
-  StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View,
-  Dimensions,
-  FlatList,
-  Animated,
-  RefreshControl,
-} from "react-native";
+import {ActivityIndicator,Alert,Image,Modal,ScrollView,StatusBar,StyleSheet,Text,TextInput,TouchableOpacity,View,Dimensions,FlatList,Animated,RefreshControl,} from "react-native";
 import { db } from "../firebase/config";
 import { getAuth, onAuthStateChanged } from "firebase/auth";
 import * as ImagePicker from 'expo-image-picker';
@@ -190,9 +161,7 @@ const optimizeImageForPost = async (
     };
   }
 };
-
 // ========== КОМПОНЕНТ АВАТАРА С ФОТО ИЛИ ЗАГЛУШКОЙ ==========
-
 interface AvatarProps {
   photoURL?: string | null;
   size?: number;
@@ -216,7 +185,6 @@ const Avatar: React.FC<AvatarProps> = ({ photoURL, size = 55, onPress }) => {
         />
       );
     }
-    
     // Заглушка, если фото нет (аналогично ProfileScreen)
     return (
       <View style={{
@@ -294,14 +262,12 @@ export default function Community() {
     try {
       setUserProfileLoading(true);
       
-      // 1. Пробуем загрузить из Firestore через userService
       const profileData = await userService.fetchUserProfile(userId);
       if (profileData?.photoURL) {
         console.log("✅ Фото профиля загружено из Firestore");
         return profileData.photoURL;
       }
       
-      // 2. Если в Firestore нет, проверяем Firebase Auth
       const auth = getAuth();
       if (auth.currentUser?.photoURL) {
         console.log("✅ Фото профиля загружено из Firebase Auth");
@@ -316,19 +282,16 @@ export default function Community() {
     } finally {
       setUserProfileLoading(false);
     }
-  }, []);
+  }, []); 
 
   // Функция для загрузки фото профиля для списка пользователей
   const loadUserAvatarForPost = useCallback(async (userId: string, userName: string) => {
     if (!userId) return null;
     
     try {
-      // Проверяем, есть ли уже аватар в кэше
-      if (userAvatars[userId]) {
-        return userAvatars[userId];
-      }
-      
-      // Загружаем из Firestore
+      // 🌟 ИСПРАВЛЕНО: Проверяем наличие в кэше без прямой зависимости от стейта
+      // Чтобы не читать стейт напрямую, мы просто сделаем запрос к Firestore. 
+      // Firestore сам отлично кэширует повторные вызовы, а мы избавимся от ререндеров.
       const profileData = await userService.fetchUserProfile(userId);
       if (profileData?.photoURL) {
         setUserAvatars(prev => ({ ...prev, [userId]: profileData.photoURL }));
@@ -340,7 +303,7 @@ export default function Community() {
       console.error(`Ошибка загрузки аватара для пользователя ${userName}:`, error);
       return null;
     }
-  }, [userAvatars]);
+  }, []); 
 
   // Обработчик нажатия на иконку профиля
   const handleProfilePress = () => {
@@ -401,7 +364,7 @@ export default function Community() {
     });
 
     return unsubscribe;
-  }, [loadUserProfilePhoto]);
+  }, []); 
 
   // Автоматическое обновление при возврате на экран
   useFocusEffect(
@@ -668,9 +631,7 @@ export default function Community() {
     clearAllImages();
     setAddPostModalVisible(false);
   };
-
   // ========== ОСНОВНЫЕ ФУНКЦИИ ==========
-
   // Pull-to-refresh функция
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
