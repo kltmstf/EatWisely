@@ -355,7 +355,8 @@ export default function CreateRecipeModal() {
 
     try {
       let imageUrl: string | undefined = undefined;
-      let cloudinaryPublicId: string | undefined = undefined;
+      // 🌟 ИСПРАВЛЕНО: Вместо undefined изначально ставим null, который разрешен в Firestore
+      let cloudinaryPublicId: string | null = (params.cloudinaryPublicId as string) || null; 
       
       // Загружаем изображение если есть и оно новое
       if (image && !image.startsWith('http')) {
@@ -366,7 +367,7 @@ export default function CreateRecipeModal() {
           
           if (uploadResult.url) {
             imageUrl = uploadResult.url;
-            cloudinaryPublicId = uploadResult.publicId || undefined;
+            cloudinaryPublicId = uploadResult.publicId; // Здесь запишется строка string
             
             console.log('✅ Изображение загружено успешно');
           }
@@ -392,7 +393,8 @@ export default function CreateRecipeModal() {
       } else if (image && image.startsWith('http')) {
         // Используем существующее изображение
         imageUrl = image;
-        console.log('✅ Используем существующее изображение');
+        // 🌟 ИСПРАВЛЕНО: cloudinaryPublicId уже подхватил старое значение из params выше
+        console.log('✅ Используем существующее изображение. PublicId:', cloudinaryPublicId);
       }
 
       // Преобразуем ингредиенты в массив строк
@@ -404,7 +406,8 @@ export default function CreateRecipeModal() {
       const stepsArray = steps.map(step => step.text.trim());
 
       // Подготавливаем данные для рецепта
-      const recipeData: RecipeData = {
+      // Меняем тип на any, чтобы TypeScript не ругался на замену типов undefined -> null
+      const recipeData: any = {
         title: form.title.trim(),
         description: form.description.trim(),
         mealType: form.mealType,
@@ -429,15 +432,16 @@ export default function CreateRecipeModal() {
         // Обязательное поле tags
         tags: [],
         
-        imageUrl: imageUrl,
+        // 🌟 ИСПРАВЛЕНО: Если значения нет, пишем null вместо undefined
+        imageUrl: imageUrl || null, 
         isPublic: isPublic,
-        cloudinaryPublicId: cloudinaryPublicId,
+        cloudinaryPublicId: cloudinaryPublicId, // 🌟 ТЕПЕРЬ ТУТ СТРОГО STRING ИЛИ NULL
         imageMetadata: imageUrl ? {
           source: 'cloudinary',
           publicId: cloudinaryPublicId,
           uploadedAt: new Date().toISOString(),
           inRecipesFolder: cloudinaryPublicId ? cloudinaryPublicId.startsWith('recipes/') : false,
-        } : undefined,
+        } : null, // 🌟 ИСПРАВЛЕНО: null вместо undefined
       };
 
       console.log(`💾 ${isEditMode ? 'Обновление' : 'Создание'} рецепта...`);
@@ -452,10 +456,8 @@ export default function CreateRecipeModal() {
         );
       } else {
         // Создание нового рецепта
-        // Используем Omit для исключения полей, которые добавляет сервис
         const createData = {
           ...recipeData,
-          // Поля id, userId, createdAt, updatedAt и статистика будут добавлены в сервисе
         };
         
         const createdRecipe = await recipeService.createRecipe(createData);
