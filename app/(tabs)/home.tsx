@@ -4,7 +4,7 @@ import { getApp, getApps, initializeApp } from "firebase/app";
 import { getAuth, onAuthStateChanged, User } from "firebase/auth";
 import { doc, Firestore, getDoc, getFirestore, onSnapshot, collection, query, where, getDocs, updateDoc, setDoc, deleteDoc } from "firebase/firestore";
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Alert, Dimensions, Image, Modal, RefreshControl, ScrollView, StatusBar, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { ActivityIndicator, Alert, Dimensions, Image, Modal, RefreshControl, ScrollView, StatusBar, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
 import { favoriteService } from "@/app/services/favoriteService";
 import { rationPlanService } from "@/app/services/rationPlanService";
 import { dailyRationService } from "@/app/services/rationService";
@@ -44,7 +44,12 @@ export default function Home() {
   const [showAddRecipeModal, setShowAddRecipeModal] = useState(false);
   const [showRationSelectModal, setShowRationSelectModal] = useState(false);
   const [showSaveSuccessModal, setShowSaveSuccessModal] = useState(false);
+  const [showSaveChoiceModal, setShowSaveChoiceModal] = useState(false);
+  const [showAfterSaveModal, setShowAfterSaveModal] = useState(false);
+  const [showNameModal, setShowNameModal] = useState(false);
+  const [templateTitle, setTemplateTitle] = useState("");
   const [isPlanLoading, setIsPlanLoading] = useState(true);
+  const [isInitialLoadDone, setIsInitialLoadDone] = useState(false);
   const [hasChanges, setHasChanges] = useState(false);
   const [isTemplateSaved, setIsTemplateSaved] = useState(false);
   const [activePlanName, setActivePlanName] = useState<string | null>(null);
@@ -82,6 +87,72 @@ export default function Home() {
     addedAt: meal.addedAt || new Date().toISOString() 
   });
 
+   // Сохранение текущего плана в БД
+  const savePlanToDatabase = useCallback(async (mealsToSave: Meal[]) => {
+    if (!currentUser || !firestoreDb) return false;
+    try {
+      const todayStr = getTodayDateString();
+      const formattedMeals = mealsToSave.map(meal => ({
+        id: meal.id,
+        category: meal.category,
+        name: meal.name,
+        calories: meal.calories,
+        proteins: meal.proteins,
+        fats: meal.fats,
+        carbohydrates: meal.carbohydrates,
+        weight: meal.weight,
+        marked: meal.marked,
+        cookingTime: meal.cookingTime,
+        difficultyLevel: meal.difficultyLevel,
+        rating: meal.rating,
+        recipeId: meal.recipeId,
+        isCustom: meal.isCustom,
+        canBeRemoved: meal.canBeRemoved,
+        imageUrl: meal.imageUrl,
+        addedAt: meal.addedAt
+      }));
+
+      const planName = activePlanName || `Рацион на ${new Date().toLocaleDateString('ru-RU')}`;
+
+      const daysQuery = query(
+        collection(firestoreDb, 'ration_plan_days'),
+        where('userId', '==', currentUser.uid),
+        where('date', '==', todayStr)
+      );
+      const daysSnap = await getDocs(daysQuery);
+      
+      if (daysSnap.empty) {
+        const newPlanId = `${currentUser.uid}_${todayStr}_${Date.now()}`;
+        await setDoc(doc(firestoreDb, 'ration_plan_days', newPlanId), {
+          userId: currentUser.uid,
+          date: todayStr,
+          meals: formattedMeals,
+          planName: planName,
+          planId: activePlanSourceId,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          isActive: true
+        });
+        setActivePlanId(newPlanId);
+        console.log("✅ Создан новый план с", formattedMeals.length, "блюдами");
+      } else {
+        const existingDoc = daysSnap.docs[0];
+        await updateDoc(doc(firestoreDb, 'ration_plan_days', existingDoc.id), {
+          meals: formattedMeals,
+          planName: planName,
+          updatedAt: new Date().toISOString()
+        });
+        setActivePlanId(existingDoc.id);
+        console.log(`✅ Обновлен план с ${formattedMeals.length} блюдами`);
+      }
+      return true;
+    } catch (error) {
+      console.error("Error saving plan:", error);
+      return false;
+    }
+  }, [currentUser, firestoreDb, activePlanName, activePlanSourceId, getTodayDateString]);
+
+
   // Загрузка дневного плана из ration_plan_days по текущей дате
   const loadDailyPlan = useCallback(async () => {
     if (!currentUser || !firestoreDb) return;
@@ -93,6 +164,7 @@ export default function Home() {
         where('userId', '==', currentUser.uid), 
         where('date', '==', todayStr)
       );
+      
       const daysSnap = await getDocs(daysQuery);
       
       if (!daysSnap.empty) {
@@ -101,6 +173,7 @@ export default function Home() {
           const bTime = b.data().createdAt || b.data().updatedAt || '';
           return bTime.localeCompare(aTime);
         });
+        
         const dayDoc = sortedDocs[0];
         const dayData = dayDoc.data();
         const mealsData = dayData.meals || [];
@@ -135,168 +208,100 @@ export default function Home() {
         
         for (let i = 1; i < sortedDocs.length; i++) {
           await deleteDoc(doc(firestoreDb, 'ration_plan_days', sortedDocs[i].id));
-          console.log("🗑 Удален дублирующий документ:", sortedDocs[i].id);
+          console.log("🗑 Удален дублирующий документ дня:", sortedDocs[i].id);
         }
+        
       } else {
-        setMeals([]);
+        console.log("📅 План на сегодня отсутствует. Запуск автоматической генерации...");
+        
+        const newPlan = await dailyRationService.createNewPlanWithUserSettings(currentUser.uid);
+        
+        if (newPlan && newPlan.meals && newPlan.meals.length > 0) {
+          let mealsWithFavorites = await loadFavoritesStatus(currentUser.uid, newPlan.meals.map(convertToUIMeal));
+          
+          setMeals(mealsWithFavorites);
+          
+          setRecommendedKBRU(mealsWithFavorites.reduce((acc, m) => ({ 
+            proteins: acc.proteins + (m.proteins || 0), 
+            fats: acc.fats + (m.fats || 0), 
+            carbohydrates: acc.carbohydrates + (m.carbohydrates || 0) 
+          }), { proteins: 0, fats: 0, carbohydrates: 0 }));
+          
+          await savePlanToDatabase(mealsWithFavorites);
+          
+          console.log("✅ Успешная автогенерация и сохранение стартового плана.");
+        } else {
+          setMeals([]);
+          setRecommendedKBRU({ proteins: 0, fats: 0, carbohydrates: 0 });
+        }
+        
         setActivePlanName(null);
         setActivePlanId(null);
         setActivePlanSourceId(null);
         setHasChanges(false);
         setIsTemplateSaved(false);
-        setRecommendedKBRU({ proteins: 0, fats: 0, carbohydrates: 0 });
         setUserData(prev => ({ ...prev, consumedCalories: 0 }));
       }
+      setIsInitialLoadDone(true);
     } catch (error) {
       console.error("Error loading plan:", error);
-      Alert.alert("Ошибка", "Не удалось загрузить рацион");
+      Alert.alert("Ошибка", "Не удалось загрузить или сгенерировать рацион");
     } finally {
       setIsPlanLoading(false);
     }
-  }, [currentUser, firestoreDb, getTodayDateString]);
+  }, [currentUser, firestoreDb, getTodayDateString, savePlanToDatabase]);
 
-  // Сохранение текущего плана в БД - заменяет все блюда
-const savePlanToDatabase = useCallback(async (mealsToSave: Meal[]) => {
-  if (!currentUser || !firestoreDb) return false;
-  try {
-    const todayStr = getTodayDateString();
-    const formattedMeals = mealsToSave.map(meal => ({
-      id: meal.id,
-      category: meal.category,
-      name: meal.name,
-      calories: meal.calories,
-      proteins: meal.proteins,
-      fats: meal.fats,
-      carbohydrates: meal.carbohydrates,
-      weight: meal.weight,
-      marked: meal.marked,
-      cookingTime: meal.cookingTime,
-      difficultyLevel: meal.difficultyLevel,
-      rating: meal.rating,
-      recipeId: meal.recipeId,
-      isCustom: meal.isCustom,
-      canBeRemoved: meal.canBeRemoved,
-      imageUrl: meal.imageUrl,
-      addedAt: meal.addedAt
-    }));
-
-    const planName = activePlanName || `Рацион на ${new Date().toLocaleDateString('ru-RU')}`;
-
-    // Удаляем все старые записи за сегодня
-    const daysQuery = query(
-      collection(firestoreDb, 'ration_plan_days'),
-      where('userId', '==', currentUser.uid),
-      where('date', '==', todayStr)
-    );
-    const daysSnap = await getDocs(daysQuery);
+  const addRecipeToPlan = useCallback(async (recipeData: any) => {
+    if (isAddingRecipeRef.current) return;
+    isAddingRecipeRef.current = true;
     
-    for (const docSnap of daysSnap.docs) {
-      await deleteDoc(doc(firestoreDb, 'ration_plan_days', docSnap.id));
-      console.log("🗑 Удален старый документ:", docSnap.id);
+    try {
+      const finalCategory = recipeData.category || recipeData.mealType || "Обед";
+      const newMeal: Meal = {
+        id: generateUniqueId(),
+        category: finalCategory,
+        name: recipeData.title || "Новый рецепт",
+        calories: Number(recipeData.calories) || 300,
+        proteins: Number(recipeData.proteins) || 20,
+        fats: Number(recipeData.fats) || 10,
+        carbohydrates: Number(recipeData.carbohydrates || recipeData.carbs) || 30,
+        weight: recipeData.weight || "250г",
+        marked: false,
+        bookmarked: false,
+        image: recipeData.imageUrl ? { uri: recipeData.imageUrl } : DEFAULT_MEAL_IMAGE,
+        cookingTime: parseCookingTime(recipeData.cookingTime),
+        difficultyLevel: recipeData.difficultyLevel || "Легко",
+        rating: recipeData.rating || 0,
+        recipeId: recipeData.id || '',
+        isCustom: true,
+        canBeRemoved: true,
+        imageUrl: recipeData.imageUrl || null,
+        addedAt: new Date().toISOString()
+      };
+      
+      console.log("Текущее количество блюд в стейте перед добавлением:", meals.length);
+
+      const nextMeals = [...meals, newMeal];
+      
+      setMeals(nextMeals);
+      setRecommendedKBRU(nextMeals.reduce((acc, m) => ({ 
+        proteins: acc.proteins + (m.proteins || 0), 
+        fats: acc.fats + (m.fats || 0), 
+        carbohydrates: acc.carbohydrates + (m.carbohydrates || 0) 
+      }), { proteins: 0, fats: 0, carbohydrates: 0 }));
+      setHasChanges(true);
+      setIsTemplateSaved(false);
+      setActivePlanSourceId(null);
+
+      console.log("💾 Сохраняем в БД полный список из", nextMeals.length, "блюд");
+      await savePlanToDatabase(nextMeals);
+
+    } catch (error) {
+      console.error("❌ Ошибка добавления:", error);
+    } finally {
+      isAddingRecipeRef.current = false;
     }
-    
-    // Создаем новый документ с актуальными meals
-    const newPlanId = `${currentUser.uid}_${todayStr}_${Date.now()}`;
-    await setDoc(doc(firestoreDb, 'ration_plan_days', newPlanId), {
-      userId: currentUser.uid,
-      date: todayStr,
-      meals: formattedMeals,
-      planName: planName,
-      planId: activePlanSourceId,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      isActive: true
-    });
-    setActivePlanId(newPlanId);
-    console.log("✅ Сохранен план с", formattedMeals.length, "блюдами");
-    return true;
-  } catch (error) {
-    console.error("Error saving plan:", error);
-    return false;
-  }
-}, [currentUser, firestoreDb, activePlanName, activePlanSourceId, getTodayDateString]);
-
-  // Добавление рецепта
-  // Добавление рецепта - ИСПРАВЛЕННАЯ ВЕРСИЯ
-const addRecipeToPlan = useCallback(async (recipeData: any) => {
-  if (isAddingRecipeRef.current) {
-    console.log("⚠️ Добавление рецепта уже выполняется, пропускаем");
-    return;
-  }
-  
-  if (!currentUser) { 
-    Alert.alert("Ошибка", "Пользователь не авторизован"); 
-    return; 
-  }
-  
-  if (!firestoreDb) {
-    Alert.alert("Ошибка", "База данных не инициализирована");
-    return;
-  }
-  
-  isAddingRecipeRef.current = true;
-  
-  try {
-    const finalCategory = recipeData.category || recipeData.mealType || "Обед";
-    const newMeal: Meal = {
-      id: generateUniqueId(),
-      category: finalCategory,
-      name: recipeData.title || "Новый рецепт",
-      calories: recipeData.calories || 300,
-      proteins: recipeData.proteins || 20,
-      fats: recipeData.fats || 10,
-      carbohydrates: recipeData.carbohydrates || recipeData.carbs || 30,
-      weight: recipeData.weight || "250г",
-      marked: false,
-      bookmarked: false,
-      image: recipeData.imageUrl ? { uri: recipeData.imageUrl } : DEFAULT_MEAL_IMAGE,
-      cookingTime: parseCookingTime(recipeData.cookingTime),
-      difficultyLevel: recipeData.difficultyLevel || "Легко",
-      rating: recipeData.rating || 0,
-      recipeId: recipeData.id || '',
-      isCustom: true,
-      canBeRemoved: true,
-      imageUrl: recipeData.imageUrl || null,
-      addedAt: new Date().toISOString()
-    };
-    
-    // Загружаем текущие meals из БД
-    const todayStr = getTodayDateString();
-    const daysQuery = query(
-      collection(firestoreDb, 'ration_plan_days'),
-      where('userId', '==', currentUser.uid),
-      where('date', '==', todayStr)
-    );
-    const daysSnap = await getDocs(daysQuery);
-    
-    let existingMeals: Meal[] = [];
-    if (!daysSnap.empty) {
-      const existingDoc = daysSnap.docs[0];
-      const existingData = existingDoc.data();
-      const mealsData = existingData.meals || [];
-      existingMeals = mealsData.map(convertToUIMeal);
-      console.log(`📋 Загружено существующих блюд: ${existingMeals.length}`);
-    }
-    
-    // Объединяем существующие блюда с новым
-    const updatedMeals = [...existingMeals, newMeal];
-    console.log(`📊 После добавления будет блюд: ${updatedMeals.length}`);
-    
-    setMeals(updatedMeals);
-    setHasChanges(true);
-    setIsTemplateSaved(false);
-    setActivePlanSourceId(null);
-    
-    await savePlanToDatabase(updatedMeals);
-    
-    Alert.alert("Успех", "Рецепт добавлен!");
-  } catch (error) { 
-    console.error("Error adding recipe:", error); 
-    Alert.alert("Ошибка", "Не удалось добавить рецепт: " + (error instanceof Error ? error.message : String(error))); 
-  } finally {
-    isAddingRecipeRef.current = false;
-  }
-}, [currentUser, firestoreDb, getTodayDateString, convertToUIMeal, savePlanToDatabase]);
+  }, [meals, savePlanToDatabase]);
 
   // Удаление рецепта
   const removeMeal = useCallback((mealId: string) => {
@@ -330,32 +335,23 @@ const addRecipeToPlan = useCallback(async (recipeData: any) => {
     await savePlanToDatabase(updatedMeals);
   }, [meals, savePlanToDatabase]);
 
-  // Сохранение как шаблон
-  const saveAsTemplate = useCallback(async () => {
-    if (!currentUser || meals.length === 0) { 
-      Alert.alert("Ошибка", "Нет данных для сохранения"); 
-      return false; 
-    }
+  // Функция для получения уникального названия
+  const getUniqueTitle = useCallback(async (userId: string, baseTitle: string): Promise<string> => {
     try {
-      setIsSaving(true);
-      const formattedDate = new Date().toLocaleDateString('ru-RU', { day: 'numeric', month: 'numeric', year: 'numeric' });
-      const baseTitle = activePlanName && !hasChanges ? activePlanName : `Рацион на ${formattedDate}`;
-      
-      const getUniqueTitle = async (userId: string, baseTitle: string): Promise<string> => {
-        try {
-          const q = query(collection(firestoreDb!, 'ration_plans'), where('userId', '==', userId));
-          const snapshot = await getDocs(q);
-          const existingTitles = snapshot.docs.map(doc => doc.data().title);
-          if (!existingTitles.includes(baseTitle)) return baseTitle;
-          let counter = 1;
-          let newTitle = `${baseTitle} (${counter})`;
-          while (existingTitles.includes(newTitle)) { counter++; newTitle = `${baseTitle} (${counter})`; }
-          return newTitle;
-        } catch (error) { return `${baseTitle} (${Date.now()})`; }
-      };
-      
-      const uniqueTitle = await getUniqueTitle(currentUser.uid, baseTitle);
-      
+      const q = query(collection(firestoreDb!, 'ration_plans'), where('userId', '==', userId));
+      const snapshot = await getDocs(q);
+      const existingTitles = snapshot.docs.map(doc => doc.data().title);
+      if (!existingTitles.includes(baseTitle)) return baseTitle;
+      let counter = 1;
+      let newTitle = `${baseTitle} (${counter})`;
+      while (existingTitles.includes(newTitle)) { counter++; newTitle = `${baseTitle} (${counter})`; }
+      return newTitle;
+    } catch (error) { return `${baseTitle} (${Date.now()})`; }
+  }, [firestoreDb]);
+
+  // Асинхронное сохранение нового шаблона
+  const executeSave = useCallback(async (uniqueTitle: string) => {
+    try {
       const cleanedMeals = meals.map(m => ({ 
         id: m.id, 
         recipeId: m.recipeId || '', 
@@ -376,51 +372,260 @@ const addRecipeToPlan = useCallback(async (recipeData: any) => {
         marked: m.marked || false 
       }));
       
-      let savedPlanId: string | null = activePlanSourceId;
-      
-      if (activePlanSourceId) {
-        await rationPlanService.updateRationPlan(currentUser.uid, activePlanSourceId, {
-          days: [{
-            day: 1,
-            meals: cleanedMeals,
-            stats: {}
-          }],
-          title: uniqueTitle,
-          updatedAt: new Date().toISOString()
-        });
-      } else {
-        const newPlanId = await rationPlanService.saveDailyRationAsTemplate(currentUser.uid, { 
+      console.log("3. Отправка в rationPlanService...");
+      const newPlanId = await Promise.race([
+        rationPlanService.saveDailyRationAsTemplate(currentUser!.uid, { 
           meals: cleanedMeals, 
           title: uniqueTitle,
-          userInfo: { 
-            name: userData.userName, 
-            dailyCalories: userData.dailyCalories
-          } 
-        });
-        savedPlanId = newPlanId;
-      }
+          userInfo: { name: userData.userName, dailyCalories: userData.dailyCalories } 
+        }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("Таймаут сервера")), 8000))
+      ]) as string;
       
-      if (activePlanId && savedPlanId) {
+      console.log("4. Обновление документа дня...", newPlanId);
+      if (activePlanId && newPlanId) {
         await updateDoc(doc(firestoreDb!, 'ration_plan_days', activePlanId), {
-          planId: savedPlanId,
+          planId: newPlanId,
           planName: uniqueTitle
         });
-        setActivePlanSourceId(savedPlanId);
+        setActivePlanSourceId(newPlanId);
         setActivePlanName(uniqueTitle);
       }
       
+      setIsSaving(false);
       setIsTemplateSaved(true);
       setHasChanges(false);
       setShowSaveSuccessModal(true);
-      return true;
-    } catch (error: any) { 
-      console.error("Ошибка сохранения:", error); 
-      Alert.alert("Ошибка", error.message || "Не удалось сохранить"); 
-      return false; 
-    } finally { 
-      setIsSaving(false); 
+      console.log("✅ Успешно завершено!");
+    } catch (error: any) {
+      console.error("❌ Ошибка в executeSave:", error);
+      setIsSaving(false);
+      Alert.alert("Ошибка сохранения", error.message || "Не удалось связаться с сервером");
+      throw error;
     }
-  }, [currentUser, meals, userData, firestoreDb, activePlanId, activePlanSourceId, activePlanName, hasChanges]);
+  }, [currentUser, meals, userData, firestoreDb, activePlanId]);
+
+  // Сохранение как новый шаблон (через кастомную модалку)
+  const saveAsNewTemplate = useCallback(() => {
+    console.log("🚀 saveAsNewTemplate начат", { mealsLength: meals.length });
+    
+    if (!currentUser || meals.length === 0) { 
+      Alert.alert("Ошибка", "Нет данных для сохранения");
+      return;
+    }
+    
+    const formattedDate = new Date().toLocaleDateString('ru-RU', { 
+      day: 'numeric', 
+      month: 'numeric', 
+      year: 'numeric' 
+    });
+    const defaultTitle = `Дневной рацион ${formattedDate}`;
+    
+    setTemplateTitle(defaultTitle);
+    setShowNameModal(true);
+  }, [currentUser, meals]);
+
+  // Обновление существующего шаблона
+  const handleConfirmUpdate = async () => {
+    if (!firestoreDb || !activePlanId) {
+      Alert.alert("Ошибка", "База данных или активный план не инициализированы");
+      return;
+    }
+
+    setShowSaveChoiceModal(false);
+    setIsSaving(true);
+    
+    try {
+      console.log("💾 [ОБНОВЛЕНИЕ] Обновляем текущий день...", activePlanId);
+      
+      const success = await savePlanToDatabase(meals);
+      
+      if (success) {
+        console.log("🔍 Читаем актуальный ID шаблона из документа дня...");
+        const dayDocRef = doc(firestoreDb, 'ration_plan_days', activePlanId);
+        const dayDocSnap = await getDoc(dayDocRef);
+        
+        let sourceTemplateId = activePlanSourceId;
+        
+        if (dayDocSnap.exists()) {
+          const dayData = dayDocSnap.data();
+          sourceTemplateId = dayData.planId || dayData.activePlanSourceId;
+          console.log("📦 Найдена связь с шаблоном в БД. ID шаблона:", sourceTemplateId);
+        }
+
+        if (sourceTemplateId) {
+          console.log("💾 [ОБНОВЛЕНИЕ] Записываем обновленные meals в ration_plans...", sourceTemplateId);
+          
+          const cleanedMeals = meals.map(m => ({
+            id: m.id || `meal-${Date.now()}`,
+            recipeId: m.recipeId || '',
+            category: m.category || "Обед",
+            name: m.name || "Рецепт",
+            calories: m.calories || 0,
+            proteins: m.proteins || 0,
+            fats: m.fats || 0,
+            carbohydrates: m.carbohydrates || 0,
+            weight: m.weight || "250г",
+            cookingTime: m.cookingTime || 20,
+            difficultyLevel: m.difficultyLevel || "Легко",
+            imageUrl: m.imageUrl || null,
+            isCustom: m.isCustom || false,
+            marked: m.marked || false
+          }));
+
+          const templateRef = doc(firestoreDb, 'ration_plans', sourceTemplateId);
+          await updateDoc(templateRef, {
+            meals: cleanedMeals,
+            days: [{ meals: cleanedMeals }],
+            updatedAt: new Date().toISOString()
+          });
+          
+          console.log("✅ [ОБНОВЛЕНИЕ] Шаблон успешно обновлен!");
+        }
+      }
+      
+      setHasChanges(false);
+      setIsTemplateSaved(true);
+      setIsSaving(false);
+      setShowSaveSuccessModal(true);
+      
+    } catch (error) {
+      console.error("❌ КРИТИЧЕСКАЯ ОШИБКА ОБНОВЛЕНИЯ:", error);
+      Alert.alert("Ошибка", "Не удалось обновить рацион");
+      setIsSaving(false);
+    }
+  };
+
+  // Сохранение как новый шаблон из модального окна выбора
+  const handleConfirmSaveAsNew = async () => {
+    // 1. Закрываем модалку выбора
+    setShowSaveChoiceModal(false);
+    
+    // 2. Включаем лоадер, пока считаем дубликаты в базе
+    setIsSaving(true);
+    
+    try {
+      // 3. Вызываем нашу функцию генерации уникального имени
+      const uniqueName = await generateUniqueRationName();
+      
+      // 4. Записываем имя с правильной цифрой (например, "Дневной рацион 17.05.2026 (1)") в стейт поля ввода
+      setTemplateTitle(uniqueName);
+      
+    } catch (err) {
+      console.error("Ошибка при подготовке имени в handleConfirmSaveAsNew:", err);
+      // Фолбэк на случай сбоя сети
+      const formattedDate = new Date().toLocaleDateString('ru-RU', { day: 'numeric', month: 'numeric', year: 'numeric' });
+      setTemplateTitle(`Дневной рацион ${formattedDate}`);
+    } finally {
+      // 5. Выключаем лоадер и открываем окно ввода имени, где текст уже готов!
+      setIsSaving(false);
+      setShowNameModal(true);
+    }
+  };
+
+  // Обработчик нажатия на кнопку сохранения
+  const handleSavePress = async () => {
+    if (isSaving) return;
+
+    console.log("🔘 Нажата кнопка сохранения. Текущее состояние:", { activePlanId, hasChanges, mealsLength: meals.length });
+
+    // 1. Если рацион новый (сгенерированный с нуля)
+    if (!activePlanId) {
+      if (meals.length > 0) {
+        saveAsNewTemplate();
+      } else {
+        Alert.alert("Информация", "Рацион пуст, нечего сохранять");
+      }
+      return;
+    }
+
+    // 2. Если рацион уже привязан к конкретному дню
+    if (activePlanId) {
+      if (hasChanges) {
+        setShowSaveChoiceModal(true);
+      } else {
+        // ЕСЛИ ИЗМЕНЕНИЙ НЕТ
+        setIsSaving(true); // Покажем лоадер на время запроса к БД
+        const uniqueName = await generateUniqueRationName();
+        setTemplateTitle(uniqueName); 
+        setIsSaving(false);
+        setShowNameModal(true); 
+      }
+    }
+  };
+
+  // Вспомогательная функция для генерации уникального имени "Дневной рацион"
+  const generateUniqueRationName = async () => {
+    try {
+      const formattedDate = new Date().toLocaleDateString('ru-RU', { 
+        day: 'numeric', 
+        month: 'numeric', 
+        year: 'numeric' 
+      });
+      
+      const baseName = `Дневной рацион ${formattedDate}`;
+      let finalName = baseName;
+      
+      const { collection, query, where, getDocs } = require("firebase/firestore");
+      const qTemplates = query(
+        collection(firestoreDb!, 'ration_plans'),
+        where('userId', '==', currentUser!.uid)
+      );
+      const templatesSnap = await getDocs(qTemplates);
+      
+      const existingTitles = templatesSnap.docs.map((d: any) => {
+        const data = d.data();
+        return (data.title || data.planName || data.name || "").trim().toLowerCase();
+      });
+
+      let counter = 1;
+      while (existingTitles.includes(finalName.trim().toLowerCase())) {
+        finalName = `${baseName} (${counter})`;
+        counter++;
+      }
+
+      return finalName;
+    } catch (err) {
+      console.error("❌ Ошибка при генерации уникального имени:", err);
+      const formattedDate = new Date().toLocaleDateString('ru-RU', { day: 'numeric', month: 'numeric', year: 'numeric' });
+      return `Дневной рацион ${formattedDate}`;
+    }
+  };
+
+  // Обработчик сохранения из кастомной модалки
+  const handleSaveWithName = async () => {
+    if (!currentUser) return;
+    
+    setShowNameModal(false);
+    setIsSaving(true);
+    
+    try {
+      const formattedDate = new Date().toLocaleDateString('ru-RU', { 
+        day: 'numeric', 
+        month: 'numeric', 
+        year: 'numeric' 
+      });
+      const finalTitle = templateTitle.trim() || `Дневной рацион ${formattedDate}`;
+      
+      console.log("🚀 Проверяем уникальность для имени:", finalTitle);
+      const uniqueTitle = await getUniqueTitle(currentUser.uid, finalTitle);
+      
+      await executeSave(uniqueTitle);
+    } catch (error) {
+      console.error("Ошибка при сохранении шаблона:", error);
+      setIsSaving(false);
+    }
+  };
+
+  // Обработчики для модального окна после сохранения
+  const handleGoToPlans = () => {
+    setShowAfterSaveModal(false);
+    router.push("/saved-plans");
+  };
+
+  const handleStayHere = () => {
+    setShowAfterSaveModal(false);
+  };
 
   // Генерация нового рациона
   const handleGenerateNewRation = useCallback(async () => {
@@ -436,17 +641,75 @@ const addRecipeToPlan = useCallback(async (recipeData: any) => {
       if (newPlan && newPlan.meals && newPlan.meals.length > 0) {
         let mealsWithFavorites = await loadFavoritesStatus(currentUser.uid, newPlan.meals.map(convertToUIMeal));
         
-        setMeals(mealsWithFavorites);
-        setActivePlanName(null);
-        setActivePlanId(null);
-        setActivePlanSourceId(null);
-        setHasChanges(true);
-        setIsTemplateSaved(false);
+        // 1. Считаем, сколько сгенерированных рационов у пользователя уже есть в ration_plans,
+        // чтобы правильно задать имя: "Сгенерированный рацион", "Сгенерированный рацион (1)" и т.д.
+        const { collection, query, where, getDocs, updateDoc, doc } = require("firebase/firestore");
         
-        await savePlanToDatabase(mealsWithFavorites);
+        const qTemplates = query(
+          collection(firestoreDb, 'ration_plans'),
+          where('userId', '==', currentUser.uid)
+        );
+        const templatesSnap = await getDocs(qTemplates);
+        const existingTitles = templatesSnap.docs.map((d: any) => d.data().title || d.data().planName || "");
+
+        const baseGenName = "Сгенерированный рацион";
+        let finalGenName = baseGenName;
+        let counter = 1;
+
+        // Если базовое имя занято, ищем свободный индекс для приписки (1), (2)...
+        while (existingTitles.includes(finalGenName)) {
+          finalGenName = `${baseGenName} (${counter})`;
+          counter++;
+        }
+
+        console.log(`🏷️ Определено уникальное имя для рациона: "${finalGenName}"`);
+
+        // 2. Обновляем локальный стейт блюд и метаданных
+        setMeals(mealsWithFavorites);
+        setActivePlanName(finalGenName);
+        setActivePlanSourceId(null); 
+        
+        // Флаги состояния кнопок
+        setHasChanges(false);
+        setIsTemplateSaved(false); 
+
+        // 3. Собираем жесткий ID документа дня (чтобы не занулять activePlanId)
+        const todayStr = new Date().toISOString().split('T')[0];
+        const currentDayId = activePlanId || `${currentUser.uid}_${todayStr}`;
+        
+        console.log("💾 Авто-сохранение сгенерированного плана в документ дня:", currentDayId);
+        
+        // Очищаем массив блюд для Firestore
+        const cleanedMeals = mealsWithFavorites.map((m: any) => ({
+          id: m.id || `meal-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          recipeId: m.recipeId || m.id || '',
+          category: m.category || "Обед",
+          name: m.name || m.title || "Рецепт",
+          calories: m.calories || 0,
+          proteins: m.proteins || 0,
+          fats: m.fats || 0,
+          carbohydrates: m.carbohydrates || 0,
+          weight: m.weight || "250г",
+          cookingTime: m.cookingTime || 20,
+          difficultyLevel: m.difficultyLevel || "Легко",
+          imageUrl: m.imageUrl || null,
+          isCustom: m.isCustom || false,
+          marked: false
+        }));
+
+        // 4. Перезаписываем документ текущего дня в Firebase
+        await updateDoc(doc(firestoreDb, 'ration_plan_days', currentDayId), {
+          meals: cleanedMeals,
+          planName: finalGenName, // Подставляем имя с припиской (если дубликат)
+          planId: null,           // Разрываем связь со старым шаблоном
+          updatedAt: new Date().toISOString()
+        });
+
+        // Фиксируем ID дня в стейте экрана, чтобы при ручном обновлении данные читались отсюда
+        setActivePlanId(currentDayId);
         
         setShowRationSelectModal(false);
-        Alert.alert("Успех", "Сгенерирован новый рацион!");
+        Alert.alert("Успех", `Сгенерирован рацион "${finalGenName}"!`);
       } else {
         Alert.alert("Ошибка", "Не удалось сгенерировать рацион. Попробуйте позже.");
       }
@@ -454,79 +717,56 @@ const addRecipeToPlan = useCallback(async (recipeData: any) => {
       console.error("Ошибка генерации рациона:", error);
       Alert.alert("Ошибка", "Не удалось сгенерировать рацион");
     } finally { 
-      setIsGeneratingPlan(false); 
+      setIsGeneratingPlan(false);
     }
-  }, [currentUser, firestoreDb, savePlanToDatabase, isGeneratingPlan]);
+  }, [currentUser, firestoreDb, isGeneratingPlan, activePlanId]);
 
   // Обработка замены блюда
   useEffect(() => { 
-    if (params.replaceMeal && currentUser && firestoreDb && !isReplacingMealRef.current) { 
+    if (params.replaceMeal && currentUser && firestoreDb && isInitialLoadDone && !isReplacingMealRef.current) { 
       isReplacingMealRef.current = true;
-      console.log("🔄 home.tsx: Получен запрос на замену:", params.replaceMeal);
+      console.log("🔵 [ЭФФЕКТ ЗАМЕНЫ] Поймали replaceMeal, база данных загружена. Начинаем замену...");
       
       try { 
         const { index, meal } = JSON.parse(params.replaceMeal as string);
+        const updatedMeal = convertToUIMeal(meal);
         
-        console.log(`📝 Заменяем блюдо в позиции ${index} на:`, meal.name);
-        console.log(`📊 Текущее количество блюд:`, meals.length);
+        const currentMeals = Array.isArray(meals) ? [...meals] : [];
         
-        if (meals.length === 0) {
-          console.log("⏳ Meals еще не загружены, откладываем замену...");
-          setPendingReplaceData({ index, meal });
-          setTimeout(() => {
-            isReplacingMealRef.current = false;
-            router.setParams({ replaceMeal: undefined });
-          }, 100);
-          return;
-        }
-        
-        if (index >= 0 && index < meals.length) {
-          const newMeals = [...meals];
-          newMeals[index] = meal;
+        if (index >= 0 && index < currentMeals.length) {
+          console.log(`🔄 Заменяем блюдо на позиции [${index}]: ${currentMeals[index].name} -> ${updatedMeal.name}`);
           
-          setMeals(newMeals);
+          updatedMeal.id = currentMeals[index].id; 
+          currentMeals[index] = updatedMeal;
+          
+          setMeals(currentMeals);
+          setRecommendedKBRU({
+            proteins: currentMeals.reduce((sum, m) => sum + (m.proteins || 0), 0),
+            fats: currentMeals.reduce((sum, m) => sum + (m.fats || 0), 0),
+            carbohydrates: currentMeals.reduce((sum, m) => sum + (m.carbohydrates || 0), 0),
+          });
+          setUserData(prev => ({ 
+            ...prev, 
+            consumedCalories: currentMeals.filter(m => m.marked).reduce((sum, m) => sum + (m.calories || 0), 0) 
+          }));
           setHasChanges(true);
           setIsTemplateSaved(false);
-          setActivePlanSourceId(null);
           
-          savePlanToDatabase(newMeals);
-          console.log("✅ Рецепт заменен на позиции:", index);
+          console.log("💾 Сохраняем замененный рацион в БД. Всего блюд в массиве:", currentMeals.length);
+          savePlanToDatabase(currentMeals);
         } else {
-          console.error("❌ Индекс вне диапазона:", index, "доступно:", meals.length);
+          console.warn(`⚠️ Индекс замены ${index} невалиден для массива длиной ${currentMeals.length}`);
         }
-        
-        setTimeout(() => {
-          router.setParams({ replaceMeal: undefined });
-          isReplacingMealRef.current = false;
-        }, 100);
+
+        router.setParams({ replaceMeal: undefined });
+        isReplacingMealRef.current = false;
+
       } catch (e) { 
-        console.error("❌ Ошибка замены:", e); 
+        console.error("❌ Ошибка при замене блюда:", e); 
         isReplacingMealRef.current = false;
       } 
     } 
-  }, [params.replaceMeal, currentUser, firestoreDb, meals, savePlanToDatabase, router]);
-
-  // Обработка отложенной замены
-  useEffect(() => {
-    if (pendingReplaceData && meals.length > 0) {
-      console.log("🔄 Выполняем отложенную замену после загрузки meals");
-      const { index, meal } = pendingReplaceData;
-      
-      if (index >= 0 && index < meals.length) {
-        const newMeals = [...meals];
-        newMeals[index] = meal;
-        
-        setMeals(newMeals);
-        setHasChanges(true);
-        setIsTemplateSaved(false);
-        setActivePlanSourceId(null);
-        
-        savePlanToDatabase(newMeals);
-        console.log("✅ Отложенная замена выполнена на позиции:", index);
-      }
-      setPendingReplaceData(null);
-    }
-  }, [pendingReplaceData, meals, savePlanToDatabase]);
+  }, [params.replaceMeal, currentUser, firestoreDb, isInitialLoadDone, meals, savePlanToDatabase, router]);
 
   const handleToggleBookmark = useCallback(async (mealId: string) => {
     const meal = meals.find(m => m.id === mealId);
@@ -567,13 +807,10 @@ const addRecipeToPlan = useCallback(async (recipeData: any) => {
       } 
     }); 
   };
-  
-  const handleSaveAsTemplate = async () => { 
-    await saveAsTemplate();
-  };
 
   const handleRefresh = async () => { 
     setIsRefreshing(true); 
+    setMeals([]);
     await loadDailyPlan(); 
     setIsRefreshing(false); 
   };
@@ -616,17 +853,18 @@ const addRecipeToPlan = useCallback(async (recipeData: any) => {
   }, [params.refreshHome, currentUser, firestoreDb, router, loadDailyPlan]);
   
   useEffect(() => { 
-    if (params.selectedRecipe && currentUser && firestoreDb && !isAddingRecipeRef.current) { 
-      console.log("🔵 Получен selectedRecipe:", params.selectedRecipe);
+    if (params.selectedRecipe && currentUser && firestoreDb && isInitialLoadDone && !isAddingRecipeRef.current) { 
+      console.log("🔵 [ЭФФЕКТ] Дождались загрузки БД. Добавляем рецепт...");
+      
       try { 
         const recipeData = JSON.parse(params.selectedRecipe as string);
+        router.setParams({ selectedRecipe: undefined });
         addRecipeToPlan(recipeData); 
-        setTimeout(() => router.setParams({ selectedRecipe: undefined }), 100); 
       } catch (e) { 
-        console.error("❌ Ошибка парсинга:", e); 
+        console.error("❌ Ошибка парсинга selectedRecipe:", e); 
       } 
     } 
-  }, [params.selectedRecipe, currentUser, firestoreDb, router, addRecipeToPlan]);
+  }, [params.selectedRecipe, currentUser, firestoreDb, isInitialLoadDone]); 
   
   useEffect(() => { 
     const daily = userData.dailyCalories; 
@@ -663,17 +901,55 @@ const addRecipeToPlan = useCallback(async (recipeData: any) => {
         progress = Math.min(100, (userData.consumedCalories / dailyTarget) * 100), 
         remaining = Math.max(0, dailyTarget - userData.consumedCalories);
 
-  let buttonText = "Сохранить как шаблон";
-  let buttonStyle = {};
-  if (hasChanges && !isTemplateSaved) {
-    buttonText = "Обновить";
-    buttonStyle = styles.saveRationButtonUpdate;
-  } else if (isTemplateSaved && !hasChanges) {
-    buttonText = "Сохранено";
-    buttonStyle = styles.saveRationButtonSaved;
-  } else {
-    buttonStyle = styles.saveRationButton;
-  }
+  // Определение текста, стилей и состояния блокировки кнопки сохранения
+  const getButtonState = () => {
+    // 1. Идет процесс сохранения
+    if (isSaving) {
+      return { 
+        text: "Сохранение...", 
+        style: styles.saveRationButton, 
+        disabled: true,
+        iconColor: "#FFFFFF"
+      };
+    }
+    
+    // 2. Рацион уже сохранен и в нем нет новых изменений (БЛОКИРОВКА)
+    if (isTemplateSaved && !hasChanges) {
+      return { 
+        text: "Рацион сохранен", 
+        // Объединяем ваш стиль со стилем заблокированной кнопки
+        style: [styles.saveRationButton, styles.saveButtonDisabled], 
+        disabled: true,
+        iconColor: "#999999" // Серая иконка
+      };
+    }
+    
+    // 3. Есть изменения в текущем дне — кнопка активна для обновления
+    if (activePlanId && hasChanges) {
+      return { 
+        text: "Обновить рацион", 
+        style: styles.saveRationButtonUpdate || styles.saveRationButton, 
+        disabled: false,
+        iconColor: "#FFFFFF"
+      };
+    }
+    
+    // 4. Обычное состояние (новый рацион)
+    return { 
+      text: "Сохранить рацион", 
+      style: styles.saveRationButton, 
+      disabled: false,
+      iconColor: "#FFFFFF"
+    };
+  };
+
+  // Вызываем функцию, чтобы получить актуальные данные для рендера
+  const currentButton = getButtonState();
+
+  const { text: buttonText, style: buttonStyle } = getButtonState();
+
+  // Определяем отображаемое имя рациона
+  const displayPlanName = activePlanName || "Новый рацион (не сохранено)";
 
   return (
     <View style={styles.rootContainer}>
@@ -722,31 +998,43 @@ const addRecipeToPlan = useCallback(async (recipeData: any) => {
               </View>
             </View>
             
-            <View style={styles.buttonsRow}>
+           <View style={styles.buttonsRow}>
               <TouchableOpacity style={styles.selectRationButton} onPress={() => setShowRationSelectModal(true)}>
                 <Ionicons name="swap-horizontal-outline" size={18} color="#6A9AA9" />
                 <Text style={styles.selectRationButtonText}>Выбрать рацион</Text>
               </TouchableOpacity>
+              
               <TouchableOpacity 
-                style={[buttonStyle, isSaving && styles.saveRationButtonSaving]} 
-                onPress={handleSaveAsTemplate}
-                disabled={isSaving || (isTemplateSaved && !hasChanges)}
+                // Берем стиль и состояние disabled прямо из функции
+                style={[currentButton.style, isSaving && styles.saveRationButtonSaving]} 
+                onPress={handleSavePress}
+                disabled={currentButton.disabled} 
               >
-                {isSaving ? <ActivityIndicator size="small" color="#FFFFFF" /> : 
+                {isSaving ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
                   <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                    <Ionicons name={hasChanges && !isTemplateSaved ? "refresh-outline" : "save-outline"} size={18} color="#FFFFFF" />
-                    <Text style={styles.saveRationButtonText}>{buttonText}</Text>
+                    <Ionicons 
+                      name={hasChanges && !isTemplateSaved ? "refresh-outline" : "save-outline"} 
+                      size={18} 
+                      color={currentButton.iconColor} 
+                    />
+                    <Text style={[
+                      styles.saveRationButtonText,
+                      (isTemplateSaved && !hasChanges) && styles.saveButtonTextDisabled
+                    ]}>
+                      {currentButton.text}
+                    </Text>
                   </View>
-                }
+                )}
               </TouchableOpacity>
             </View>
+
+            <View style={styles.planNameContainer}>
+              <Ionicons name={activePlanName ? "bookmark" : "create-outline"} size={18} color="#6A9AA9" />
+              <Text style={styles.planNameValue} numberOfLines={1}>{displayPlanName}</Text>
+            </View>
             
-            {activePlanName && (
-              <View style={styles.activePlanInfo}>
-                <Ionicons name="checkmark-circle" size={16} color="#4CAF50" />
-                <Text style={styles.activePlanText}>Активный план: {activePlanName}</Text>
-              </View>
-            )}
             <View style={styles.sectionDivider} />
           </View>
           
@@ -831,6 +1119,97 @@ const addRecipeToPlan = useCallback(async (recipeData: any) => {
           </View>
         </ScrollView>
       </View>
+
+      {/* Модальное окно выбора типа сохранения */}
+      <Modal
+        visible={showSaveChoiceModal}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setShowSaveChoiceModal(false)}
+      >
+        <View style={styles.saveChoiceOverlay}>
+          <View style={styles.saveChoiceContainer}>
+            <Ionicons name="save-outline" size={36} color="#6A9AA9" style={{ marginBottom: 12 }} />
+            <Text style={styles.saveChoiceTitle}>Сохранение изменений</Text>
+            <Text style={styles.saveChoiceText}>
+              Вы изменили блюдо в текущем рационе. Как вы хотите сохранить изменения?
+            </Text>
+            <TouchableOpacity style={styles.saveChoiceUpdateButton} onPress={handleConfirmUpdate}>
+              <Text style={styles.saveChoiceUpdateButtonText}>Обновить текущий рацион</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.saveChoiceNewButton} onPress={handleConfirmSaveAsNew}>
+              <Text style={styles.saveChoiceNewButtonText}>Сохранить как новый шаблон</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => setShowSaveChoiceModal(false)} style={{ paddingVertical: 8 }}>
+              <Text style={styles.saveChoiceCancelText}>Отмена</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Кастомное модальное окно для ввода имени шаблона (iOS и Android) */}
+      <Modal
+        visible={showNameModal}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setShowNameModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.successModalContent}>
+            <Text style={styles.successTitle}>Сохранить как шаблон</Text>
+            <Text style={styles.successDescription}>Введите название для этого рациона:</Text>
+            
+            <TextInput
+              style={styles.nameInput}
+              value={templateTitle}
+              onChangeText={setTemplateTitle}
+              placeholder="Название рациона"
+              placeholderTextColor="#999"
+              autoFocus={true}
+            />
+
+            <View style={styles.successModalButtons}>
+              <TouchableOpacity 
+                style={[styles.modalButton, styles.modalButtonSecondary]} 
+                onPress={() => setShowNameModal(false)}
+              >
+                <Text style={styles.modalButtonSecondaryText}>Отмена</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity 
+                style={[styles.modalButton, styles.modalButtonPrimary]} 
+                onPress={handleSaveWithName}
+              >
+                <Text style={styles.modalButtonPrimaryText}>Сохранить</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Модальное окно после сохранения - выбор действия */}
+      <Modal
+        visible={showAfterSaveModal}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setShowAfterSaveModal(false)}
+      >
+        <View style={styles.saveChoiceOverlay}>
+          <View style={styles.saveChoiceContainer}>
+            <Ionicons name="checkmark-circle" size={48} color="#4CAF50" style={{ marginBottom: 12 }} />
+            <Text style={styles.saveChoiceTitle}>Рацион сохранен!</Text>
+            <Text style={styles.saveChoiceText}>
+              Ваш рацион успешно сохранен.
+            </Text>
+            <TouchableOpacity style={styles.saveChoiceUpdateButton} onPress={handleGoToPlans}>
+              <Text style={styles.saveChoiceUpdateButtonText}>Перейти к сохраненным планам</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.saveChoiceNewButton} onPress={handleStayHere}>
+              <Text style={styles.saveChoiceNewButtonText}>Остаться здесь</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
       
       <Modal animationType="slide" transparent visible={showAddRecipeModal} onRequestClose={() => setShowAddRecipeModal(false)}>
         <View style={styles.modalOverlay}>
@@ -927,6 +1306,8 @@ const styles = StyleSheet.create({
   remainingCaloriesValue: { fontSize: 18, color: "#9BDF11", fontFamily: "Playfair Display Bold" }, 
   progressBar: { height: 12, backgroundColor: "#C2DAE2", borderRadius: 6, overflow: "hidden", marginBottom: 20 }, 
   progressFill: { height: "100%", backgroundColor: "#9BDF11", borderRadius: 6 }, 
+  planNameContainer: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, marginBottom: 16, paddingVertical: 8, paddingHorizontal: 12, backgroundColor: "#F0F7F0", borderRadius: 12, borderWidth: 1, borderColor: "#C2DAE2" },
+  planNameValue: { fontSize: 13, color: "#4CAF50", fontFamily: "Playfair Display Bold", flex: 1, textAlign: "center" },
   buttonsRow: { flexDirection: "row", gap: 12, marginBottom: 10 }, 
   selectRationButton: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", backgroundColor: "#E5F0F5", paddingHorizontal: 16, paddingVertical: 12, borderRadius: 12, borderWidth: 1, borderColor: "#C2DAE2", gap: 8 }, 
   selectRationButtonText: { fontSize: 14, color: "#6A9AA9", fontFamily: "Playfair Display Regular" }, 
@@ -935,8 +1316,6 @@ const styles = StyleSheet.create({
   saveRationButtonSaved: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", backgroundColor: "#9BDF11", paddingHorizontal: 16, paddingVertical: 12, borderRadius: 12, gap: 8 }, 
   saveRationButtonSaving: { opacity: 0.7 }, 
   saveRationButtonText: { fontSize: 14, color: "#FFF", fontFamily: "Playfair Display Regular" }, 
-  activePlanInfo: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, marginTop: 10, marginBottom: 10, paddingVertical: 8, backgroundColor: "#E8F5E9", borderRadius: 8 }, 
-  activePlanText: { fontSize: 12, color: "#4CAF50", fontFamily: "Playfair Display Bold" }, 
   kbruContainer: { paddingHorizontal: 5, borderWidth: 1, borderColor: "#C2DAE2", borderRadius: 8, backgroundColor: "#F7F7F7", marginBottom: 20 }, 
   kbruRow: { flexDirection: "row", justifyContent: "space-around", alignItems: "center", paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: "#E0E0E0" }, 
   targetKBRURow: { borderBottomWidth: 0, backgroundColor: "#DDEEF4", borderRadius: 8, marginHorizontal: -1, paddingHorizontal: 6 }, 
@@ -992,6 +1371,27 @@ const styles = StyleSheet.create({
   modalOptionDescription: { fontSize: 12, color: "#666", fontFamily: "Playfair Display Regular" }, 
   modalOptionText: { fontSize: 16, color: "#1a1a1a", fontFamily: "Playfair Display Regular", marginLeft: 12, flex: 1 }, 
   successModalContainer: { backgroundColor: "#FFF", borderRadius: 20, width: "85%", padding: 24, alignItems: "center" }, 
+  successModalContent: { backgroundColor: '#FFFFFF', borderRadius: 20, width: '85%', padding: 24, alignItems: 'center' },
+  successDescription: { fontSize: 14, color: '#666666', textAlign: 'center', marginBottom: 20, fontFamily: "Playfair Display Regular" },
+  successModalButtons: { flexDirection: 'row', gap: 12, width: '100%' },
+  modalButton: { flex: 1, paddingVertical: 12, borderRadius: 25, alignItems: 'center' },
+  modalButtonPrimary: { backgroundColor: '#9BDF11' },
+  modalButtonSecondary: { backgroundColor: '#FFF', borderWidth: 2, borderColor: '#6A9AA9' },
+  modalButtonPrimaryText: { color: '#000', fontSize: 14, fontWeight: '600', fontFamily: "Playfair Display Regular" },
+  modalButtonSecondaryText: { color: '#6A9AA9', fontSize: 14, fontWeight: '600', fontFamily: "Playfair Display Regular" },
+  nameInput: {
+    width: '100%',
+    backgroundColor: '#F5F5F5',
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    fontSize: 16,
+    color: '#333',
+    marginBottom: 20,
+    fontFamily: "Playfair Display Regular"
+  },
   successIconContainer: { marginBottom: 16 }, 
   successTitle: { fontSize: 22, fontFamily: "Playfair Display Bold", color: "#1a1a1a", marginBottom: 8 }, 
   successMessage: { fontSize: 14, color: "#666", fontFamily: "Playfair Display Regular", textAlign: "center", marginBottom: 24 }, 
@@ -1000,5 +1400,25 @@ const styles = StyleSheet.create({
   stayButton: { backgroundColor: "#FFF", borderWidth: 2, borderColor: "#6A9AA9" }, 
   goToPlansButton: { backgroundColor: "#9BDF11" }, 
   stayButtonText: { color: "#6A9AA9", fontSize: 14, fontWeight: "600", fontFamily: "Playfair Display Regular" }, 
-  goToPlansButtonText: { color: "#000", fontSize: 14, fontWeight: "600", fontFamily: "Playfair Display Regular" } 
+  goToPlansButtonText: { color: "#000", fontSize: 14, fontWeight: "600", fontFamily: "Playfair Display Regular" },
+  saveChoiceOverlay: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0, 0, 0, 0.5)', padding: 20 },
+  saveChoiceContainer: { backgroundColor: '#FFFFFF', borderRadius: 20, padding: 24, width: '100%', maxWidth: 340, alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 4, elevation: 5 },
+  saveChoiceTitle: { fontSize: 18, fontWeight: 'bold', color: '#333333', marginBottom: 8, textAlign: 'center', fontFamily: "Playfair Display Bold" },
+  saveChoiceText: { fontSize: 14, color: '#666666', textAlign: 'center', marginBottom: 24, lineHeight: 20, fontFamily: "Playfair Display Regular" },
+  saveChoiceUpdateButton: { backgroundColor: '#6A9AA9', paddingVertical: 14, paddingHorizontal: 20, borderRadius: 12, width: '100%', marginBottom: 10, alignItems: 'center' },
+  saveChoiceUpdateButtonText: { color: '#FFFFFF', fontWeight: '600', fontSize: 15, fontFamily: "Playfair Display Regular" },
+  saveChoiceNewButton: { backgroundColor: '#E4ECEF', paddingVertical: 14, paddingHorizontal: 20, borderRadius: 12, width: '100%', marginBottom: 16, alignItems: 'center' },
+  saveChoiceNewButtonText: { color: '#4A6B75', fontWeight: '600', fontSize: 15, fontFamily: "Playfair Display Regular" },
+  saveChoiceCancelText: { color: '#999999', fontSize: 14, fontWeight: '500', fontFamily: "Playfair Display Regular" },
+  saveButtonDisabled: {
+    backgroundColor: '#E0E0E0', // Блеклый серый фон
+    borderColor: '#D5D5D5',
+    borderWidth: 1,
+    // Если в buttonStyle есть shadow/shadowOpacity, можно их тут сбросить:
+    shadowOpacity: 0, 
+    elevation: 0,
+  },
+  saveButtonTextDisabled: {
+    color: '#999999', // Серый текст
+  },
 });

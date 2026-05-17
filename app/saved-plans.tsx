@@ -75,10 +75,11 @@ export default function SavedPlansScreen() {
       if (isCompleted) displayCategory = "Завершенный";
       if (isArchived) displayCategory = "Архивный";
       
-      // Получаем meals из days или напрямую
-      const meals = plan.days?.[0]?.meals || [];
-      const totalCalories = plan.totalCalories || meals.reduce((sum, m) => sum + (m.calories || 0), 0);
-      const mealsCount = plan.mealsCount || meals.length;
+      // ======= УБРАЛИ ДНИ: ТЕПЕРЬ СТРОГО ИЗ КОРНЯ =======
+      const meals = (plan as any).meals || [];
+      const totalCalories = plan.totalCalories || meals.reduce((sum: number, m: any) => sum + (m.calories || 0), 0);
+      const mealsCount = meals.length; 
+      // =================================================
       
       return {
         id: plan.id || `plan-${Date.now()}`, 
@@ -185,8 +186,8 @@ export default function SavedPlansScreen() {
       const dateStr = date.toISOString().split('T')[0];
       const todayStr = new Date().toISOString().split('T')[0];
       
-      // Получаем meals из плана
-      const mealsFromPlan = plan.meals || plan.originalPlan?.days?.[0]?.meals || [];
+      // ======= ЧИТАЕМ ТОЛЬКО ИЗ КОРНЯ =======
+      const mealsFromPlan = plan.meals || [];
       
       const formattedMeals = mealsFromPlan.map((meal: any) => ({
         id: meal.id || `meal-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
@@ -238,7 +239,8 @@ export default function SavedPlansScreen() {
         await rationPlanService.updateRationPlan(currentUser.uid, plan.originalPlan.id, { 
           status: newStatus, 
           startDate: dateStr, 
-          isTemplate: false 
+          isTemplate: false,
+          meals: formattedMeals // сохраняем плоскую структуру и сюда
         });
       }
       
