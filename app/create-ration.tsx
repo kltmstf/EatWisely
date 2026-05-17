@@ -125,7 +125,7 @@ export default function CreateRationScreen() {
   const [selectedMeals, setSelectedMeals] = useState<MealInTemplate[]>([]);
   const [showAddRecipeModal, setShowAddRecipeModal] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
-  const [recipeSource, setRecipeSource] = useState<"all" | "user">("all");
+  const [recipeSource, setRecipeSource] = useState<"all" |"user">("all");
   const [loadingPlan, setLoadingPlan] = useState(false);
   const [planStatus, setPlanStatus] = useState<"template" | "active" | "completed" | "archived" | "draft">("template");
   const [isActivePlan, setIsActivePlan] = useState(false);
@@ -429,7 +429,7 @@ export default function CreateRationScreen() {
       title: recipe.title,
       category: getCategoryName(recipe.mealType),
       calories: recipe.calories || 0,
-      proteins: (recipe as any).proteins || 0, // Поддержка БЖУ исходного рецепта
+      proteins: (recipe as any).proteins || 0,
       fats: (recipe as any).fats || 0,
       carbohydrates: (recipe as any).carbohydrates || 0,
       weight: (recipe as any).weight || "250г",
@@ -650,8 +650,7 @@ export default function CreateRationScreen() {
                   <Ionicons name="earth" size={10} color="#FFFFFF" />
                 </View>
               )}
-              {isAdded && (
-                <View style={styles.addedBadge}>
+              {isAdded && (<View style={styles.addedBadge}>
                   <Ionicons name="checkmark" size={10} color="#FFFFFF" />
                 </View>
               )}
@@ -747,7 +746,7 @@ export default function CreateRationScreen() {
         {!isViewMode && editingPlanId && (
           <TouchableOpacity style={styles.archiveButton} onPress={handleArchivePlan}>
             <Ionicons 
-              name={planStatus === "archived" ? "archive-outline" : "archive"} 
+              name={planStatus=== "archived" ? "archive-outline" : "archive"} 
               size={24} 
               color={planStatus === "archived" ? "#4CAF50" : "#FF9800"} 
             />
