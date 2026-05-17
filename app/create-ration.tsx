@@ -106,8 +106,8 @@ const formatCookingTime = (time: any): string => {
 
 export default function CreateRationScreen() {
   const router = useRouter();
-  const { planId, mode, source } = useLocalSearchParams();
-  const [recipes, setRecipes] = useState<Recipe[]>([]);
+  const { planId, mode, source, meals: mealsParam } = useLocalSearchParams();
+  const [recipes, setRecipes] = useState<Recipe[]>([])
   const [filteredRecipes, setFilteredRecipes] = useState<Recipe[]>([]);
   const [displayedRecipes, setDisplayedRecipes] = useState<Recipe[]>([]);
   const [loading, setLoading] = useState(true);
@@ -154,71 +154,111 @@ export default function CreateRationScreen() {
       
       let loadedMeals: MealInTemplate[] = [];
       
-      // Если это активный план на сегодня, загружаем из daily_plans
-      if (activePlan && activePlan.id === planId) {
-        console.log("Загрузка активного плана из daily_plans");
-        setIsActivePlan(true);
-        const dailyPlanRef = doc(db, 'users', userId, 'daily_plans', today);
-        const dailyPlanSnap = await getDoc(dailyPlanRef);
-        
-        if (dailyPlanSnap.exists()) {
-          const dailyMeals = dailyPlanSnap.data().meals || [];
-          loadedMeals = dailyMeals.map((meal: any) => ({
-            id: meal.id || `meal-${Date.now()}-${Math.random()}`,
-            recipeId: meal.recipeId || meal.id,
-            title: meal.name || meal.title || "Без названия",
-            category: meal.category || "Обед",
-            calories: meal.calories || 0,
-            proteins: meal.proteins || 0,
-            fats: meal.fats || 0,
-            carbohydrates: meal.carbohydrates || 0,
-            weight: meal.weight || "250г",
-            cookingTime: meal.cookingTime || 20,
-            difficultyLevel: meal.difficultyLevel || "Легко",
-            imageUrl: meal.imageUrl,
-          }));
+      // ИСПРАВЛЕНО: Безопасно используем mealsParam, полученный с верхнего уровня
+      if (mealsParam && typeof mealsParam === 'string') {
+        try {
+          const parsedMeals = JSON.parse(mealsParam);
+          if (Array.isArray(parsedMeals) && parsedMeals.length > 0) {
+            loadedMeals = parsedMeals.map((meal: any) => ({
+              id: meal.id || `meal-${Date.now()}-${Math.random()}`,
+              recipeId: meal.recipeId || meal.id,
+              title: meal.name || meal.title || "Без названия",
+              category: meal.category || "Обед",
+              calories: meal.calories || 0,
+              proteins: meal.proteins || 0,
+              fats: meal.fats || 0,
+              carbohydrates: meal.carbohydrates || 0,
+              weight: meal.weight || "250г",
+              cookingTime: meal.cookingTime || 20,
+              difficultyLevel: meal.difficultyLevel || "Легко",
+              imageUrl: meal.imageUrl,
+            }));
+          }
+        } catch (jsonErr) {
+          console.log("Параметр meals пустой или не JSON, будем читать из базы");
+        }
+      }
+
+      // Если через параметры роутера блюда не пришли, делаем запросы в Firebase
+      if (loadedMeals.length === 0) {
+        if (activePlan && activePlan.id === planId) {
+          console.log("Загрузка активного плана из daily_plans");
+          setIsActivePlan(true);
+          const dailyPlanRef = doc(db, 'users', userId, 'daily_plans', today);
+          const dailyPlanSnap = await getDoc(dailyPlanRef);
           
+          if (dailyPlanSnap.exists()) {
+            const dailyMeals = dailyPlanSnap.data().meals || [];
+            loadedMeals = dailyMeals.map((meal: any) => ({
+              id: meal.id || `meal-${Date.now()}-${Math.random()}`,
+              recipeId: meal.recipeId || meal.id,
+              title: meal.name || meal.title || "Без названия",
+              category: meal.category || "Обед",
+              calories: meal.calories || 0,
+              proteins: meal.proteins || 0,
+              fats: meal.fats || 0,
+              carbohydrates: meal.carbohydrates || 0,
+              weight: meal.weight || "250г",
+              cookingTime: meal.cookingTime || 20,
+              difficultyLevel: meal.difficultyLevel || "Легко",
+              imageUrl: meal.imageUrl,
+            }));
+            
+            setTemplateTitle(activePlan.title || "Активный план");
+            setTemplateDescription(activePlan.description || "Активный план на сегодня");
+            setEditingPlanId(activePlan.id || null);
+            setPlanStatus(activePlan.status as any || "active");
+          }
+        } else {
+          setIsActivePlan(false);
+          // Загрузка из корня ration_plans
+          const plan = await rationPlanService.getRationPlanById(planId as string, userId);
+          if (plan) {
+            const rawMeals = (plan as any).meals || (plan.days && plan.days[0] && plan.days[0].meals) || [];
+            
+            loadedMeals = rawMeals.map((meal: any) => ({
+              id: meal.id || `meal-${Date.now()}-${Math.random()}`,
+              recipeId: meal.recipeId || meal.id,
+              title: meal.name || meal.title || "Без названия",
+              category: meal.category || "Обед",
+              calories: meal.calories || 0,
+              proteins: meal.proteins || 0,
+              fats: meal.fats || 0,
+              carbohydrates: meal.carbohydrates || 0,
+              weight: meal.weight || "250г",
+              cookingTime: meal.cookingTime || 20,
+              difficultyLevel: meal.difficultyLevel || "Легко",
+              imageUrl: meal.imageUrl,
+            }));
+            
+            setTemplateTitle(plan.title || "План питания");
+            setTemplateDescription(plan.description || "Описание плана");
+            setEditingPlanId(plan.id || null);
+            setPlanStatus((plan.status as any) || "template");
+          }
+        }
+      } else {
+        // Если блюда успешно распаковались из параметров роутера, просто добираем тексты плана
+        if (activePlan && activePlan.id === planId) {
+          setIsActivePlan(true);
           setTemplateTitle(activePlan.title || "Активный план");
           setTemplateDescription(activePlan.description || "Активный план на сегодня");
           setEditingPlanId(activePlan.id || null);
           setPlanStatus(activePlan.status as any || "active");
-        }
-      } else {
-        setIsActivePlan(false);
-        // Обычная загрузка из ration_plans
-        const plan = await rationPlanService.getRationPlanById(planId as string, userId);
-        if (plan && plan.days && plan.days[0] && plan.days[0].meals) {
-          loadedMeals = plan.days[0].meals.map((meal: any) => ({
-            id: meal.id || `meal-${Date.now()}-${Math.random()}`,
-            recipeId: meal.recipeId || meal.id,
-            title: meal.name || meal.title || "Без названия",
-            category: meal.category || "Обед",
-            calories: meal.calories || 0,
-            proteins: meal.proteins || 0,
-            fats: meal.fats || 0,
-            carbohydrates: meal.carbohydrates || 0,
-            weight: meal.weight || "250г",
-            cookingTime: meal.cookingTime || 20,
-            difficultyLevel: meal.difficultyLevel || "Легко",
-            imageUrl: meal.imageUrl,
-          }));
-          setTemplateTitle(plan.title || "План питания");
-          setTemplateDescription(plan.description || "Описание плана");
-          setEditingPlanId(plan.id || null);
-          setPlanStatus((plan.status as any) || "template");
-        } else if (plan) {
-          setTemplateTitle(plan.title || "План питания");
-          setTemplateDescription(plan.description || "Описание плана");
-          setEditingPlanId(plan.id || null);
-          setPlanStatus((plan.status as any) || "template");
+        } else {
+          setIsActivePlan(false);
+          const plan = await rationPlanService.getRationPlanById(planId as string, userId);
+          if (plan) {
+            setTemplateTitle(plan.title || "План питания");
+            setTemplateDescription(plan.description || "Описание плана");
+            setEditingPlanId(plan.id || null);
+            setPlanStatus((plan.status as any) || "template");
+          }
         }
       }
       
       setSelectedMeals(loadedMeals);
       
-      if (mode !== "view" && loadedMeals.length > 0) {
-        Alert.alert("Успех", `План загружен для ${mode === "edit" ? "редактирования" : "просмотра"} (${loadedMeals.length} блюд)`);
-      }
     } catch (error) {
       console.error("Error loading plan:", error);
       Alert.alert("Ошибка", "Не удалось загрузить план");
@@ -388,14 +428,14 @@ export default function CreateRationScreen() {
       recipeId: recipe.id,
       title: recipe.title,
       category: getCategoryName(recipe.mealType),
-      calories: recipe.calories || 300,
-      proteins: 0,
-      fats: 0,
-      carbohydrates: 0,
-      weight: "250г",
+      calories: recipe.calories || 0,
+      proteins: (recipe as any).proteins || 0, // Поддержка БЖУ исходного рецепта
+      fats: (recipe as any).fats || 0,
+      carbohydrates: (recipe as any).carbohydrates || 0,
+      weight: (recipe as any).weight || "250г",
       cookingTime: typeof recipe.cookingTime === 'number' ? recipe.cookingTime : 20,
       difficultyLevel: recipe.difficultyLevel || recipe.difficulty || "Легко",
-      imageUrl: recipe.imageUrl,
+      imageUrl: getImageUrl(recipe) || undefined,
     };
     setSelectedMeals(prev => [...prev, newMeal]);
     Alert.alert("Успех", "Рецепт добавлен в шаблон");
@@ -418,7 +458,18 @@ export default function CreateRationScreen() {
       if (!userId) return;
       
       const newStatus = planStatus === "archived" ? "template" : "archived";
-      await rationPlanService.updateRationPlan(userId, editingPlanId, { status: newStatus });
+      
+      // Вместо комплексного updateRationPlan, который пересобирает массивы,
+      // мы обновляем СУГУБО поле status напрямую в Firestore. 
+      // Это на 100% защищает блюда от случайного затирания!
+      const { doc, updateDoc } = require("firebase/firestore");
+      const planRef = doc(db, 'ration_plans', editingPlanId);
+      
+      await updateDoc(planRef, { 
+        status: newStatus,
+        updatedAt: new Date().toISOString()
+      });
+
       setPlanStatus(newStatus);
       Alert.alert("Успех", newStatus === "archived" ? "План архивирован" : "План восстановлен из архива");
     } catch (error) {
@@ -445,114 +496,102 @@ export default function CreateRationScreen() {
         return;
       }
 
+      // Формируем чистый массив блюд
+      const mealsData = selectedMeals.map(meal => ({
+        id: meal.id,
+        recipeId: meal.recipeId,
+        name: meal.title,
+        category: meal.category,
+        calories: meal.calories,
+        proteins: meal.proteins || 0,
+        fats: meal.fats || 0,
+        carbohydrates: meal.carbohydrates || 0,
+        weight: meal.weight,
+        cookingTime: meal.cookingTime,
+        difficultyLevel: meal.difficultyLevel,
+        imageUrl: meal.imageUrl,
+      }));
+
+      const totalCalories = selectedMeals.reduce((sum, meal) => sum + meal.calories, 0);
+
       if (editingPlanId) {
-        // Обновление существующего плана
+        // 1. Обновляем сам шаблон в ration_plans (плоская структура)
         const updateData = {
           title: templateTitle,
           description: templateDescription || `Шаблон рациона от ${new Date().toLocaleDateString("ru-RU")}`,
-          days: [{
-            day: 1,
-            meals: selectedMeals.map(meal => ({
-              id: meal.id,
-              recipeId: meal.recipeId,
-              name: meal.title,
-              category: meal.category,
-              calories: meal.calories,
-              proteins: meal.proteins || 0,
-              fats: meal.fats || 0,
-              carbohydrates: meal.carbohydrates || 0,
-              weight: meal.weight,
-              cookingTime: meal.cookingTime,
-              difficultyLevel: meal.difficultyLevel,
-              imageUrl: meal.imageUrl,
-            })),
-            stats: {
-              totalCalories: selectedMeals.reduce((sum, meal) => sum + meal.calories, 0),
-              totalProteins: selectedMeals.reduce((sum, meal) => sum + meal.proteins, 0),
-              totalFats: selectedMeals.reduce((sum, meal) => sum + meal.fats, 0),
-              totalCarbs: selectedMeals.reduce((sum, meal) => sum + meal.carbohydrates, 0),
-              totalCookingTime: selectedMeals.reduce((sum, meal) => sum + (meal.cookingTime || 0), 0),
-            }
-          }],
-          totalCalories: selectedMeals.reduce((sum, meal) => sum + meal.calories, 0),
+          meals: mealsData,
+          totalCalories: totalCalories,
           mealsCount: selectedMeals.length,
           updatedAt: new Date().toISOString()
         };
         
         await rationPlanService.updateRationPlan(userId, editingPlanId, updateData);
         
-        // Если это активный план, обновляем daily_plans
-        if (isActivePlan) {
+        // 2. Проверяем, активен ли этот план СЕГОДНЯ в ration_plan_days и обновляем его там
+        try {
           const today = new Date().toISOString().split('T')[0];
-          const dailyPlanRef = doc(db, 'users', userId, 'daily_plans', today);
-          await setDoc(dailyPlanRef, {
-            meals: selectedMeals.map(meal => ({
-              id: meal.id,
-              category: meal.category,
-              name: meal.title,
-              calories: meal.calories,
-              proteins: meal.proteins || 0,
-              fats: meal.fats || 0,
-              carbohydrates: meal.carbohydrates || 0,
-              weight: meal.weight,
-              marked: false,
-              cookingTime: meal.cookingTime,
-              difficultyLevel: meal.difficultyLevel,
-              rating: 0,
-              recipeId: meal.recipeId,
-              isCustom: false,
-              canBeRemoved: true,
-              imageUrl: meal.imageUrl,
-              addedAt: new Date().toISOString()
-            })),
-            updatedAt: new Date().toISOString()
-          }, { merge: true });
+          const { collection, query, where, getDocs, updateDoc } = require("firebase/firestore");
+          
+          const dayQuery = query(
+            collection(db, 'ration_plan_days'),
+            where('userId', '==', userId),
+            where('date', '==', today),
+            where('planId', '==', editingPlanId)
+          );
+          
+          const daySnap = await getDocs(dayQuery);
+          
+          if (!daySnap.empty) {
+            console.log("План активен на сегодня! Синхронизируем изменения с главной страницей...");
+            const dayDocRef = daySnap.docs[0].ref;
+            await updateDoc(dayDocRef, {
+              meals: mealsData,
+              totalCalories: totalCalories,
+              updatedAt: new Date().toISOString()
+            });
+          }
+        } catch (syncError) {
+          console.error("Ошибка синхронизации с ration_plan_days:", syncError);
         }
         
         Alert.alert("Успех!", "План успешно обновлен");
       } else {
-        // Создание нового плана
+        // Добавлены недостающие поля totalProteins, totalFats, totalCarbs в объект stats
         const templateData = {
           title: templateTitle,
           description: templateDescription || `Шаблон рациона от ${new Date().toLocaleDateString("ru-RU")}`,
           type: 'daily' as const,
+          meals: mealsData, // Для новой логики (корень)
           days: [{
             day: 1,
-            meals: selectedMeals.map(meal => ({
-              id: meal.id,
-              recipeId: meal.recipeId,
-              name: meal.title,
-              category: meal.category,
-              calories: meal.calories,
-              proteins: meal.proteins || 0,
-              fats: meal.fats || 0,
-              carbohydrates: meal.carbohydrates || 0,
-              weight: meal.weight,
-              cookingTime: meal.cookingTime,
-              difficultyLevel: meal.difficultyLevel,
-              imageUrl: meal.imageUrl,
-            })),
+            meals: mealsData, // Для старой логики сервиса
             stats: {
-              totalCalories: selectedMeals.reduce((sum, meal) => sum + meal.calories, 0),
-              totalProteins: selectedMeals.reduce((sum, meal) => sum + meal.proteins, 0),
-              totalFats: selectedMeals.reduce((sum, meal) => sum + meal.fats, 0),
-              totalCarbs: selectedMeals.reduce((sum, meal) => sum + meal.carbohydrates, 0),
+              totalCalories: totalCalories,
+              totalProteins: selectedMeals.reduce((sum, meal) => sum + (meal.proteins || 0), 0),
+              totalFats: selectedMeals.reduce((sum, meal) => sum + (meal.fats || 0), 0),
+              totalCarbs: selectedMeals.reduce((sum, meal) => sum + (meal.carbohydrates || 0), 0),
               totalCookingTime: selectedMeals.reduce((sum, meal) => sum + (meal.cookingTime || 0), 0),
             }
           }],
           isTemplate: true,
           category: "Шаблон",
-          totalCalories: selectedMeals.reduce((sum, meal) => sum + meal.calories, 0),
+          totalCalories: totalCalories,
           totalDuration: "1 день",
           mealsCount: selectedMeals.length,
           status: "template" as const,
+          createdAt: new Date().toISOString()
         };
         
-        await rationPlanService.createRationPlan(userId, templateData);
+        await rationPlanService.createRationPlan(userId, templateData as any);
         Alert.alert("Успех!", "Шаблон рациона успешно сохранен");
       }
       
-      goBack();
+      // 3. Возврат на нужный экран с жесткой перезагрузкой стейта навигации
+      if (source === "home" || isActivePlan) {
+        router.replace("/(tabs)/home"); 
+      } else {
+        goBack();
+      }
       
     } catch (error: any) {
       console.error("Error saving template:", error);

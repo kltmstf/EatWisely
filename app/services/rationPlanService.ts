@@ -55,6 +55,7 @@ export interface RationPlan {
   title: string;
   description: string;
   type: 'daily' | 'weekly';
+  meals?: Meal[]; // Поддержка новой плоской структуры
   days: DayPlan[];
   isTemplate: boolean;
   usedDates: string[];
@@ -123,8 +124,8 @@ class RationPlanService {
         });
       }
       
-      // Получаем meals из плана
-      const meals = planData.days?.[0]?.meals || [];
+      // ИСПРАВЛЕНО: Ищем meals сначала в корне, затем в днях
+      const meals = planData.meals || planData.days?.[0]?.meals || [];
       const mealsCount = meals.length;
       const totalCalories = meals.reduce((sum: number, m: any) => sum + (m.calories || 0), 0);
       const totalProteins = meals.reduce((sum: number, m: any) => sum + (m.proteins || 0), 0);
@@ -227,8 +228,8 @@ class RationPlanService {
       const snapshot = await getDocs(q);
       const plans = snapshot.docs.map(doc => {
         const data = doc.data();
-        // Пересчитываем mealsCount если нужно
-        const mealsCount = data.days?.[0]?.meals?.length || data.mealsCount || 0;
+        // ИСПРАВЛЕНО: Безопасный подсчет количества блюд из любой структуры
+        const mealsCount = data.meals?.length || data.days?.[0]?.meals?.length || data.mealsCount || 0;
         return { 
           id: doc.id, 
           ...data,
@@ -246,10 +247,35 @@ class RationPlanService {
     try {
       const planRef = doc(db, 'ration_plans', planId);
       const planSnap = await getDoc(planRef);
+      
       if (planSnap.exists()) {
-        const plan = { id: planSnap.id, ...planSnap.data() } as RationPlan;
-        if (userId && plan.userId !== userId) return null;
-        return plan;
+        const data = planSnap.data();
+        if (userId && data.userId !== userId) return null;
+
+        // ✨ ХЕЙЛ-МЕРИ ДЛЯ АРХИВНЫХ ПЛАНОВ:
+        // Гарантируем, что meals и days ВСЕГДА существуют в объекте, 
+        // даже если план старый или плоский.
+        const meals = data.meals || data.days?.[0]?.meals || [];
+        const totalCalories = data.totalCalories || meals.reduce((sum: number, m: any) => sum + (m.calories || 0), 0);
+        
+        const daysData = data.days || [{
+          day: 1,
+          meals: meals,
+          stats: {
+            totalCalories,
+            totalProteins: meals.reduce((sum: number, m: any) => sum + (m.proteins || 0), 0),
+            totalFats: meals.reduce((sum: number, m: any) => sum + (m.fats || 0), 0),
+            totalCarbs: meals.reduce((sum: number, m: any) => sum + (m.carbohydrates || 0), 0),
+            totalCookingTime: meals.reduce((sum: number, m: any) => sum + (m.cookingTime || 0), 0)
+          }
+        }];
+
+        return { 
+          id: planSnap.id, 
+          ...data,
+          meals: meals,    // Теперь экран просмотра через .meals увидит блюда
+          days: daysData   // И экран просмотра через .days[0] тоже их увидит!
+        } as RationPlan;
       }
       return null;
     } catch (error) {
@@ -261,22 +287,38 @@ class RationPlanService {
   async createRationPlan(userId: string, planData: Partial<RationPlan>): Promise<string> {
     try {
       const now = new Date().toISOString();
-      const meals = planData.days?.[0]?.meals || [];
+      
+      // ИСПРАВЛЕНО: Извлекаем блюда как из корневого массива, так и из старого "days"
+      const meals = planData.meals || planData.days?.[0]?.meals || [];
       const mealsCount = meals.length;
       const totalCalories = meals.reduce((sum: number, m: any) => sum + (m.calories || 0), 0);
       
+      // ИСПРАВЛЕНО: Если days не передан, собираем его автоматически, чтобы не ломать типы
+      const daysData = planData.days || [{
+        day: 1,
+        meals: meals,
+        stats: {
+          totalCalories,
+          totalProteins: meals.reduce((sum: number, m: any) => sum + (m.proteins || 0), 0),
+          totalFats: meals.reduce((sum: number, m: any) => sum + (m.fats || 0), 0),
+          totalCarbs: meals.reduce((sum: number, m: any) => sum + (m.carbohydrates || 0), 0),
+          totalCookingTime: meals.reduce((sum: number, m: any) => sum + (m.cookingTime || 0), 0)
+        }
+      }];
+
       const newPlan = {
         userId,
         title: planData.title || 'Новый шаблон',
         description: planData.description || '',
         type: 'daily',
-        days: planData.days || [],
+        meals: meals, // Сохраняем в корень (новый вариант)
+        days: daysData, // Сохраняем обратную совместимость (старый вариант)
         isTemplate: true,
         usedDates: [],
         status: 'template',
         category: planData.category || 'Шаблон',
         totalCalories: totalCalories,
-        totalDuration: '1 день',
+        totalDuration: '1日',
         mealsCount: mealsCount,
         createdAt: now,
         updatedAt: now,
@@ -297,17 +339,19 @@ class RationPlanService {
       const today = new Date().toISOString().split('T')[0];
       const meals = dailyPlanData.meals || [];
       const mealsCount = meals.length;
+      const totalCalories = meals.reduce((sum: number, m: any) => sum + (m.calories || 0), 0);
       
       const templateData: Partial<RationPlan> = {
         userId: userId,
         title: dailyPlanData.title || `Рацион на ${today}`,
         description: dailyPlanData.description || `Дневной рацион от ${new Date().toLocaleDateString('ru-RU')}`,
         type: 'daily',
+        meals: meals, // В корень
         days: [{
           day: 1,
           meals: meals,
           stats: dailyPlanData.stats || {
-            totalCalories: meals.reduce((sum: number, m: any) => sum + (m.calories || 0), 0),
+            totalCalories: totalCalories,
             totalProteins: meals.reduce((sum: number, m: any) => sum + (m.proteins || 0), 0),
             totalFats: meals.reduce((sum: number, m: any) => sum + (m.fats || 0), 0),
             totalCarbs: meals.reduce((sum: number, m: any) => sum + (m.carbohydrates || 0), 0),
@@ -318,7 +362,7 @@ class RationPlanService {
         usedDates: [],
         status: 'template',
         category: dailyPlanData.category || 'Дневной рацион',
-        totalCalories: meals.reduce((sum: number, m: any) => sum + (m.calories || 0), 0),
+        totalCalories: totalCalories,
         totalDuration: '1 день',
         mealsCount: mealsCount,
         planDate: today
@@ -335,12 +379,29 @@ class RationPlanService {
   async updateRationPlan(userId: string, planId: string, planData: any): Promise<boolean> {
     try {
       const planRef = doc(db, 'ration_plans', planId);
-      const meals = planData.days?.[0]?.meals || [];
+      
+      // ИСПРАВЛЕНО: Безопасное чтение meals из корня или из days
+      const meals = planData.meals || planData.days?.[0]?.meals || [];
       const mealsCount = meals.length;
       const totalCalories = meals.reduce((sum: number, m: any) => sum + (m.calories || 0), 0);
       
+      // Пересобираем days автоматически, если пришла чисто плоская структура
+      const daysData = planData.days || [{
+        day: 1,
+        meals: meals,
+        stats: {
+          totalCalories,
+          totalProteins: meals.reduce((sum: number, m: any) => sum + (m.proteins || 0), 0),
+          totalFats: meals.reduce((sum: number, m: any) => sum + (m.fats || 0), 0),
+          totalCarbs: meals.reduce((sum: number, m: any) => sum + (m.carbohydrates || 0), 0),
+          totalCookingTime: meals.reduce((sum: number, m: any) => sum + (m.cookingTime || 0), 0)
+        }
+      }];
+
       const updateData = {
         ...planData,
+        meals: meals,
+        days: daysData,
         mealsCount: mealsCount,
         totalCalories: totalCalories,
         updatedAt: new Date().toISOString()

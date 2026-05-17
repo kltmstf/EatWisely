@@ -8,6 +8,7 @@ import { auth } from "@/app/firebase/config";
 import { getFirestore, doc, setDoc, collection, query, where, getDocs, deleteDoc, Timestamp } from "firebase/firestore";
 import { getApps, getApp, initializeApp } from "firebase/app";
 
+
 declare const __firebase_config: string | undefined;
 
 const categories = ["Все", "Шаблоны", "Активные", "Запланированные", "Завершенные", "Архивные"];
@@ -49,37 +50,92 @@ export default function SavedPlansScreen() {
 
   useFocusEffect(useCallback(() => { loadUserPlans(); }, []));
 
+// Добавляем стейт для хранения ID активного на сегодня шаблона
+  const [todayActivePlanId, setTodayActivePlanId] = useState<string | null>(null);
+
   const loadUserPlans = async () => {
     try {
       setLoading(true);
       const currentUser = auth.currentUser;
       if (!currentUser) { setUserPlans([]); return; }
+      
+      // 1. Сначала качаем шаблоны как обычно
       const plans = await rationPlanService.getUserRationPlans(currentUser.uid);
       setUserPlans(plans);
-    } catch (error) { Alert.alert("Ошибка", "Не удалось загрузить планы"); } 
-    finally { setLoading(false); }
+
+      // 2. ДОБАВЛЕНО: Заглядываем в сегодняшний день и смотрим, какой шаблон активен
+      try {
+        const todayStr = new Date().toISOString().split('T')[0];
+        const { collection, query, where, getDocs, getFirestore } = require("firebase/firestore");
+        
+        // Ищем документ, где дата совпадает с сегодняшней, независимо от ID самого документа
+        const dayQuery = query(
+          collection(getFirestore(), 'ration_plan_days'),
+          where('userId', '==', currentUser.uid),
+          where('date', '==', todayStr)
+        );
+        const daySnap = await getDocs(dayQuery);
+        
+        if (!daySnap.empty) {
+          // Берем самый первый найденный документ на сегодня
+          const dayData = daySnap.docs[0].data();
+          console.log("🌟 [УСПЕХ] Найдена активная запись дня! planId из неё:", dayData.planId);
+          setTodayActivePlanId(dayData.planId || null); 
+        } else {
+          console.log("⚠️ [ИНФО] Документ дня в ration_plan_days на сегодня не найден");
+          setTodayActivePlanId(null);
+        }
+      } catch (dbError) {
+        console.error("Ошибка при получении сегодняшнего ration_plan_days:", dbError);
+      }
+
+    } catch (error) { 
+      Alert.alert("Ошибка", "Не удалось загрузить планы"); 
+    } finally { 
+      setLoading(false); 
+    }
   };
 
   const filteredPlans = useMemo(() => {
     const today = new Date().toISOString().split('T')[0];
     const allPlans = userPlans.map((plan) => {
-      const isActiveToday = plan.status === 'active' && plan.startDate?.split('T')[0] === today;
-      const isScheduled = plan.status === 'active' && plan.startDate?.split('T')[0] !== today && !!plan.startDate;
-      const isArchived = plan.status === 'archived';
-      const isTemplate = plan.status === 'template';
-      const isCompleted = plan.status === 'completed';
-      let displayCategory = plan.category || "Обычный";
-      if (isTemplate) displayCategory = "Шаблон";
-      if (isActiveToday) displayCategory = "Активный";
-      if (isScheduled) displayCategory = "Запланированный";
-      if (isCompleted) displayCategory = "Завершенный";
-      if (isArchived) displayCategory = "Архивный";
+
+
       
-      // ======= УБРАЛИ ДНИ: ТЕПЕРЬ СТРОГО ИЗ КОРНЯ =======
-      const meals = (plan as any).meals || [];
+      const isActiveToday = !!todayActivePlanId && plan.id === todayActivePlanId;
+      
+      
+      
+      // 🔍 ДОБАВЛЯЕМ ЛОГИРОВАНИЕ ДЛЯ КАЖДОЙ КАРТОЧКИ:
+      if (plan.title?.includes("Дневной рацион") || plan.status === 'active' || isActiveToday) {
+        console.log("======================================");
+        console.log("🔍 [ОТЛАДКА МЕМО] Название:", plan.title);
+        console.log("— ID этого плана в ration_plans:", plan.id);
+        console.log("— ID активного плана из стейта:", todayActivePlanId);
+        console.log("— Статус этого плана из базы:", plan.status);
+        console.log("— Итоговый флаг isActiveToday:", isActiveToday);
+        console.log("======================================");
+      }
+      
+      // А вот запланированным он считается, если статус active, но ID не сегодняшний
+      const isScheduled = plan.status === 'active' && !isActiveToday && !!plan.startDate;
+      const isArchived = plan.status === 'archived';
+      const isCompleted = plan.status === 'completed';
+      
+      const isTemplate = isActiveToday ? false : (plan.status === 'template' || !plan.status);
+      
+      let displayCategory = plan.category || "Обычный";
+      if (isActiveToday) displayCategory = "Активный";
+      else if (isTemplate) displayCategory = "Шаблон";
+      else if (isScheduled) displayCategory = "Запланированный";
+      else if (isCompleted) displayCategory = "Завершенный";
+      else if (isArchived) displayCategory = "Архивный";
+      
+      // ======= ЗАЩИТА: Проверяем все возможные названия полей для блюд =======
+      const meals = (plan as any).meals || (plan as any).recipes || (plan as any).items || [];
       const totalCalories = plan.totalCalories || meals.reduce((sum: number, m: any) => sum + (m.calories || 0), 0);
       const mealsCount = meals.length; 
-      // =================================================
+      // ======================================================================
       
       return {
         id: plan.id || `plan-${Date.now()}`, 
@@ -89,9 +145,13 @@ export default function SavedPlansScreen() {
         mealsCount: mealsCount, 
         savedDate: formatDate(plan.createdAt),
         category: displayCategory, 
-        originalPlan: plan, 
+        originalPlan: {
+          ...plan,
+          meals: meals
+        }, 
         isTemplate, 
-        status: plan.status || "template",
+        // Если план не активен сегодня, возвращаем его реальный статус из базы (шаблон, завершен и т.д.)
+        status: isActiveToday ? "active" : (plan.status === 'active' ? 'template' : (plan.status || "template")),
         isActiveToday, 
         isScheduled, 
         isArchived, 
@@ -100,6 +160,7 @@ export default function SavedPlansScreen() {
         meals: meals
       };
     });
+
     return allPlans.filter((plan) => {
       const matchesSearch = plan.name.toLowerCase().includes(searchQuery.toLowerCase()) || plan.description.toLowerCase().includes(searchQuery.toLowerCase());
       const matchesCategory = (() => {
@@ -113,21 +174,27 @@ export default function SavedPlansScreen() {
       })();
       return matchesSearch && matchesCategory;
     });
-  }, [searchQuery, selectedCategory, userPlans]);
+  }, [searchQuery, selectedCategory, userPlans, todayActivePlanId]);
 
   const handleViewPlan = (plan: any) => {
+    // Безопасно кодируем массив блюд в JSON
+    const mealsString = JSON.stringify(plan.meals || []);
+    
     router.push({ 
       pathname: "/create-ration", 
       params: { 
         planId: plan.originalPlan?.id, 
         mode: "view", 
-        source: "saved-plans" 
+        source: "saved-plans",
+        meals: mealsString // Отправляем как 'meals'
       } 
     });
   };
   
-  // Исправленный handleEditPlan - теперь только предупреждение, без запрета
   const handleEditPlan = (plan: RationPlan, planInfo: any) => {
+    // Берем блюда напрямую из отфильтрованного и проверенного объекта planInfo
+    const mealsString = JSON.stringify(planInfo.meals || []);
+
     if (planInfo.isArchived) {
       Alert.alert("Архивный план", "Архивные планы нельзя редактировать. Сначала восстановите план из архива.", [{ text: "OK" }]);
     } else if (planInfo.isActiveToday) {
@@ -138,7 +205,12 @@ export default function SavedPlansScreen() {
           { text: "Отмена", style: "cancel" },
           { text: "Продолжить", onPress: () => router.push({ 
             pathname: "/create-ration", 
-            params: { planId: plan.id, mode: "edit", source: "saved-plans" } 
+            params: { 
+              planId: plan.id, 
+              mode: "edit", 
+              source: "saved-plans",
+              meals: mealsString
+            } 
           })}
         ]
       );
@@ -150,14 +222,24 @@ export default function SavedPlansScreen() {
           { text: "Отмена", style: "cancel" },
           { text: "Продолжить", onPress: () => router.push({ 
             pathname: "/create-ration", 
-            params: { planId: plan.id, mode: "edit", source: "saved-plans" } 
+            params: { 
+              planId: plan.id, 
+              mode: "edit", 
+              source: "saved-plans",
+              meals: mealsString
+            } 
           })}
         ]
       );
     } else {
       router.push({ 
         pathname: "/create-ration", 
-        params: { planId: plan.id, mode: "edit", source: "saved-plans" } 
+        params: { 
+          planId: plan.id, 
+          mode: "edit", 
+          source: "saved-plans",
+          meals: mealsString
+        } 
       });
     }
   };
@@ -186,7 +268,6 @@ export default function SavedPlansScreen() {
       const dateStr = date.toISOString().split('T')[0];
       const todayStr = new Date().toISOString().split('T')[0];
       
-      // ======= ЧИТАЕМ ТОЛЬКО ИЗ КОРНЯ =======
       const mealsFromPlan = plan.meals || [];
       
       const formattedMeals = mealsFromPlan.map((meal: any) => ({
@@ -233,14 +314,38 @@ export default function SavedPlansScreen() {
         isActive: true
       });
       
-      // Обновляем статус плана в ration_plans
+      // 🌟 ДОБАВЛЕНО: ТУШИМ СТАРЫЕ АКТИВНЫЕ ПЛАНЫ В RATION_PLANS
+      // Находим все планы этого юзера, у которых статус "active", и переводим их в "completed"
+      try {
+        const { updateDoc } = require("firebase/firestore");
+        const oldActiveQuery = query(
+          collection(firestoreDb, 'ration_plans'),
+          where('userId', '==', currentUser.uid),
+          where('status', '==', 'active')
+        );
+        const oldActiveSnap = await getDocs(oldActiveQuery);
+        for (const oldDoc of oldActiveSnap.docs) {
+          // На всякий случай не трогаем план, который мы активируем прямо сейчас
+          if (oldDoc.id !== plan.originalPlan?.id) {
+            await updateDoc(doc(firestoreDb, 'ration_plans', oldDoc.id), {
+              status: 'completed',
+              updatedAt: new Date().toISOString()
+            });
+            console.log(`✅ Старый активный план ${oldDoc.id} переведен в статус completed`);
+          }
+        }
+      } catch (statusError) {
+        console.error("Не удалось перевести старые планы в завершенные:", statusError);
+      }
+
+      // Обновляем статус текущего плана в ration_plans
       let newStatus = dateStr === todayStr ? 'active' : (dateStr > todayStr ? 'active' : 'completed');
       if (plan.originalPlan?.id) {
         await rationPlanService.updateRationPlan(currentUser.uid, plan.originalPlan.id, { 
           status: newStatus, 
           startDate: dateStr, 
           isTemplate: false,
-          meals: formattedMeals // сохраняем плоскую структуру и сюда
+          meals: formattedMeals 
         });
       }
       
@@ -290,24 +395,74 @@ export default function SavedPlansScreen() {
     }
   };
 
-  const handleDeletePlan = (planId: string, planInfo: any) => {
-    let message = "Вы уверены, что хотите удалить этот план?";
-    if (planInfo.isActiveToday) message = "Этот план активен на сегодня. Если вы удалите его, сегодняшний рацион станет пустым. Продолжить?";
-    else if (planInfo.isScheduled) message = "Этот план запланирован на будущую дату. Удалить его?";
-    Alert.alert("Удалить план", message, [
-      { text: "Отмена", style: "cancel" },
-      { text: "Удалить", style: "destructive", onPress: async () => {
-          const currentUser = auth.currentUser;
-          if (!currentUser) return;
-          await rationPlanService.deleteRationPlan(planId, currentUser.uid);
-          await loadUserPlans();
-          if (planInfo.isActiveToday) {
-            router.push({ pathname: "/home", params: { refreshHome: Date.now().toString() } });
+
+
+const handleDeletePlan = async (planId: string, isPlanActive: boolean) => {
+    Alert.alert(
+      "Удаление плана",
+      isPlanActive 
+        ? "Этот план сейчас активен на сегодня. Вы уверены, что хотите удалить его? Он также исчезнет с главной страницы."
+        : "Вы уверены, что хотите удалить этот план рациона?",
+      [
+        { text: "Отмена", style: "cancel" },
+        {
+          text: "Удалить",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              const userId = auth.currentUser?.uid;
+              if (!userId) return;
+              const dbFirestore = getFirestore();
+
+              // 1. Попытка удалить через сервис
+              try {
+                await rationPlanService.deleteRationPlan(planId, userId);
+                console.log(`✅ Сервис успешно удалил план: ${planId}`);
+              } catch (serviceError) {
+                console.log("⚠️ Сервис выдал ошибку, удаляем напрямую через Firestore...", serviceError);
+                // РЕЗЕРВНЫЙ ПЛАН: Если сервис упал, удаляем документ напрямую из коллекции ration_plans
+                const { doc, deleteDoc } = require("firebase/firestore");
+                await deleteDoc(doc(dbFirestore, 'ration_plans', planId));
+                console.log(`✅ План ${planId} принудительно удален напрямую из Firestore`);
+              }
+
+              // 2. Если план числился активным, чистим его упоминания везде
+              if (isPlanActive) {
+                const today = new Date().toISOString().split('T')[0];
+                const { collection, query, where, getDocs, deleteDoc } = require("firebase/firestore");
+
+                try {
+                  const dayQuery = query(
+                    collection(dbFirestore, 'ration_plan_days'),
+                    where('userId', '==', userId),
+                    where('date', '==', today)
+                  );
+                  const daySnap = await getDocs(dayQuery);
+                  for (const d of daySnap.docs) {
+                    await deleteDoc(d.ref);
+                  }
+                  console.log("✅ Активный день очищен в ration_plan_days");
+                } catch (e) {
+                  console.log("Очистить ration_plan_days не удалось или не требовалось");
+                }
+              }
+
+              Alert.alert("Успех", "План успешно удален");
+
+              // 3. ЖЕЛЕЗОБЕТОННОЕ ОБНОВЛЕНИЕ ИНТЕРФЕЙСА (Удаляем из локального стейта прямо сейчас)
+              setUserPlans(prevPlans => prevPlans.filter(p => p.id !== planId));
+              
+              // 4. Дополнительно запрашиваем актуальные данные из базы
+              await loadUserPlans();
+
+            } catch (error) {
+              console.error("Критическая ошибка при handleDeletePlan:", error);
+              Alert.alert("Ошибка", "Не удалось удалить план");
+            }
           }
-          Alert.alert("Успех", "План удален");
         }
-      }
-    ]);
+      ]
+    );
   };
 
   const navigateToCreateRation = () => router.push("/create-ration");
@@ -392,11 +547,14 @@ export default function SavedPlansScreen() {
               </View>
               <View style={styles.plansList}>
                 {filteredPlans.map((plan) => {
+
                   const isActiveToday = plan.isActiveToday, 
                         isArchived = plan.isArchived, 
                         isScheduled = plan.isScheduled, 
                         isTemplate = plan.isTemplate, 
                         isCompleted = plan.isCompleted;
+
+                        
                   return (
                     <TouchableOpacity 
                       key={plan.id} 
@@ -454,9 +612,20 @@ export default function SavedPlansScreen() {
                             <TouchableOpacity style={styles.actionButton} onPress={(e) => { e.stopPropagation(); handleEditPlan(plan.originalPlan!, plan); }}>
                               <Feather name="edit-2" size={16} color={isArchived ? "#999" : "#6A9AA9"} />
                             </TouchableOpacity>
-                            <TouchableOpacity style={styles.actionButton} onPress={(e) => { e.stopPropagation(); handleDeletePlan(plan.originalPlan!.id!, plan); }}>
-                              <Feather name="trash-2" size={16} color="#FF6B6B" />
-                            </TouchableOpacity>
+                            <TouchableOpacity 
+  style={styles.actionButton} 
+  onPress={(e) => { 
+    e.stopPropagation(); 
+    const targetPlanId = plan.id || plan.originalPlan?.id;
+    
+    // ✨ Теперь удаление четко знает: активен ли этот план именно сегодня на главном экране
+    const isPlanActive = !!plan.isActiveToday; 
+    
+    handleDeletePlan(targetPlanId as string, isPlanActive); 
+  }}
+>
+  <Feather name="trash-2" size={16} color="#FF6B6B" />
+</TouchableOpacity>
                           </View>
                         </View>
                         {isActiveToday && (

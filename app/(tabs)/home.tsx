@@ -349,61 +349,74 @@ export default function Home() {
     } catch (error) { return `${baseTitle} (${Date.now()})`; }
   }, [firestoreDb]);
 
-  // Асинхронное сохранение нового шаблона
-  const executeSave = useCallback(async (uniqueTitle: string) => {
-    try {
-      const cleanedMeals = meals.map(m => ({ 
-        id: m.id, 
-        recipeId: m.recipeId || '', 
-        category: m.category || "Обед", 
-        name: m.name || "Рецепт", 
-        calories: m.calories || 0, 
-        proteins: m.proteins || 0, 
-        fats: m.fats || 0, 
-        carbohydrates: m.carbohydrates || 0, 
-        weight: m.weight || "250г", 
-        cookingTime: m.cookingTime || 20, 
-        difficultyLevel: m.difficultyLevel || "Легко", 
-        rating: m.rating || 0, 
-        imageUrl: m.imageUrl || null, 
-        isCustom: m.isCustom || false, 
-        canBeRemoved: m.canBeRemoved || false, 
-        addedAt: m.addedAt || new Date().toISOString(), 
-        marked: m.marked || false 
-      }));
-      
-      console.log("3. Отправка в rationPlanService...");
-      const newPlanId = await Promise.race([
-        rationPlanService.saveDailyRationAsTemplate(currentUser!.uid, { 
-          meals: cleanedMeals, 
-          title: uniqueTitle,
-          userInfo: { name: userData.userName, dailyCalories: userData.dailyCalories } 
-        }),
-        new Promise((_, reject) => setTimeout(() => reject(new Error("Таймаут сервера")), 8000))
-      ]) as string;
-      
-      console.log("4. Обновление документа дня...", newPlanId);
-      if (activePlanId && newPlanId) {
-        await updateDoc(doc(firestoreDb!, 'ration_plan_days', activePlanId), {
-          planId: newPlanId,
-          planName: uniqueTitle
-        });
-        setActivePlanSourceId(newPlanId);
-        setActivePlanName(uniqueTitle);
-      }
-      
-      setIsSaving(false);
-      setIsTemplateSaved(true);
-      setHasChanges(false);
-      setShowSaveSuccessModal(true);
-      console.log("✅ Успешно завершено!");
-    } catch (error: any) {
-      console.error("❌ Ошибка в executeSave:", error);
-      setIsSaving(false);
-      Alert.alert("Ошибка сохранения", error.message || "Не удалось связаться с сервером");
-      throw error;
+const executeSave = async (title: string) => {
+  try {
+    setIsSaving(true);
+
+    if (!currentUser || !firestoreDb) {
+      console.error("Пользователь не авторизован или база данных недоступна");
+      return;
     }
-  }, [currentUser, meals, userData, firestoreDb, activePlanId]);
+
+    const { collection, addDoc, doc, setDoc } = require("firebase/firestore");
+    const todayStr = new Date().toISOString().split('T')[0];
+    
+    // Используем ID дня с таймстампом, так как его ожидает твой экран генерации
+    const currentDayId = activePlanId || `${currentUser.uid}_${todayStr}_1779018836755`;
+    const totalCalories = meals.reduce((sum: number, m: any) => sum + (m.calories || 0), 0);
+
+    // 1. СОЗДАЕМ ШАБЛОН С СТАТУСОМ ACTIVE ДЛЯ ПОДСВЕТКИ
+    const newTemplateData = {
+      userId: currentUser.uid,
+      title: title,
+      description: `Сгенерированный рацион от ${new Date().toLocaleDateString("ru-RU")}`,
+      type: 'daily',
+      meals: meals, // Наша плоская структура
+      isTemplate: true,
+      category: "Шаблон",
+      status: "active", // 🌟 Этот статус сохранится в базе навсегда и подсветит карточку
+      totalCalories: totalCalories,
+      mealsCount: meals.length,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      startDate: todayStr,
+      endDate: todayStr
+    };
+
+    const docRef = await addDoc(collection(firestoreDb, 'ration_plans'), newTemplateData);
+    const newPlanId = docRef.id; 
+
+    console.log("🔹 Шаблон успешно создан в ration_plans с ID:", newPlanId);
+
+    // 2. ОБНОВЛЯЕМ ДОКУМЕНТ ДНЯ (Записываем еду, чтобы Home не остался пустым)
+    await setDoc(doc(firestoreDb, 'ration_plan_days', currentDayId), {
+      userId: currentUser.uid,
+      date: todayStr,
+      planId: newPlanId,          
+      planName: title,            
+      meals: meals,
+      totalCalories: totalCalories,
+      status: "active",
+      updatedAt: new Date().toISOString()
+    }, { merge: true });
+
+    // 3. Обновляем локальные стейты экрана
+    setActivePlanSourceId(newPlanId); 
+    setActivePlanName(title);
+    setIsTemplateSaved(true);
+    setHasChanges(false);
+
+    // 4. УПРАВЛЕНИЕ МОДАЛКАМИ (Закрываем имя, открываем нужный выбор)
+    setShowNameModal(false); 
+    setShowSaveSuccessModal(true);
+
+  } catch (error) {
+    console.error("Ошибка при executeSave:", error);
+    Alert.alert("Ошибка", "Не удалось сохранить рацион");
+  } finally {
+    setIsSaving(false);
+  }
+};
 
   // Сохранение как новый шаблон (через кастомную модалку)
   const saveAsNewTemplate = useCallback(() => {
@@ -498,34 +511,58 @@ export default function Home() {
 
   // Сохранение как новый шаблон из модального окна выбора
   const handleConfirmSaveAsNew = async () => {
-    // 1. Закрываем модалку выбора
     setShowSaveChoiceModal(false);
     
-    // 2. Включаем лоадер, пока считаем дубликаты в базе
+    if (!currentUser || !firestoreDb) {
+      Alert.alert("Ошибка", "Пользователь не авторизован");
+      return;
+    }
+    
     setIsSaving(true);
     
     try {
-      // 3. Вызываем нашу функцию генерации уникального имени
-      const uniqueName = await generateUniqueRationName();
+      const formattedDate = new Date().toLocaleDateString('ru-RU', { day: 'numeric', month: 'numeric', year: 'numeric' });
+      const baseName = `Дневной rацион ${formattedDate}`;
+      let finalName = baseName;
       
-      // 4. Записываем имя с правильной цифрой (например, "Дневной рацион 17.05.2026 (1)") в стейт поля ввода
-      setTemplateTitle(uniqueName);
+      const { collection, query, where, getDocs } = require("firebase/firestore");
+      const qTemplates = query(
+        collection(firestoreDb, 'ration_plans'),
+        where('userId', '==', currentUser.uid)
+      );
+      const templatesSnap = await getDocs(qTemplates);
       
+      const existingTitles = templatesSnap.docs.map((d: any) => {
+        const data = d.data();
+        return (data.title || data.planName || data.name || "").trim().toLowerCase();
+      });
+
+      let counter = 1;
+      while (existingTitles.includes(finalName.trim().toLowerCase())) {
+        finalName = `${baseName} (${counter})`;
+        counter++;
+      }
+
+      setTemplateTitle(finalName);
+      setShowNameModal(true);
     } catch (err) {
-      console.error("Ошибка при подготовке имени в handleConfirmSaveAsNew:", err);
-      // Фолбэк на случай сбоя сети
+      console.error("Ошибка в handleConfirmSaveAsNew:", err);
       const formattedDate = new Date().toLocaleDateString('ru-RU', { day: 'numeric', month: 'numeric', year: 'numeric' });
       setTemplateTitle(`Дневной рацион ${formattedDate}`);
-    } finally {
-      // 5. Выключаем лоадер и открываем окно ввода имени, где текст уже готов!
-      setIsSaving(false);
       setShowNameModal(true);
+    } finally {
+      setIsSaving(false);
     }
   };
 
   // Обработчик нажатия на кнопку сохранения
   const handleSavePress = async () => {
     if (isSaving) return;
+    // Жёсткая проверка для TypeScript на самом входе в функцию
+    if (!currentUser || !firestoreDb) {
+      Alert.alert("Ошибка", "Пользователь не авторизован");
+      return;
+    }
 
     console.log("🔘 Нажата кнопка сохранения. Текущее состояние:", { activePlanId, hasChanges, mealsLength: meals.length });
 
@@ -544,53 +581,41 @@ export default function Home() {
       if (hasChanges) {
         setShowSaveChoiceModal(true);
       } else {
-        // ЕСЛИ ИЗМЕНЕНИЙ НЕТ
-        setIsSaving(true); // Покажем лоадер на время запроса к БД
-        const uniqueName = await generateUniqueRationName();
-        setTemplateTitle(uniqueName); 
-        setIsSaving(false);
-        setShowNameModal(true); 
+        setIsSaving(true); 
+        try {
+          const formattedDate = new Date().toLocaleDateString('ru-RU', { day: 'numeric', month: 'numeric', year: 'numeric' });
+          const baseName = `Дневной рацион ${formattedDate}`;
+          let finalName = baseName;
+          
+          const { collection, query, where, getDocs } = require("firebase/firestore");
+          const qTemplates = query(
+            collection(firestoreDb, 'ration_plans'),
+            where('userId', '==', currentUser.uid) // Ошибки не будет, так как выше есть guard-check
+          );
+          const templatesSnap = await getDocs(qTemplates);
+          
+          const existingTitles = templatesSnap.docs.map((d: any) => {
+            const data = d.data();
+            return (data.title || data.planName || data.name || "").trim().toLowerCase();
+          });
+
+          let counter = 1;
+          while (existingTitles.includes(finalName.trim().toLowerCase())) {
+            finalName = `${baseName} (${counter})`;
+            counter++;
+          }
+
+          setTemplateTitle(finalName); 
+          setShowNameModal(true); 
+        } catch (err) {
+          console.error("❌ Ошибка при подготовке имени:", err);
+        } finally {
+          setIsSaving(false);
+        }
       }
     }
   };
 
-  // Вспомогательная функция для генерации уникального имени "Дневной рацион"
-  const generateUniqueRationName = async () => {
-    try {
-      const formattedDate = new Date().toLocaleDateString('ru-RU', { 
-        day: 'numeric', 
-        month: 'numeric', 
-        year: 'numeric' 
-      });
-      
-      const baseName = `Дневной рацион ${formattedDate}`;
-      let finalName = baseName;
-      
-      const { collection, query, where, getDocs } = require("firebase/firestore");
-      const qTemplates = query(
-        collection(firestoreDb!, 'ration_plans'),
-        where('userId', '==', currentUser!.uid)
-      );
-      const templatesSnap = await getDocs(qTemplates);
-      
-      const existingTitles = templatesSnap.docs.map((d: any) => {
-        const data = d.data();
-        return (data.title || data.planName || data.name || "").trim().toLowerCase();
-      });
-
-      let counter = 1;
-      while (existingTitles.includes(finalName.trim().toLowerCase())) {
-        finalName = `${baseName} (${counter})`;
-        counter++;
-      }
-
-      return finalName;
-    } catch (err) {
-      console.error("❌ Ошибка при генерации уникального имени:", err);
-      const formattedDate = new Date().toLocaleDateString('ru-RU', { day: 'numeric', month: 'numeric', year: 'numeric' });
-      return `Дневной рацион ${formattedDate}`;
-    }
-  };
 
   // Обработчик сохранения из кастомной модалки
   const handleSaveWithName = async () => {
