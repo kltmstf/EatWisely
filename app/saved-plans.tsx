@@ -270,7 +270,19 @@ export default function SavedPlansScreen() {
       { text: "Восстановить", onPress: async () => {
           const currentUser = auth.currentUser;
           if (!currentUser) return;
-          await rationPlanService.updateRationPlan(currentUser.uid, plan.originalPlan.id, { status: 'template', isTemplate: true });
+          
+          // 🌟 ИСПРАВЛЕНО: Достаем оригинальный массив блюд, который сейчас отображается при просмотре
+          const originalMeals = plan.meals || plan.originalPlan?.meals || [];
+
+          // Передаем массив meals обратно в сервис, чтобы он не затёрся в базе данных!
+          await rationPlanService.updateRationPlan(currentUser.uid, plan.originalPlan.id, { 
+            status: 'template', 
+            isTemplate: true,
+            meals: originalMeals, // 👈 Гарантия сохранности твоих рецептов
+            updatedAt: new Date().toISOString()
+          });
+
+          // Перезагружаем списки на экране
           await loadUserPlans();
           Alert.alert("Успех", "План восстановлен из архива");
         }
