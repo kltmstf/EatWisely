@@ -259,11 +259,14 @@ export default function Home() {
       const daysSnap = await getDocs(daysQuery);
       
       if (!daysSnap.empty) {
-        const sortedDocs = daysSnap.docs.sort((a, b) => {
-          const aTime = a.data().createdAt || a.data().updatedAt || '';
-          const bTime = b.data().createdAt || b.data().updatedAt || '';
-          return bTime.localeCompare(aTime);
-        });
+  const sortedDocs = daysSnap.docs.sort((a, b) => {
+    // Безопасно достаем таймстамп или дату и превращаем в миллисекунды (число)
+    const aTime = a.data().createdAt?.toMillis?.() || a.data().createdAt?.seconds || 0;
+    const bTime = b.data().createdAt?.toMillis?.() || b.data().createdAt?.seconds || 0;
+    
+    // Сортируем числа: от новых к старым (по убыванию)
+    return bTime - aTime;
+  });
         
         const dayDoc = sortedDocs[0];
         const dayData = dayDoc.data();
@@ -1061,40 +1064,49 @@ export default function Home() {
 
   // Определение текста, стилей и состояния блокировки кнопки сохранения
   const getButtonState = () => {
-    if (isSaving) {
-      return { 
-        text: "Сохранение...", 
-        style: styles.saveRationButton, 
-        disabled: true,
-        iconColor: "#FFFFFF"
-      };
-    }
-    
-    if (isTemplateSaved && !hasChanges) {
-      return { 
-        text: "Рацион сохранен", 
-        style: [styles.saveRationButton, styles.saveButtonDisabled], 
-        disabled: true,
-        iconColor: "#999999"
-      };
-    }
-    
-    if (activePlanId && hasChanges) {
-      return { 
-        text: "Обновить рацион", 
-        style: styles.saveRationButtonUpdate || styles.saveRationButton, 
-        disabled: false,
-        iconColor: "#FFFFFF"
-      };
-    }
-    
+  if (isSaving) {
     return { 
-      text: "Сохранить рацион", 
+      text: "Сохранение...", 
       style: styles.saveRationButton, 
-      disabled: false,
-      iconColor: "#FFFFFF"
+      disabled: true,
+      iconColor: "#FFFFFF",
+      icon: "cloud-upload-outline"
     };
+  }
+  
+  // 1. Шаблон существует в базе и изменений в нем нет
+  if (isTemplateSaved && !hasChanges) {
+    return { 
+      text: "Рацион сохранен", 
+      style: [styles.saveRationButton, styles.saveButtonDisabled], 
+      disabled: true,
+      iconColor: "#999999",
+      icon: "checkmark-circle-outline"
+    };
+  }
+  
+  // 2. Шаблон существует в базе И пользователь внес изменения (например, добавил/удалил блюдо)
+  if (isTemplateSaved && hasChanges) {
+    return { 
+      text: "Обновить рацион", 
+      style: styles.saveRationButtonUpdate || styles.saveRationButton, 
+      disabled: false,
+      iconColor: "#FFFFFF",
+      icon: "refresh-outline"
+    };
+  }
+
+  // 3. Шаблона в базе нет (рацион только что сгенерирован или еще не сохранялся).
+  // Кнопка активна ВСЕГДА, чтобы пользователь мог в любой момент зафиксировать этот план как шаблон.
+  return {
+    text: "Сохранить как шаблон",
+    style: styles.saveRationButton, // Кнопка горит активным цветом
+    disabled: false,                // Делаем её доступной для нажатия
+    iconColor: "#FFFFFF",
+    icon: "save-outline"
   };
+};
+
 
   const currentButton = getButtonState();
   const displayPlanName = activePlanName || "Новый рацион (не сохранено)";
