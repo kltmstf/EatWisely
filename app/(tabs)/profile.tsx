@@ -32,7 +32,7 @@ type ProfileData = {
   weight: string;
   goal: string;
   activity: string;
-  nutritionType: string;
+  nutritionType: string | string[]; // Может быть строкой или массивом
   allergies: string;
   dislikes: string;
   isPrivate: boolean;
@@ -128,6 +128,24 @@ const formatActivity = (activity: string): string => {
   }
   
   return activity.substring(0, maxLength - 3) + '...';
+};
+
+// Функция для форматирования типа питания (массив -> строка через запятую)
+const formatDietType = (dietType: string | string[] | undefined): string => {
+  if (!dietType) return "-";
+  if (Array.isArray(dietType)) {
+    return dietType.join(", ");
+  }
+  return dietType;
+};
+
+// Функция для получения полного значения типа питания
+const getFullDietType = (dietType: string | string[] | undefined): string => {
+  if (!dietType) return "-";
+  if (Array.isArray(dietType)) {
+    return dietType.join(", ");
+  }
+  return dietType;
 };
 
 const defaultProfileData: ProfileData = {
@@ -418,11 +436,20 @@ export default function ProfileScreen() {
         }
 
         try {
+          // Используем fetchUserProfile (есть в сервисе)
           const firestoreData = await userService.fetchUserProfile(userId);
 
           if (firestoreData) {
             if (firestoreData.photoURL && !profileFromStorage.photoURL) {
               profileFromStorage.photoURL = firestoreData.photoURL;
+            }
+
+            // Обработка dietType - это массив
+            let nutritionTypeValue: string | string[] = profileFromStorage.nutritionType;
+            if (firestoreData.dietType) {
+              nutritionTypeValue = firestoreData.dietType;
+            } else if (firestoreData.nutritionType) {
+              nutritionTypeValue = firestoreData.nutritionType;
             }
 
             profileFromStorage = {
@@ -436,7 +463,7 @@ export default function ProfileScreen() {
               weight: firestoreData.weight || profileFromStorage.weight,
               goal: firestoreData.goal || profileFromStorage.goal,
               activity: firestoreData.activity || profileFromStorage.activity,
-              nutritionType: firestoreData.dietType || firestoreData.nutritionType || profileFromStorage.nutritionType,
+              nutritionType: nutritionTypeValue,
               allergies: firestoreData.allergies || profileFromStorage.allergies,
               dislikes: firestoreData.excludedIngredients || firestoreData.dislikes || profileFromStorage.dislikes,
               isPrivate: firestoreData.isProfilePrivate ?? profileFromStorage.isPrivate,
@@ -542,15 +569,15 @@ export default function ProfileScreen() {
   };
 
   const handlePlanPress = (plan: Plan) => {
-  router.push({
-    pathname: "/create-ration",
-    params: { 
-      planId: plan.id,
-      mode: "view",
-      source: "profile"
-    },
-  });
-};
+    router.push({
+      pathname: "/create-ration",
+      params: { 
+        planId: plan.id,
+        mode: "view",
+        source: "profile"
+      },
+    });
+  };
 
   const getDifficultyColor = (difficulty: string) => {
     if (!difficulty) return "#6A9AA9";
@@ -656,6 +683,34 @@ export default function ProfileScreen() {
     </TouchableOpacity>
   );
 
+  // Компонент для отображения типа питания с возможностью показа полного списка
+  const renderDietType = (item: any) => {
+    const dietTypeArray = Array.isArray(profileData.nutritionType) 
+      ? profileData.nutritionType 
+      : [profileData.nutritionType];
+    
+    const displayValue = formatDietType(profileData.nutritionType);
+    const fullValue = getFullDietType(profileData.nutritionType);
+    const isLong = fullValue.length > 30;
+    
+    return (
+      <View key={item.label} style={styles.preferenceRow}>
+        <Text style={styles.preferenceLabel}>{item.label}</Text>
+        <View style={styles.activityContainer}>
+          <Text style={styles.preferenceValue} numberOfLines={1}>{displayValue}</Text>
+          {isLong && (
+            <TouchableOpacity 
+              style={styles.infoButton} 
+              onPress={() => Alert.alert("Тип питания", fullValue)}
+            >
+              <Ionicons name="information-circle-outline" size={16} color="#6A9AA9" />
+            </TouchableOpacity>
+          )}
+        </View>
+      </View>
+    );
+  };
+
   const renderActivity = (item: any) => {
     const showFullActivity = item.fullValue && item.fullValue.length > 25;
     return (
@@ -683,7 +738,7 @@ export default function ProfileScreen() {
   const preferences = useMemo(() => [
     { label: "Цель", value: profileData.goal || "-" },
     { label: "Активность", value: formatActivity(profileData.activity) || "-", fullValue: profileData.activity },
-    { label: "Тип питания", value: profileData.nutritionType || "-" },
+    { label: "Тип питания", value: formatDietType(profileData.nutritionType), fullValue: getFullDietType(profileData.nutritionType) },
     { label: "Аллергии", value: profileData.allergies || "Нет" },
     { label: "Нелюбимые продукты", value: profileData.dislikes || "Нет" },
   ], [profileData.goal, profileData.activity, profileData.nutritionType, profileData.allergies, profileData.dislikes]);
@@ -744,6 +799,7 @@ export default function ProfileScreen() {
         <View style={styles.preferences}>
           {preferences.map((item, index) => {
             if (item.label === "Активность") return renderActivity(item);
+            if (item.label === "Тип питания") return renderDietType(item);
             return (
               <View key={item.label} style={[styles.preferenceRow, index === preferences.length - 1 && styles.preferenceRowLast]}>
                 <Text style={styles.preferenceLabel}>{item.label}</Text>
@@ -919,7 +975,7 @@ const styles = StyleSheet.create({
   preferenceRow: { flexDirection: "row", justifyContent: "space-between", paddingVertical: 12, paddingHorizontal: 15, borderBottomWidth: 1, borderBottomColor: "#F5F7F9", alignItems: "center" },
   preferenceRowLast: { borderBottomWidth: 0 },
   preferenceLabel: { fontSize: 15, color: "#212529", fontFamily: "Playfair Display Regular", flex: 1 },
-  preferenceValue: { fontSize: 15, color: "#212529", fontFamily: "Playfair Display Regular", flex: 1, textAlign: "right", marginLeft: 8 },
-  activityContainer: { flexDirection: "row", alignItems: "center", flex: 1, justifyContent: "flex-end" },
-  infoButton: { marginLeft: 4, padding: 2 },
+  preferenceValue: { fontSize: 15, color: "#212529", fontFamily: "Playfair Display Regular", flex: 2, textAlign: "right", marginLeft: 8 },
+  activityContainer: { flexDirection: "row", alignItems: "center", flex: 2, justifyContent: "flex-end" },
+  infoButton: { marginLeft: 8, padding: 2 },
 });

@@ -19,7 +19,7 @@ export default function Title() {
             <Text style={styles.titleText}>EatWisely</Text>
             <View style={styles.divider} />
             <Text style={styles.subtitleText}>
-              Ваш персональный гид по здоровому питанию!
+              Ваш персональный гид по питанию!
             </Text>
           </View>
         </View>
@@ -28,7 +28,7 @@ export default function Title() {
       {/* Второй контейнер: описание по центру */}
       <View style={styles.middleContainer}>
         <Text style={styles.descriptionText}>
-          Создавайте сбалансированные рационы на неделю всего за пару минут.
+          Создавайте рационы всего за пару минут.
         </Text>
       </View>
       

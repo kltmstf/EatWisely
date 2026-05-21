@@ -20,6 +20,7 @@ import { useAuthContext } from "@/app/contexts/AuthContext";
 import { Ionicons, MaterialIcons } from "@expo/vector-icons";
 import { userService } from "../app/services/userService";
 import * as ImagePicker from 'expo-image-picker';
+import type { LocalProfileData } from "../app/services/userService";
 
 // 💡 Хелпер-маппинг для корректного отображения времени готовки
 const COOKING_TIME_MAP: { [key: string]: string } = {
@@ -40,15 +41,16 @@ type UserData = {
   weight: string;
   goal: string;
   activity: string;
-  nutritionType: string;
+  nutritionType: string; // Внутри компонента используем строку для формы
+  nutritionTypeArray: string[]; // Храним массив отдельно
   customNutritionType: string;
   allergies: string;
   dislikes: string;
   isPrivate: boolean;
   cookingTimeLimit: string;
   isProfileFilled: boolean;
-  photoURL?: string; // НОВОЕ ПОЛЕ
-  cloudinaryPublicId?: string; // НОВОЕ ПОЛЕ
+  photoURL?: string;
+  cloudinaryPublicId?: string;
 };
 
 export default function ProfileSettings() {
@@ -66,6 +68,7 @@ export default function ProfileSettings() {
     goal: "Поддержание веса",
     activity: "Низкий (0-1 тренировка в неделю)",
     nutritionType: "Обычное",
+    nutritionTypeArray: ["Обычное"],
     customNutritionType: "",
     allergies: "",
     dislikes: "",
@@ -79,7 +82,7 @@ export default function ProfileSettings() {
   const [deleteModalVisible, setDeleteModalVisible] = useState(false);
   const [confirmText, setConfirmText] = useState("");
   const [isUploading, setIsUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState(0); // НОВОЕ СОСТОЯНИЕ
+  const [uploadProgress, setUploadProgress] = useState(0);
 
   const goals = ["Похудение", "Поддержание веса", "Набор веса"];
   const activityLevels = [
@@ -101,7 +104,17 @@ export default function ProfileSettings() {
     loadProfileData();
   }, []);
 
-  // ФУНКЦИЯ ЗАГРУЗКИ ДАННЫХ
+  // Функция для преобразования массива тегов в строку для отображения в форме
+  const formatNutritionTypeForDisplay = (nutritionTypeArray: string[]): string => {
+    if (!nutritionTypeArray || nutritionTypeArray.length === 0) return "Обычное";
+    const firstType = nutritionTypeArray[0];
+    if (firstType !== "Обычное" && !nutritionTypes.includes(firstType)) {
+      return "Другое";
+    }
+    return firstType;
+  };
+
+  // Функция загрузки данных
   const loadProfileData = async () => {
     let parsedData: any | null = null;
 
@@ -120,18 +133,38 @@ export default function ProfileSettings() {
       }
 
       if (parsedData) {
-        let finalNutritionType =
-          parsedData.dietType || parsedData.nutritionType || "Обычное";
-        let finalCustomNutritionType = "";
+        // Обработка dietType (массив)
+        let nutritionTypeArray: string[] = ["Обычное"];
+        let customNutritionType = "";
 
-        if (
-          typeof finalNutritionType === "string" &&
-          finalNutritionType.startsWith("Другое: ")
-        ) {
-          finalCustomNutritionType = finalNutritionType
-            .substring("Другое: ".length)
-            .trim();
-          finalNutritionType = "Другое";
+        if (parsedData.dietType && Array.isArray(parsedData.dietType)) {
+          nutritionTypeArray = parsedData.dietType;
+        } else if (parsedData.nutritionType) {
+          if (Array.isArray(parsedData.nutritionType)) {
+            nutritionTypeArray = parsedData.nutritionType;
+          } else if (typeof parsedData.nutritionType === "string") {
+            if (parsedData.nutritionType.startsWith("Другое: ")) {
+              customNutritionType = parsedData.nutritionType.substring("Другое: ".length).trim();
+              nutritionTypeArray = [customNutritionType];
+            } else {
+              nutritionTypeArray = [parsedData.nutritionType];
+            }
+          }
+        }
+
+        // Если есть customNutritionType из предыдущего сохранения
+        if (parsedData.customNutritionType) {
+          customNutritionType = parsedData.customNutritionType;
+          if (nutritionTypeArray[0] === "Другое") {
+            nutritionTypeArray = [customNutritionType];
+          }
+        }
+
+        const displayNutritionType = formatNutritionTypeForDisplay(nutritionTypeArray);
+        
+        // Если отображается "Другое", но есть конкретные значения
+        if (displayNutritionType === "Другое" && nutritionTypeArray[0] !== "Обычное") {
+          customNutritionType = nutritionTypeArray.join(", ");
         }
 
         let finalCookingTime = parsedData.cookingTimeLimit || "30 минут";
@@ -144,8 +177,9 @@ export default function ProfileSettings() {
           ...parsedData,
           name: parsedData.name || user?.displayName || "",
           email: parsedData.email || user?.email || "",
-          nutritionType: finalNutritionType,
-          customNutritionType: finalCustomNutritionType,
+          nutritionType: displayNutritionType,
+          nutritionTypeArray: nutritionTypeArray,
+          customNutritionType: customNutritionType,
           dislikes: parsedData.excludedIngredients || parsedData.dislikes || "",
           isPrivate: parsedData.isProfilePrivate ?? parsedData.isPrivate ?? false,
           cookingTimeLimit: finalCookingTime,
@@ -179,26 +213,46 @@ export default function ProfileSettings() {
     }
   };
 
-  // ФУНКЦИЯ СОХРАНЕНИЯ ДАННЫХ
+  // Функция сохранения данных
   const saveProfileData = async (data: UserData) => {
-    const dataToStore = { ...data };
+    // Подготавливаем данные для сервиса
+    let nutritionTypeForService = data.nutritionType;
+    let customNutritionTypeForService = data.customNutritionType;
 
-    if (
-      dataToStore.nutritionType === "Другое" &&
-      dataToStore.customNutritionType.trim()
-    ) {
-      dataToStore.nutritionType = `Другое: ${dataToStore.customNutritionType.trim()}`;
-    } else if (dataToStore.nutritionType !== "Другое") {
-      dataToStore.customNutritionType = "";
+    // Если выбран "Другое", используем customNutritionType
+    if (data.nutritionType === "Другое") {
+      nutritionTypeForService = "Другое";
+      customNutritionTypeForService = data.customNutritionType;
     }
+
+    const dataToStore: LocalProfileData = {
+      name: data.name,
+      email: data.email,
+      description: data.description,
+      age: data.age,
+      height: data.height,
+      gender: data.gender,
+      weight: data.weight,
+      goal: data.goal,
+      activity: data.activity,
+      nutritionType: nutritionTypeForService,
+      customNutritionType: customNutritionTypeForService,
+      allergies: data.allergies,
+      dislikes: data.dislikes,
+      isPrivate: data.isPrivate,
+      cookingTimeLimit: data.cookingTimeLimit,
+      isProfileFilled: data.isProfileFilled,
+      photoURL: data.photoURL,
+      cloudinaryPublicId: data.cloudinaryPublicId,
+    };
 
     if (user?.uid) {
       try {
+        // Обновляем имя в Auth если изменилось
         if (data.name !== user.displayName) {
-          console.log("Имя изменилось. Обновление профиля Firebase Auth.");
           await userService.updateAuthProfileName(data.name);
         }
-
+        
         await userService.saveProfileToFirestore(dataToStore);
         Alert.alert("Успех", "Данные профиля сохранены и обновлены.");
         setOriginalData(data);
@@ -221,7 +275,7 @@ export default function ProfileSettings() {
     }
   };
 
-  // НОВАЯ ФУНКЦИЯ: Запрос разрешений
+  // Функция запроса разрешений
   const requestPermissions = async () => {
     const { status: cameraStatus } = await ImagePicker.requestCameraPermissionsAsync();
     const { status: libraryStatus } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -236,7 +290,7 @@ export default function ProfileSettings() {
     return true;
   };
 
-  // НОВАЯ ФУНКЦИЯ: Выбор фото из галереи
+  // Функция выбора фото из галереи
   const pickImage = async () => {
     const hasPermission = await requestPermissions();
     if (!hasPermission) return;
@@ -259,7 +313,7 @@ export default function ProfileSettings() {
     }
   };
 
-  // НОВАЯ ФУНКЦИЯ: Сделать фото
+  // Функция сделать фото
   const takePhoto = async () => {
     const hasPermission = await requestPermissions();
     if (!hasPermission) return;
@@ -280,7 +334,7 @@ export default function ProfileSettings() {
     }
   };
 
-  // НОВАЯ ФУНКЦИЯ: Загрузка фото в Cloudinary
+  // Функция загрузки фото в Cloudinary
   const uploadProfilePhoto = async (imageUri: string) => {
     if (!user?.uid) {
       Alert.alert("Ошибка", "Пользователь не авторизован");
@@ -296,7 +350,6 @@ export default function ProfileSettings() {
       const result = await userService.uploadProfilePhoto(imageUri, user.uid);
       
       if (result.success && result.url) {
-        // Обновляем состояние
         setUserData(prev => ({ 
           ...prev, 
           photoURL: result.url,
@@ -324,7 +377,7 @@ export default function ProfileSettings() {
     }
   };
 
-  // НОВАЯ ФУНКЦИЯ: Удаление фото
+  // Функция удаления фото
   const deleteProfilePhoto = async () => {
     if (!user?.uid) return;
     
@@ -343,7 +396,6 @@ export default function ProfileSettings() {
             try {
               await userService.deleteProfilePhoto(user.uid, userData.cloudinaryPublicId);
               
-              // Обновляем состояние
               setUserData(prev => ({ 
                 ...prev, 
                 photoURL: "",
@@ -369,7 +421,7 @@ export default function ProfileSettings() {
     );
   };
 
-  // ИЗМЕНЕННАЯ ФУНКЦИЯ: Обработчик смены фото с прогрессом
+  // Обработчик смены фото
   const handleChangePhoto = () => {
     if (isUploading) {
       Alert.alert("Загрузка", "Пожалуйста, подождите, фото загружается...");
@@ -495,6 +547,20 @@ export default function ProfileSettings() {
     });
   };
 
+  // Получение отображаемого значения типа питания для поля "Другое"
+  const getDisplayNutritionValue = () => {
+    if (userData.nutritionType === "Другое" && userData.customNutritionType) {
+      return userData.customNutritionType;
+    }
+    if (userData.nutritionTypeArray && userData.nutritionTypeArray.length > 0) {
+      const firstType = userData.nutritionTypeArray[0];
+      if (firstType !== "Обычное" && !nutritionTypes.includes(firstType)) {
+        return userData.nutritionTypeArray.join(", ");
+      }
+    }
+    return "";
+  };
+
   return (
     <View style={styles.container}>
       <StatusBar barStyle="dark-content" />
@@ -614,7 +680,6 @@ export default function ProfileSettings() {
         {/* Разделитель */}
         <View style={styles.divider} />
 
-        {/* Остальные секции остаются без изменений */}
         {/* Ваши данные */}
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
@@ -848,11 +913,15 @@ export default function ProfileSettings() {
               />
               <TextInput
                 style={styles.input}
-                value={userData.customNutritionType}
-                onChangeText={(text) =>
-                  setUserData({ ...userData, customNutritionType: text })
-                }
-                placeholder="Укажите ваш тип питания..."
+                value={getDisplayNutritionValue()}
+                onChangeText={(text) => {
+                  setUserData({ 
+                    ...userData, 
+                    customNutritionType: text,
+                    nutritionTypeArray: text.split(",").map(item => item.trim()).filter(item => item !== "")
+                  });
+                }}
+                placeholder="Укажите ваш тип питания (можно несколько через запятую)..."
                 placeholderTextColor="#999"
               />
             </View>
@@ -1097,7 +1166,6 @@ const styles = StyleSheet.create({
     marginBottom: 16,
     gap: 8,
   },
-  // Стили для фото профиля
   profileHeader: {
     flexDirection: "row",
     alignItems: "flex-start",
@@ -1233,7 +1301,6 @@ const styles = StyleSheet.create({
     color: "#1E293B",
     fontFamily: "Playfair Display Regular",
   },
-  // Стили для выбора пола
   genderContainer: {
     flexDirection: "row",
     gap: 8,
@@ -1357,7 +1424,6 @@ const styles = StyleSheet.create({
   switchThumbActive: {
     transform: [{ translateX: 22 }],
   },
-  // Стили для опасной зоны
   dangerButton: {
     flexDirection: "row",
     alignItems: "center",
@@ -1392,7 +1458,6 @@ const styles = StyleSheet.create({
   bottomSpacing: {
     height: 40,
   },
-  // Стили для модального окна удаления
   modalOverlay: {
     flex: 1,
     backgroundColor: "rgba(0, 0, 0, 0.5)",
