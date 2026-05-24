@@ -1,4 +1,5 @@
-// app/services/rationService.ts
+// app/services/rationService.ts - ПОЛНЫЙ ИСПРАВЛЕННЫЙ КОД
+
 import { 
   doc, 
   setDoc,
@@ -14,7 +15,6 @@ import {
 import { db } from '@/app/firebase/config';
 import { recipeService } from './recipeService';
 
-// Типы
 interface UserData {
   dailyCalories: number;
   targetCalories?: number;
@@ -37,9 +37,10 @@ interface Recipe {
   fats: number;
   carbohydrates: number;
   cookingTime: number;
-  difficultyLevel?: string;
+  difficulty: string;
   imageUrl?: string;
   mealType?: string;
+  ingredientsList?: string[];
 }
 
 interface Meal {
@@ -63,6 +64,19 @@ interface Meal {
   addedAt?: string;
 }
 
+interface PlanStats {
+  totalCalories: number;
+  totalProteins: number;
+  totalFats: number;
+  totalCarbs: number;
+  totalCookingTime: number;
+  completedMeals: number;
+  totalMeals: number;
+  isOverLimit?: boolean;
+  percentOfTarget?: number;
+  note?: string;
+}
+
 interface Plan {
   id: string;
   userId: string;
@@ -74,50 +88,70 @@ interface Plan {
   };
   meals: Meal[];
   customMeals?: Meal[];
-  stats: {
-    totalCalories: number;
-    totalProteins: number;
-    totalFats: number;
-    totalCarbs: number;
-    totalCookingTime: number;
-    completedMeals: number;
-    totalMeals: number;
-  };
+  stats: PlanStats;
   timestamps: {
     createdAt: string;
     updatedAt: string;
   };
 }
 
-// Форматирование даты
-const formatDate = (date: Date): string => {
-  return date.toISOString().split('T')[0];
-};
+const formatDate = (date: Date): string => date.toISOString().split('T')[0];
 
-// Получение дня недели
 const getDayOfWeek = (date: Date): string => {
-  const days = [
-    'воскресенье', 'понедельник', 'вторник', 'среда', 
-    'четверг', 'пятница', 'суббота'
-  ];
+  const days = ['воскресенье', 'понедельник', 'вторник', 'среда', 'четверг', 'пятница', 'суббота'];
   return days[date.getDay()];
 };
 
-// Генерация уникального ID
-const generateUniqueId = (): string => {
-  return `custom-${Date.now()}-${Math.random().toString(36).substr(2, 9)}-${Math.random().toString(36).substr(2, 9)}`;
-};
+const generateUniqueId = (): string => `custom-${Date.now()}-${Math.random().toString(36).substr(2, 9)}-${Math.random().toString(36).substr(2, 9)}`;
 
-// Преобразование cookingTime в число
 const parseCookingTime = (time: any): number => {
-  if (typeof time === 'number') {
-    return time;
-  }
+  if (typeof time === 'number') return time;
   if (typeof time === 'string') {
     const match = time.match(/\d+/);
     return match ? parseInt(match[0], 10) : 20;
   }
   return 20;
+};
+
+const normalizeCategory = (cat: string): string => {
+  const normalized = cat.toLowerCase().trim();
+  
+  if (normalized.includes('завтрак') || normalized.includes('breakfast') ||
+      normalized.includes('каша') || normalized.includes('омлет') || 
+      normalized.includes('панкейк') || normalized.includes('блин') ||
+      normalized.includes('тост') || normalized.includes('йогурт') ||
+      normalized.includes('мюсли') || normalized.includes('гранола') ||
+      normalized.includes('чиа') || normalized.includes('смузи') ||
+      normalized.includes('сырник') || normalized.includes('кекс') ||
+      normalized.includes('маффин')) {
+    return 'Завтрак';
+  }
+  
+  if (normalized.includes('обед') || normalized.includes('lunch') ||
+      normalized.includes('суп') || normalized.includes('борщ') ||
+      normalized.includes('бульон') || normalized.includes('паста') ||
+      normalized.includes('рис') || normalized.includes('карри') ||
+      normalized.includes('плов') || normalized.includes('лазанья') ||
+      normalized.includes('котлета')) {
+    return 'Обед';
+  }
+  
+  if (normalized.includes('ужин') || normalized.includes('dinner') ||
+      normalized.includes('стейк') || normalized.includes('рыба') ||
+      normalized.includes('курица') || normalized.includes('мясо') ||
+      normalized.includes('запеканка') || normalized.includes('рагу')) {
+    return 'Ужин';
+  }
+  
+  if (normalized.includes('перекус') || normalized.includes('snack') ||
+      normalized.includes('салат') || normalized.includes('фрукт') ||
+      normalized.includes('орех') || normalized.includes('батончик') ||
+      normalized.includes('чипсы') || normalized.includes('десерт') ||
+      normalized.includes('печенье')) {
+    return 'Перекус';
+  }
+  
+  return 'Обед';
 };
 
 class DailyRationService {
@@ -127,27 +161,19 @@ class DailyRationService {
     this.cachedPlans = new Map();
   }
   
-  /**
-   * ОСНОВНОЙ МЕТОД: Получить или сгенерировать рацион
-   */
   async getOrGenerateDailyPlan(userId: string): Promise<Plan> {
     try {
       if (!userId) throw new Error('User ID is required');
-      
       const date = new Date();
       const dateStr = formatDate(date);
       const planId = `${userId}_${dateStr}`;
       
-      // Проверяем кэш
       if (this.cachedPlans.has(planId)) {
-        const cachedPlan = this.cachedPlans.get(planId)!;
-        return cachedPlan;
+        return this.cachedPlans.get(planId)!;
       }
       
-      // 1. Проверяем существующий план
       let plan = await this.getPlanById(planId);
       
-      // 2. Если плана нет - генерируем новый
       if (!plan) {
         console.log('🔄 Generating new plan for today');
         plan = await this.generateNewPlan(userId, date);
@@ -155,31 +181,17 @@ class DailyRationService {
         await this.savePlan(plan);
       }
       
-      // 3. Объединяем meals и customMeals для отображения
-      const allMeals = [
-        ...(plan.meals || []),
-        ...(plan.customMeals || [])
-      ];
-      
-      const finalPlan: Plan = {
-        ...plan,
-        meals: allMeals
-      };
-      
-      // 4. Кэшируем (сохраняем с объединенными meals)
+      const allMeals = [...(plan.meals || []), ...(plan.customMeals || [])];
+      const finalPlan = { ...plan, meals: allMeals };
       this.cachedPlans.set(planId, finalPlan);
       
       return finalPlan;
-      
     } catch (error) {
       console.error('❌ Error in getOrGenerateDailyPlan:', error);
       throw error;
     }
   }
   
-  /**
-   * СОЗДАТЬ НОВЫЙ ПЛАН С УЧЕТОМ ТЕКУЩИХ НАСТРОЕК
-   */
   async createNewPlanWithUserSettings(userId: string): Promise<Plan> {
     try {
       const date = new Date();
@@ -187,33 +199,20 @@ class DailyRationService {
       const planId = `${userId}_${dateStr}`;
       
       console.log('🔄 Creating new plan with current user settings');
-      
       const plan = await this.generateNewPlan(userId, date);
       plan.id = planId;
-      
       await this.savePlan(plan);
       
-      const finalPlan: Plan = {
-        ...plan,
-        meals: [
-          ...(plan.meals || []),
-          ...(plan.customMeals || [])
-        ]
-      };
-      
+      const finalPlan = { ...plan, meals: [...(plan.meals || []), ...(plan.customMeals || [])] };
       this.cachedPlans.set(planId, finalPlan);
       
       return finalPlan;
-      
     } catch (error) {
       console.error('❌ Error creating new plan with settings:', error);
       throw error;
     }
   }
   
-  /**
-   * Получить план по ID
-   */
   async getPlanById(planId: string): Promise<Plan | null> {
     try {
       const planRef = doc(db, 'ration_plan_days', planId);
@@ -221,10 +220,10 @@ class DailyRationService {
       
       if (planSnap.exists()) {
         const data = planSnap.data();
-        
         const meals = data.meals || [];
         const customMeals = data.customMeals || [];
         const allMeals = [...meals, ...customMeals];
+        const dailyCalories = data.userTargets?.dailyCalories || 2000;
         
         return {
           id: planSnap.id,
@@ -232,21 +231,10 @@ class DailyRationService {
           date: data.date || '',
           dayOfWeek: data.dayOfWeek || '',
           userTargets: data.userTargets || { dailyCalories: 2000, dietType: 'Обычное' },
-          meals: meals, // Только обычные meals
-          customMeals: customMeals, // Отдельно customMeals
-          stats: data.stats || {
-            totalCalories: allMeals.reduce((sum: number, meal: Meal) => sum + (meal.calories || 0), 0),
-            totalProteins: allMeals.reduce((sum: number, meal: Meal) => sum + (meal.proteins || 0), 0),
-            totalFats: allMeals.reduce((sum: number, meal: Meal) => sum + (meal.fats || 0), 0),
-            totalCarbs: allMeals.reduce((sum: number, meal: Meal) => sum + (meal.carbohydrates || 0), 0),
-            totalCookingTime: allMeals.reduce((sum: number, meal: Meal) => sum + (meal.cookingTime || 0), 0),
-            completedMeals: allMeals.filter((meal: Meal) => meal.marked).length,
-            totalMeals: allMeals.length
-          },
-          timestamps: data.timestamps || {
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString()
-          }
+          meals: meals,
+          customMeals: customMeals,
+          stats: this.calculatePlanStats(allMeals, dailyCalories),
+          timestamps: data.timestamps || { createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
         };
       }
       return null;
@@ -256,84 +244,44 @@ class DailyRationService {
     }
   }
   
-  /**
-   * Добавить кастомный рецепт в план
-   */
   async addCustomMealToPlan(userId: string, date: Date, mealData: Omit<Meal, 'id'> & { id?: string }): Promise<string> {
     try {
       const dateStr = formatDate(date);
       const planId = `${userId}_${dateStr}`;
-      
       const mealId = mealData.id || generateUniqueId();
-      const meal: Meal = {
-        ...mealData,
-        id: mealId,
-        isCustom: true,
-        canBeRemoved: true,
-        addedAt: new Date().toISOString()
-      };
+      const meal: Meal = { ...mealData, id: mealId, isCustom: true, canBeRemoved: true, addedAt: new Date().toISOString() };
       
       const planRef = doc(db, 'ration_plan_days', planId);
       const planSnap = await getDoc(planRef);
+      let dailyCalories = 2000;
       
       if (!planSnap.exists()) {
-        const newPlan: Omit<Plan, 'id'> & { id?: string } = {
-          userId,
-          date: dateStr,
-          dayOfWeek: getDayOfWeek(date),
-          userTargets: {
-            dailyCalories: 2000,
-            dietType: 'Обычное'
-          },
-          meals: [],
-          customMeals: [meal],
-          stats: {
-            totalCalories: meal.calories || 0,
-            totalProteins: meal.proteins || 0,
-            totalFats: meal.fats || 0,
-            totalCarbs: meal.carbohydrates || 0,
-            totalCookingTime: meal.cookingTime || 0,
-            completedMeals: 0,
-            totalMeals: 1
-          },
-          timestamps: {
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString()
-          }
+        const userData = await this.getUserData(userId);
+        dailyCalories = userData.dailyCalories;
+        const newPlan = {
+          userId, date: dateStr, dayOfWeek: getDayOfWeek(date),
+          userTargets: { dailyCalories, dietType: userData.dietType || 'Обычное' },
+          meals: [], customMeals: [meal],
+          stats: this.calculatePlanStats([meal], dailyCalories),
+          timestamps: { createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
         };
-        
         await setDoc(planRef, newPlan);
       } else {
         const existingPlan = planSnap.data();
+        dailyCalories = existingPlan.userTargets?.dailyCalories || 2000;
         const existingCustomMeals = existingPlan.customMeals || [];
-        
-        // Проверяем, не добавлен ли уже этот рецепт
-        const existingMealIndex = existingCustomMeals.findIndex((m: Meal) => 
-          m.id === meal.id || m.recipeId === meal.recipeId
-        );
+        const existingMealIndex = existingCustomMeals.findIndex((m: Meal) => m.id === meal.id || m.recipeId === meal.recipeId);
         
         if (existingMealIndex !== -1) {
           const updatedCustomMeals = [...existingCustomMeals];
           updatedCustomMeals[existingMealIndex] = meal;
-          
-          await updateDoc(planRef, {
-            customMeals: updatedCustomMeals,
-            'timestamps.updatedAt': new Date().toISOString()
-          });
+          await updateDoc(planRef, { customMeals: updatedCustomMeals, 'timestamps.updatedAt': new Date().toISOString() });
         } else {
-          await updateDoc(planRef, {
-            customMeals: arrayUnion(meal),
-            'timestamps.updatedAt': new Date().toISOString()
-          });
+          await updateDoc(planRef, { customMeals: arrayUnion(meal), 'timestamps.updatedAt': new Date().toISOString() });
         }
         
-        const allMeals = [
-          ...(existingPlan.meals || []),
-          ...(existingPlan.customMeals || []),
-          ...(existingMealIndex === -1 ? [meal] : [])
-        ];
-        
-        const stats = this.calculatePlanStats(allMeals);
+        const allMeals = [...(existingPlan.meals || []), ...(existingPlan.customMeals || []), ...(existingMealIndex === -1 ? [meal] : [])];
+        const stats = this.calculatePlanStats(allMeals, dailyCalories);
         
         await updateDoc(planRef, {
           'stats.totalCalories': stats.totalCalories,
@@ -342,15 +290,16 @@ class DailyRationService {
           'stats.totalCarbs': stats.totalCarbs,
           'stats.totalCookingTime': stats.totalCookingTime,
           'stats.totalMeals': allMeals.length,
-          'stats.completedMeals': allMeals.filter((m: Meal) => m.marked).length
+          'stats.completedMeals': allMeals.filter((m: Meal) => m.marked).length,
+          'stats.isOverLimit': stats.isOverLimit,
+          'stats.percentOfTarget': stats.percentOfTarget,
+          'stats.note': stats.note
         });
       }
       
-      // Обновляем кэш
       if (this.cachedPlans.has(planId)) {
         const cachedPlan = this.cachedPlans.get(planId)!;
         const existingMealIndex = cachedPlan.meals.findIndex(m => m.id === mealId);
-        
         if (existingMealIndex !== -1) {
           const updatedMeals = [...cachedPlan.meals];
           updatedMeals[existingMealIndex] = meal;
@@ -358,53 +307,35 @@ class DailyRationService {
         } else {
           cachedPlan.meals.push(meal);
         }
-        
-        const stats = this.calculatePlanStats(cachedPlan.meals);
-        cachedPlan.stats = {
-          ...stats,
-          completedMeals: cachedPlan.meals.filter(m => m.marked).length,
-          totalMeals: cachedPlan.meals.length
-        };
-        
+        const stats = this.calculatePlanStats(cachedPlan.meals, cachedPlan.userTargets?.dailyCalories || 2000);
+        cachedPlan.stats = { ...stats, completedMeals: cachedPlan.meals.filter(m => m.marked).length, totalMeals: cachedPlan.meals.length };
         this.cachedPlans.set(planId, cachedPlan);
       }
       
-      console.log('✅ Custom meal added to plan:', meal.id);
       return mealId;
-      
     } catch (error) {
       console.error('❌ Error adding custom meal to plan:', error);
       throw error;
     }
   }
   
-  /**
-   * Удалить кастомный рецепт из плана
-   */
   async removeCustomMealFromPlan(userId: string, date: Date, mealId: string): Promise<void> {
     try {
       const dateStr = formatDate(date);
       const planId = `${userId}_${dateStr}`;
-      
       const planRef = doc(db, 'ration_plan_days', planId);
       const planSnap = await getDoc(planRef);
-      
       if (!planSnap.exists()) return;
       
       const planData = planSnap.data();
+      const dailyCalories = planData.userTargets?.dailyCalories || 2000;
       const customMeals = planData.customMeals || [];
-      
       const mealToRemove = customMeals.find((meal: Meal) => meal.id === mealId);
       if (!mealToRemove) return;
       
       const updatedCustomMeals = customMeals.filter((meal: Meal) => meal.id !== mealId);
-      
-      const allMeals = [
-        ...(planData.meals || []),
-        ...updatedCustomMeals
-      ];
-      
-      const stats = this.calculatePlanStats(allMeals);
+      const allMeals = [...(planData.meals || []), ...updatedCustomMeals];
+      const stats = this.calculatePlanStats(allMeals, dailyCalories);
       
       await updateDoc(planRef, {
         customMeals: updatedCustomMeals,
@@ -415,87 +346,196 @@ class DailyRationService {
         'stats.totalCookingTime': stats.totalCookingTime,
         'stats.totalMeals': allMeals.length,
         'stats.completedMeals': allMeals.filter((m: Meal) => m.marked).length,
+        'stats.isOverLimit': stats.isOverLimit,
+        'stats.percentOfTarget': stats.percentOfTarget,
+        'stats.note': stats.note,
         'timestamps.updatedAt': new Date().toISOString()
       });
       
-      // Обновляем кэш
       if (this.cachedPlans.has(planId)) {
         const cachedPlan = this.cachedPlans.get(planId)!;
         const allMealsFiltered = cachedPlan.meals.filter(meal => meal.id !== mealId);
-        const statsFiltered = this.calculatePlanStats(allMealsFiltered);
-        
+        const statsFiltered = this.calculatePlanStats(allMealsFiltered, dailyCalories);
         cachedPlan.meals = allMealsFiltered;
-        cachedPlan.stats = {
-          ...statsFiltered,
-          completedMeals: allMealsFiltered.filter(m => m.marked).length,
-          totalMeals: allMealsFiltered.length
-        };
-        
+        cachedPlan.stats = { ...statsFiltered, completedMeals: allMealsFiltered.filter(m => m.marked).length, totalMeals: allMealsFiltered.length };
         this.cachedPlans.set(planId, cachedPlan);
       }
-      
-      console.log('✅ Custom meal removed from plan:', mealId);
-      
     } catch (error) {
       console.error('❌ Error removing custom meal from plan:', error);
       throw error;
     }
   }
   
-  /**
-   * ГЕНЕРАЦИЯ НОВОГО ПЛАНА
-   */
+  private shuffleArray<T>(array: T[]): T[] {
+    const shuffled = [...array];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    return shuffled;
+  }
+  
   async generateNewPlan(userId: string, date: Date): Promise<Plan> {
     try {
       const userData = await this.getUserData(userId);
+      const dailyCalories = userData.dailyCalories;
+      
+      let targetProteins = userData.targetProteinGrams;
+      let targetFats = userData.targetFatGrams;
+      let targetCarbs = userData.targetCarbGrams;
+      
+      if (!targetProteins || targetProteins === 0) {
+        targetProteins = Math.round((dailyCalories * 0.3) / 4);
+      }
+      if (!targetFats || targetFats === 0) {
+        targetFats = Math.round((dailyCalories * 0.3) / 9);
+      }
+      if (!targetCarbs || targetCarbs === 0) {
+        targetCarbs = Math.round((dailyCalories * 0.4) / 4);
+      }
+      
+      console.log(`🎯 ЦЕЛЬ: ${dailyCalories} ккал, Б:${targetProteins}, Ж:${targetFats}, У:${targetCarbs}`);
       
       const availableRecipes = await this.getRecipesWithFilters(userData);
       
+      if (availableRecipes.length === 0) {
+        return this.createEmptyPlan(userId, date);
+      }
+      
       const recipesByCategory = this.groupRecipesByCategory(availableRecipes);
       
-      const categories = ['Завтрак', 'Обед', 'Ужин', 'Перекусы'];
-      const meals: Meal[] = [];
+      const dayStructure = ['Завтрак', 'Обед', 'Ужин', 'Перекус'];
       
-      for (const category of categories) {
-        const categoryRecipes = recipesByCategory[category] || [];
+      const distribution: Record<string, { calories: number; proteins: number; fats: number; carbs: number }> = {
+        'Завтрак': { calories: 0.25, proteins: 0.25, fats: 0.25, carbs: 0.25 },
+        'Обед': { calories: 0.35, proteins: 0.40, fats: 0.35, carbs: 0.35 },
+        'Ужин': { calories: 0.25, proteins: 0.25, fats: 0.25, carbs: 0.25 },
+        'Перекус': { calories: 0.15, proteins: 0.10, fats: 0.15, carbs: 0.15 }
+      };
+      
+      const weightRange: Record<string, { min: number; max: number; default: number }> = {
+        'Завтрак': { min: 200, max: 400, default: 300 },
+        'Обед': { min: 300, max: 600, default: 450 },
+        'Ужин': { min: 250, max: 500, default: 350 },
+        'Перекус': { min: 100, max: 250, default: 150 }
+      };
+      
+      let bestMeals: Meal[] = [];
+      let bestScore = Infinity;
+      
+      // 100 попыток для разнообразия
+      for (let attempt = 0; attempt < 100; attempt++) {
+        const attemptMeals: Meal[] = [];
+        let attCalories = 0, attProteins = 0, attFats = 0, attCarbs = 0;
         
-        if (categoryRecipes.length > 0) {
-          const randomIndex = Math.floor(Math.random() * categoryRecipes.length);
-          const recipe = categoryRecipes[randomIndex];
-          meals.push(this.createMealFromRecipe(recipe, category));
-        } else {
-          meals.push(this.createFallbackMeal(category));
+        for (const category of dayStructure) {
+          let categoryRecipes = [...(this.getRecipesForCategory(recipesByCategory, category))];
+          if (categoryRecipes.length === 0) continue;
+          
+          // Перемешиваем для разнообразия
+          categoryRecipes = this.shuffleArray(categoryRecipes);
+          
+          const dist = distribution[category];
+          const weight = weightRange[category];
+          
+          const targetMealCalories = dailyCalories * dist.calories;
+          const targetMealProteins = targetProteins * dist.proteins;
+          const targetMealFats = targetFats * dist.fats;
+          const targetMealCarbs = targetCarbs * dist.carbs;
+          
+          // Собираем всех кандидатов с их оценками
+          const candidates: { recipe: Recipe; weight: number; calories: number; proteins: number; fats: number; carbs: number; score: number }[] = [];
+          
+          for (const recipe of categoryRecipes) {
+            const caloriesPer100g = recipe.calories || 0;
+            if (caloriesPer100g <= 0) continue;
+            
+            let calculatedWeight = (targetMealCalories / caloriesPer100g) * 100;
+            let finalWeight = Math.max(weight.min, Math.min(weight.max, calculatedWeight));
+            
+            const calcCalories = Math.round((caloriesPer100g * finalWeight) / 100);
+            const calcProteins = Math.round((recipe.proteins * finalWeight) / 100);
+            const calcFats = Math.round((recipe.fats * finalWeight) / 100);
+            const calcCarbs = Math.round((recipe.carbohydrates * finalWeight) / 100);
+            
+            if (attCalories + calcCalories > dailyCalories) continue;
+            if (attProteins + calcProteins > targetProteins) continue;
+            if (attFats + calcFats > targetFats) continue;
+            if (attCarbs + calcCarbs > targetCarbs) continue;
+            
+            const calorieDiff = Math.abs(calcCalories - targetMealCalories);
+            const proteinDiff = Math.abs(calcProteins - targetMealProteins);
+            const fatDiff = Math.abs(calcFats - targetMealFats);
+            const carbDiff = Math.abs(calcCarbs - targetMealCarbs);
+            
+            const score = calorieDiff * 0.2 + proteinDiff * 0.5 + fatDiff * 0.15 + carbDiff * 0.15;
+            
+            candidates.push({
+              recipe, weight: Math.round(finalWeight),
+              calories: calcCalories, proteins: calcProteins,
+              fats: calcFats, carbs: calcCarbs, score
+            });
+          }
+          
+          if (candidates.length > 0) {
+            // Сортируем по оценке
+            candidates.sort((a, b) => a.score - b.score);
+            
+            // 🔧 ВЫБИРАЕМ СЛУЧАЙНЫЙ ИЗ ТОП-5 (для разнообразия)
+            const topCount = Math.min(5, candidates.length);
+            const randomIndex = Math.floor(Math.random() * topCount);
+            const selected = candidates[randomIndex];
+            
+            const meal = this.createMealFromRecipe(
+              selected.recipe, category, selected.weight,
+              selected.calories, selected.proteins, selected.fats, selected.carbs
+            );
+            attemptMeals.push(meal);
+            attCalories += selected.calories;
+            attProteins += selected.proteins;
+            attFats += selected.fats;
+            attCarbs += selected.carbs;
+          }
+        }
+        
+        if (attemptMeals.length === 4) {
+          const totalScore = 
+            Math.abs(attCalories - dailyCalories) * 0.3 +
+            Math.abs(attProteins - targetProteins) * 0.4 +
+            Math.abs(attFats - targetFats) * 0.15 +
+            Math.abs(attCarbs - targetCarbs) * 0.15;
+          
+          if (totalScore < bestScore) {
+            bestScore = totalScore;
+            bestMeals = [...attemptMeals];
+          }
         }
       }
       
-      const stats = this.calculatePlanStats(meals);
+      if (bestMeals.length > 0) {
+        const stats = this.calculatePlanStats(bestMeals, dailyCalories);
+        
+        console.log(`📊 ИТОГОВЫЙ РАЦИОН:`);
+        console.log(`   Калории: ${stats.totalCalories}/${dailyCalories} (${Math.round((stats.totalCalories/dailyCalories)*100)}%)`);
+        console.log(`   Белки: ${stats.totalProteins}/${targetProteins} (${Math.round((stats.totalProteins/targetProteins)*100)}%)`);
+        console.log(`   Жиры: ${stats.totalFats}/${targetFats} (${Math.round((stats.totalFats/targetFats)*100)}%)`);
+        console.log(`   Углеводы: ${stats.totalCarbs}/${targetCarbs} (${Math.round((stats.totalCarbs/targetCarbs)*100)}%)`);
+        
+        const plan: Omit<Plan, 'id'> = {
+          userId,
+          date: formatDate(date),
+          dayOfWeek: getDayOfWeek(date),
+          userTargets: { dailyCalories: userData.dailyCalories, dietType: userData.dietType },
+          meals: bestMeals,
+          customMeals: [],
+          stats: { ...stats, completedMeals: 0, totalMeals: bestMeals.length },
+          timestamps: { createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
+        };
+        
+        return plan as Plan;
+      }
       
-      const plan: Omit<Plan, 'id'> = {
-        userId,
-        date: formatDate(date),
-        dayOfWeek: getDayOfWeek(date),
-        
-        userTargets: {
-          dailyCalories: userData.dailyCalories,
-          dietType: userData.dietType
-        },
-        
-        meals,
-        customMeals: [],
-        
-        stats: {
-          ...stats,
-          completedMeals: 0,
-          totalMeals: meals.length
-        },
-        
-        timestamps: {
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString()
-        }
-      };
-      
-      return plan as Plan;
+      return this.createEmptyPlan(userId, date);
       
     } catch (error) {
       console.error('❌ Error generating new plan:', error);
@@ -503,9 +543,17 @@ class DailyRationService {
     }
   }
   
-  /**
-   * Получить данные пользователя
-   */
+  private getRecipesForCategory(recipesByCategory: { [key: string]: Recipe[] }, category: string): Recipe[] {
+    if (recipesByCategory[category]) return recipesByCategory[category];
+    const normalizedTarget = normalizeCategory(category).toLowerCase();
+    for (const [key, recipes] of Object.entries(recipesByCategory)) {
+      if (normalizeCategory(key).toLowerCase() === normalizedTarget || key === category) {
+        return recipes;
+      }
+    }
+    return [];
+  }
+  
   async getUserData(userId: string): Promise<UserData> {
     try {
       const userRef = doc(db, 'users', userId);
@@ -513,7 +561,6 @@ class DailyRationService {
       
       if (userSnap.exists()) {
         const data = userSnap.data();
-        
         return {
           dailyCalories: data.dailyCalories || data.targetCalories || 2000,
           targetCalories: data.targetCalories,
@@ -523,120 +570,122 @@ class DailyRationService {
           dietType: data.dietType || 'Обычное',
           allergies: data.allergies || '',
           excludedIngredients: data.excludedIngredients || '',
-          cookingTimeLimit: data.cookingTimeLimit ? parseInt(data.cookingTimeLimit) : 45,
+          cookingTimeLimit: data.cookingTimeLimit ? parseInt(data.cookingTimeLimit) : 60,
           cookingSkill: data.cookingSkill || 'Средний',
           favoriteRecipes: data.favoriteRecipes || []
         };
       }
-      
       return {
-        dailyCalories: 2000,
-        targetProteinGrams: 0,
-        targetFatGrams: 0,
-        targetCarbGrams: 0,
-        dietType: 'Обычное',
-        allergies: '',
-        excludedIngredients: '',
-        cookingTimeLimit: 45,
-        cookingSkill: 'Средний'
+        dailyCalories: 2000, targetProteinGrams: 0, targetFatGrams: 0, targetCarbGrams: 0,
+        dietType: 'Обычное', allergies: '', excludedIngredients: '', cookingTimeLimit: 60, cookingSkill: 'Средний'
       };
-      
     } catch (error) {
       console.error('❌ Error getting user data:', error);
       return {
-        dailyCalories: 2000,
-        targetProteinGrams: 0,
-        targetFatGrams: 0,
-        targetCarbGrams: 0,
-        dietType: 'Обычное',
-        allergies: '',
-        excludedIngredients: '',
-        cookingTimeLimit: 45,
-        cookingSkill: 'Средний'
+        dailyCalories: 2000, targetProteinGrams: 0, targetFatGrams: 0, targetCarbGrams: 0,
+        dietType: 'Обычное', allergies: '', excludedIngredients: '', cookingTimeLimit: 60, cookingSkill: 'Средний'
       };
     }
   }
   
-  /**
-   * Получить рецепты с учетом фильтров
-   */
   async getRecipesWithFilters(userData: UserData): Promise<Recipe[]> {
     try {
       const allExternalRecipes = await recipeService.getRecipesForPlanner();
-      
       if (!allExternalRecipes || allExternalRecipes.length === 0) {
+        console.warn('⚠️ No recipes from recipeService');
         return [];
       }
       
-      const allRecipes = allExternalRecipes.map(externalRecipe => {
-        const cookingTime = parseCookingTime(externalRecipe.cookingTime);
-
+      const allRecipes: Recipe[] = allExternalRecipes.map(externalRecipe => {
+        const cookingTime = parseCookingTime(externalRecipe.prepTime);
+        let mealType = externalRecipe.mealType || externalRecipe.categories?.[0] || 'Обед';
+        if (Array.isArray(mealType)) mealType = mealType[0] || 'Обед';
+        mealType = normalizeCategory(mealType);
+        
+        let difficulty = externalRecipe.difficulty || 'Легко';
+        if (Array.isArray(difficulty)) difficulty = difficulty[0] || 'Легко';
+        
+        const calories = externalRecipe.nutritionPer100g?.calories || externalRecipe.calories || 0;
+        const proteins = externalRecipe.nutritionPer100g?.protein || externalRecipe.proteins || 0;
+        const fats = externalRecipe.nutritionPer100g?.fat || externalRecipe.fats || 0;
+        const carbs = externalRecipe.nutritionPer100g?.carbs || externalRecipe.carbohydrates || 0;
+        
         return {
-          id: externalRecipe.id,
+          id: externalRecipe.id || `temp-${Date.now()}-${Math.random()}`,
           title: externalRecipe.title || 'Без названия',
-          calories: externalRecipe.calories || 0,
-          proteins: externalRecipe.proteins || 0,
-          fats: externalRecipe.fats || 0,
-          carbohydrates: externalRecipe.carbohydrates || 0,
-          cookingTime: cookingTime,
-          difficultyLevel: externalRecipe.difficultyLevel || 'Легко',
-          imageUrl: externalRecipe.imageUrl || null,
-          mealType: externalRecipe.mealType || 'Обед',
-        } as Recipe;
+          calories, proteins, fats, carbohydrates: carbs,
+          cookingTime, difficulty, mealType,
+          imageUrl: externalRecipe.imageUrl || undefined,
+          ingredientsList: externalRecipe.ingredientsList || externalRecipe.ingredients || []
+        };
       });
       
-      const timeLimit = userData.cookingTimeLimit || 45;
-      const timeFiltered = allRecipes.filter(recipe => {
-        return recipe.cookingTime <= timeLimit;
-      });
+      const timeLimit = userData.cookingTimeLimit || 60;
+      let filtered = allRecipes.filter(recipe => recipe.cookingTime <= timeLimit);
       
-      return timeFiltered.length > 0 ? timeFiltered : allRecipes.slice(0, 20);
+      const allergiesList = (userData.allergies || '').split(',').map(a => a.trim().toLowerCase()).filter(Boolean);
+      const excludedList = (userData.excludedIngredients || '').split(',').map(e => e.trim().toLowerCase()).filter(Boolean);
+      const forbiddenItems = [...allergiesList, ...excludedList];
       
+      if (forbiddenItems.length > 0) {
+        filtered = filtered.filter(recipe => {
+          const ingredients = (recipe.ingredientsList || []).map(i => i.toLowerCase());
+          return !forbiddenItems.some(forbidden => ingredients.some(ing => ing.includes(forbidden)));
+        });
+      }
+      
+      return filtered.length > 0 ? filtered : allRecipes.slice(0, 50);
     } catch (error) {
       console.error('❌ Error filtering recipes:', error);
       return [];
     }
   }
   
-  /**
-   * Группировать рецепты по категориям
-   */
   groupRecipesByCategory(recipes: Recipe[]): { [key: string]: Recipe[] } {
     const grouped: { [key: string]: Recipe[] } = {
-      'Завтрак': [],
-      'Обед': [],
-      'Ужин': [],
-      'Перекусы': []
+      'Завтрак': [], 'Обед': [], 'Ужин': [], 'Перекус': []
     };
     
     recipes.forEach(recipe => {
-      const category = recipe.mealType || 'Обед';
-      if (grouped[category]) {
-        grouped[category].push(recipe);
+      let category = normalizeCategory(recipe.mealType || 'Обед');
+      const title = (recipe.title || '').toLowerCase();
+      
+      if (category === 'Завтрак') {
+        const breakfastKeywords = ['каша', 'омлет', 'панкейк', 'блин', 'тост', 'йогурт', 'мюсли', 'гранола', 'чиа', 'смузи', 'кекс', 'маффин', 'сырник'];
+        const isSuitable = breakfastKeywords.some(kw => title.includes(kw));
+        if (isSuitable || grouped['Завтрак'].length < 15) {
+          grouped['Завтрак'].push(recipe);
+        } else {
+          grouped['Обед'].push(recipe);
+        }
+      } else if (category === 'Перекус') {
+        grouped['Перекус'].push(recipe);
+      } else if (category === 'Ужин') {
+        grouped['Ужин'].push(recipe);
       } else {
         grouped['Обед'].push(recipe);
       }
     });
     
+    Object.entries(grouped).forEach(([cat, recs]) => console.log(`📁 ${cat}: ${recs.length} рецептов`));
     return grouped;
   }
   
-  /**
-   * Создать прием пищи из рецепта
-   */
-  createMealFromRecipe(recipe: Recipe, category: string): Meal {
+  createMealFromRecipe(recipe: Recipe, category: string, weight: number, calories: number, proteins: number, fats: number, carbs: number): Meal {
+    const uniqueId = `${recipe.id}-${category}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    
     return {
-      id: recipe.id,
+      id: uniqueId,
       recipeId: recipe.id,
       category: category,
       name: recipe.title || 'Рецепт',
-      calories: Math.round(recipe.calories || 0),
-      proteins: Math.round(recipe.proteins || 0),
-      fats: Math.round(recipe.fats || 0),
-      carbohydrates: Math.round(recipe.carbohydrates || 0),
-      weight: '300 гр',
+      calories: calories,
+      proteins: proteins,
+      fats: fats,
+      carbohydrates: carbs,
+      weight: `${weight} гр`,
       cookingTime: recipe.cookingTime || 20,
-      difficultyLevel: recipe.difficultyLevel || 'Легко',
+      difficultyLevel: recipe.difficulty || 'Легко',
       rating: 0,
       imageUrl: recipe.imageUrl || null,
       marked: false,
@@ -646,186 +695,142 @@ class DailyRationService {
     };
   }
   
-  /**
-   * Создать заглушку
-   */
   createFallbackMeal(category: string): Meal {
     return {
       id: `fallback-${category}-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
-      recipeId: null,
-      category,
-      name: 'Рецепты не найдены',
-      calories: 0,
-      proteins: 0,
-      fats: 0,
-      carbohydrates: 0,
-      weight: '0 гр',
-      cookingTime: 0,
-      difficultyLevel: 'Легко',
-      rating: 0,
-      imageUrl: null,
-      marked: false,
-      bookmarked: false,
-      isCustom: false,
-      canBeRemoved: false
+      recipeId: null, category,
+      name: `Нет рецептов для "${category}"`,
+      calories: 0, proteins: 0, fats: 0, carbohydrates: 0,
+      weight: '0 гр', cookingTime: 0, difficultyLevel: 'Легко', rating: 0,
+      imageUrl: null, marked: false, bookmarked: false, isCustom: false, canBeRemoved: false
     };
   }
   
-  /**
-   * Создать пустой план (при ошибке)
-   */
   createEmptyPlan(userId: string, date: Date): Plan {
     const dateStr = formatDate(date);
-    const planId = `${userId}_${dateStr}`;
+    return {
+      id: `${userId}_${dateStr}`, userId, date: dateStr, dayOfWeek: getDayOfWeek(date),
+      userTargets: { dailyCalories: 2000, dietType: 'Обычное' },
+      meals: [this.createFallbackMeal('Завтрак'), this.createFallbackMeal('Обед'), this.createFallbackMeal('Ужин'), this.createFallbackMeal('Перекус')],
+      customMeals: [],
+      stats: { totalCalories: 0, totalProteins: 0, totalFats: 0, totalCarbs: 0, totalCookingTime: 0, completedMeals: 0, totalMeals: 4, isOverLimit: false, percentOfTarget: 0, note: 'Не удалось загрузить рецепты' },
+      timestamps: { createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
+    };
+  }
+  
+  calculatePlanStats(meals: Meal[], targetCalories: number = 2000): PlanStats {
+    const totalCalories = meals.reduce((sum, meal) => sum + (meal.calories || 0), 0);
+    const isOverLimit = totalCalories > targetCalories;
+    const percentOfTarget = Math.round((totalCalories / targetCalories) * 100);
+    
+    let note = '';
+    if (isOverLimit) note = `Внимание: рацион превышает норму на ${totalCalories - targetCalories} ккал.`;
+    else if (percentOfTarget < 80) note = `Рацион недобирает ${targetCalories - totalCalories} ккал.`;
+    else note = 'План сбалансирован';
     
     return {
-      id: planId,
-      userId,
-      date: dateStr,
-      dayOfWeek: getDayOfWeek(date),
-      userTargets: {
-        dailyCalories: 2000,
-        dietType: 'Обычное'
-      },
-      meals: [
-        this.createFallbackMeal('Завтрак'),
-        this.createFallbackMeal('Обед'),
-        this.createFallbackMeal('Ужин'),
-        this.createFallbackMeal('Перекусы')
-      ],
-      customMeals: [],
-      stats: {
-        totalCalories: 0,
-        totalProteins: 0,
-        totalFats: 0,
-        totalCarbs: 0,
-        totalCookingTime: 0,
-        completedMeals: 0,
-        totalMeals: 4
-      },
-      timestamps: {
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      }
+      totalCalories,
+      totalProteins: meals.reduce((sum, m) => sum + (m.proteins || 0), 0),
+      totalFats: meals.reduce((sum, m) => sum + (m.fats || 0), 0),
+      totalCarbs: meals.reduce((sum, m) => sum + (m.carbohydrates || 0), 0),
+      totalCookingTime: meals.reduce((sum, m) => sum + (m.cookingTime || 0), 0),
+      completedMeals: meals.filter(m => m.marked).length,
+      totalMeals: meals.length,
+      isOverLimit, percentOfTarget, note
     };
   }
   
-  /**
-   * Рассчитать статистику
-   */
-  calculatePlanStats(meals: Meal[]) {
-    return {
-      totalCalories: meals.reduce((sum, meal) => sum + (meal.calories || 0), 0),
-      totalProteins: meals.reduce((sum, meal) => sum + (meal.proteins || 0), 0),
-      totalFats: meals.reduce((sum, meal) => sum + (meal.fats || 0), 0),
-      totalCarbs: meals.reduce((sum, meal) => sum + (meal.carbohydrates || 0), 0),
-      totalCookingTime: meals.reduce((sum, meal) => sum + (meal.cookingTime || 0), 0)
-    };
-  }
-  
-  /**
-   * Сохранить план
-   */
   async savePlan(plan: Plan) {
     try {
       const planRef = doc(db, 'ration_plan_days', plan.id);
-      
-      // Разделяем meals на обычные и кастомные
       const regularMeals = plan.meals.filter(meal => !meal.isCustom);
       const customMeals = plan.meals.filter(meal => meal.isCustom);
-      
-      const planData = {
-        userId: plan.userId,
-        date: plan.date,
-        dayOfWeek: plan.dayOfWeek,
-        userTargets: plan.userTargets,
-        meals: regularMeals,
-        customMeals: customMeals,
-        stats: plan.stats,
-        timestamps: plan.timestamps
-      };
-      
-      await setDoc(planRef, planData);
-      console.log('✅ Plan saved:', plan.id);
-      
+      await setDoc(planRef, {
+        userId: plan.userId, date: plan.date, dayOfWeek: plan.dayOfWeek,
+        userTargets: plan.userTargets, meals: regularMeals, customMeals: customMeals,
+        stats: plan.stats, timestamps: plan.timestamps
+      });
     } catch (error) {
       console.error('❌ Error saving plan:', error);
       throw error;
     }
   }
   
-  /**
-   * Обновить состояние приема пищи
-   */
   async updateMealStatus(userId: string, date: Date, mealId: string, updates: Partial<Meal>) {
     try {
       const dateStr = formatDate(date);
       const planId = `${userId}_${dateStr}`;
-      
       const planRef = doc(db, 'ration_plan_days', planId);
       const planSnap = await getDoc(planRef);
-      
-      if (!planSnap.exists()) {
-        return;
-      }
+      if (!planSnap.exists()) return;
       
       const planData = planSnap.data();
+      const dailyCalories = planData.userTargets?.dailyCalories || 2000;
       const meals = planData.meals || [];
       const customMeals = planData.customMeals || [];
       const allMeals = [...meals, ...customMeals];
-      
       const mealIndex = allMeals.findIndex((meal: Meal) => meal.id === mealId);
-      
-      if (mealIndex === -1) {
-        return;
-      }
+      if (mealIndex === -1) return;
       
       const isCustom = mealIndex >= meals.length;
       const targetArray = isCustom ? 'customMeals' : 'meals';
       const targetIndex = isCustom ? mealIndex - meals.length : mealIndex;
-      
       const updatedArray = [...planData[targetArray]];
       updatedArray[targetIndex] = { ...updatedArray[targetIndex], ...updates };
       
+      const updatedAllMeals = [...(targetArray === 'meals' ? updatedArray : meals), ...(targetArray === 'customMeals' ? updatedArray : customMeals)];
+      const stats = this.calculatePlanStats(updatedAllMeals, dailyCalories);
+      
       await updateDoc(planRef, {
         [targetArray]: updatedArray,
+        'stats.totalCalories': stats.totalCalories,
+        'stats.totalProteins': stats.totalProteins,
+        'stats.totalFats': stats.totalFats,
+        'stats.totalCarbs': stats.totalCarbs,
+        'stats.totalMeals': updatedAllMeals.length,
+        'stats.completedMeals': updatedAllMeals.filter((m: Meal) => m.marked).length,
+        'stats.isOverLimit': stats.isOverLimit,
+        'stats.percentOfTarget': stats.percentOfTarget,
+        'stats.note': stats.note,
         'timestamps.updatedAt': new Date().toISOString()
       });
       
-      // Обновляем кэш
       if (this.cachedPlans.has(planId)) {
         const cachedPlan = this.cachedPlans.get(planId)!;
-        
         const allCachedMeals = cachedPlan.meals;
         const cachedMealIndex = allCachedMeals.findIndex(m => m.id === mealId);
-        
         if (cachedMealIndex !== -1) {
           const updatedMeals = [...allCachedMeals];
-          updatedMeals[cachedMealIndex] = { 
-            ...updatedMeals[cachedMealIndex], 
-            ...updates 
-          };
+          updatedMeals[cachedMealIndex] = { ...updatedMeals[cachedMealIndex], ...updates };
           cachedPlan.meals = updatedMeals;
-          
-          cachedPlan.stats.completedMeals = updatedMeals.filter(m => m.marked).length;
-          
+          const newStats = this.calculatePlanStats(updatedMeals, dailyCalories);
+          cachedPlan.stats = { ...newStats, completedMeals: updatedMeals.filter(m => m.marked).length, totalMeals: updatedMeals.length };
           this.cachedPlans.set(planId, cachedPlan);
         }
       }
-      
     } catch (error) {
       console.error('❌ Error updating meal status:', error);
     }
   }
   
-  /**
-   * Очистить кэш
-   */
+  async getPlanStats(userId: string, date: Date): Promise<PlanStats | null> {
+    try {
+      const dateStr = formatDate(date);
+      const planId = `${userId}_${dateStr}`;
+      const plan = await this.getPlanById(planId);
+      if (!plan) return null;
+      const allMeals = [...(plan.meals || []), ...(plan.customMeals || [])];
+      return this.calculatePlanStats(allMeals, plan.userTargets.dailyCalories);
+    } catch (error) {
+      console.error('❌ Error getting plan stats:', error);
+      return null;
+    }
+  }
+  
   clearCache() {
     this.cachedPlans.clear();
     console.log('🧹 Cache cleared');
   }
 }
 
-// Экспорт синглтона
 export const dailyRationService = new DailyRationService();

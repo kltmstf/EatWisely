@@ -21,7 +21,7 @@ import {
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
-import { recipeService } from '@/app/services/recipeService';
+import { recipeService, DietType } from '@/app/services/recipeService';
 import { cloudinaryService, UploadProgress } from '@/app/services/cloudinaryService';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
@@ -40,28 +40,25 @@ interface Step {
   text: string;
 }
 
-// Тип для данных рецепта на основе интерфейса из recipeService
-interface RecipeData {
-  title: string;
-  description?: string;
-  mealType: string;
-  difficultyLevel: string;
-  cookingTime: number | string;
-  calories: number;
-  proteins: number;
-  fats: number;
-  carbohydrates: number;
-  weight?: string;
-  servings?: number;
-  ingredients: string[]; // Массив строк
-  ingredientsText?: string;
-  steps: string[]; // Массив строк для шагов
-  tags: string[]; // Обязательное поле
-  imageUrl?: string;
-  isPublic: boolean;
-  cloudinaryPublicId?: string;
-  imageMetadata?: any;
-}
+// Доступные категории
+const AVAILABLE_CATEGORIES = [
+  'Завтрак', 'Обед', 'Ужин', 'Перекус',
+  'Супы', 'Салаты', 'Горячее', 'Десерты',
+  'Напитки', 'Соусы', 'Выпечка'
+];
+
+// Доступные типы питания с описанием
+const DIET_TYPES_WITH_INFO = [
+  { id: 'Обычное', name: 'Обычное', description: 'Стандартное питание без ограничений. Подходит для большинства людей.' },
+  { id: 'Вегетарианское', name: 'Вегетарианское', description: 'Без мяса и рыбы. Разрешены яйца, молочные продукты и мед.' },
+  { id: 'Веганское', name: 'Веганское', description: 'Полный отказ от продуктов животного происхождения. Только растительная пища.' },
+  { id: 'Безглютеновое', name: 'Безглютеновое', description: 'Исключение глютена (пшеница, рожь, ячмень).' },
+  { id: 'Безлактозное', name: 'Безлактозное', description: 'Исключение молочных продуктов и лактозы.' },
+  { id: 'Низкоуглеводное', name: 'Низкоуглеводное', description: 'Ограничение углеводов до 50-100г в день. Акцент на белках и жирах.' },
+  { id: 'Высокобелковое', name: 'Высокобелковое', description: 'Повышенное содержание белка для роста мышц и восстановления.' },
+  { id: 'Средиземноморское', name: 'Средиземноморское', description: 'Много овощей, рыбы, оливкового масла.' },
+  { id: 'Кето', name: 'Кето', description: 'Очень низкое содержание углеводов (менее 20г), высокое содержание жиров (70-80%).' }
+];
 
 export default function CreateRecipeModal() {
   const router = useRouter();
@@ -70,8 +67,9 @@ export default function CreateRecipeModal() {
   const slideAnim = useRef(new Animated.Value(SCREEN_HEIGHT)).current;
   const scrollViewRef = useRef<ScrollView>(null);
   const [isVisible, setIsVisible] = useState(true);
+  const [dietInfoModalVisible, setDietInfoModalVisible] = useState(false);
+  const [selectedDietInfo, setSelectedDietInfo] = useState<{ name: string; description: string } | null>(null);
 
-  // Определяем режим: редактирование или создание
   const isEditMode = params.isEditMode === "true";
   const recipeId = params.recipeId as string | undefined;
 
@@ -82,36 +80,43 @@ export default function CreateRecipeModal() {
     mealType: params.mealType as string || 'Завтрак',
     difficulty: params.difficulty as string || 'Легко',
     cookingTime: params.cookingTime as string || '',
-    calories: params.calories as string || '',
-    proteins: params.proteins as string || '0',
-    fats: params.fats as string || '0',
-    carbohydrates: params.carbohydrates as string || '0',
+    totalCalories: params.totalCalories as string || '',
+    totalProteins: params.totalProteins as string || '0',
+    totalFats: params.totalFats as string || '0',
+    totalCarbohydrates: params.totalCarbohydrates as string || '0',
     weight: params.weight as string || '300',
     servings: params.servings as string || '1',
   });
   
-  // Состояния для изображения и загрузки
+  const [dietType, setDietType] = useState<DietType>('Обычное');
+  const [prepTime, setPrepTime] = useState('');
+  const [selectedCategories, setSelectedCategories] = useState<string[]>(() => {
+    if (params.categories) {
+      try {
+        return JSON.parse(params.categories as string);
+      } catch {
+        return [];
+      }
+    }
+    return [];
+  });
+  
   const [image, setImage] = useState<string | null>(params.imageUrl as string || null);
   const [loading, setLoading] = useState(false);
   const [uploadingImage, setUploadingImage] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadStage, setUploadStage] = useState<string>('');
   const [isPublic, setIsPublic] = useState(
-    params.isPublic === "true" || 
-    params.isPublic === "1" || 
-    false
+    params.isPublic === "true" || params.isPublic === "1" || false
   );
   
-  // Ингредиенты и шаги как массивы
   const [ingredients, setIngredients] = useState<Ingredient[]>(() => {
     if (params.ingredients && typeof params.ingredients === 'string' && params.ingredients !== '') {
       try {
         const parsed = JSON.parse(params.ingredients);
         if (Array.isArray(parsed)) {
-          // Если это массив строк
           if (typeof parsed[0] === 'string') {
             return parsed.map((item: string, index: number) => {
-              // Парсим строку вида "100 гр мука"
               const parts = item.split(' ');
               return {
                 id: (index + 1).toString(),
@@ -121,7 +126,6 @@ export default function CreateRecipeModal() {
               };
             });
           } else {
-            // Если это массив объектов
             return parsed.map((item: any, index: number) => ({
               id: (index + 1).toString(),
               amount: String(item.amount || item.quantity || ''),
@@ -149,7 +153,6 @@ export default function CreateRecipeModal() {
         }
       } catch (error) {
         console.log('Ошибка парсинга шагов:', error);
-        // Если инструкции переданы как массив строк
         try {
           const arrayParsed = JSON.parse(params.instructions);
           if (Array.isArray(arrayParsed)) {
@@ -166,7 +169,6 @@ export default function CreateRecipeModal() {
     return [{ id: '1', text: '' }];
   });
 
-  // Анимация открытия
   useEffect(() => {
     Animated.timing(slideAnim, {
       toValue: 0,
@@ -175,7 +177,6 @@ export default function CreateRecipeModal() {
     }).start();
   }, []);
 
-  // Закрытие с анимацией
   const handleClose = () => {
     Keyboard.dismiss();
     Animated.timing(slideAnim, {
@@ -188,13 +189,16 @@ export default function CreateRecipeModal() {
     });
   };
 
-  // Выбор изображения
+  const showDietInfo = (dietTypeInfo: typeof DIET_TYPES_WITH_INFO[0]) => {
+    setSelectedDietInfo({ name: dietTypeInfo.name, description: dietTypeInfo.description });
+    setDietInfoModalVisible(true);
+  };
+
   const pickImage = async () => {
     try {
       const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      
       if (status !== 'granted') {
-        Alert.alert('Доступ к галерее', 'Для выбора фото рецепта необходимо разрешение на доступ к галерее');
+        Alert.alert('Доступ к галерее', 'Для выбора фото рецепта необходимо разрешение');
         return;
       }
 
@@ -207,8 +211,7 @@ export default function CreateRecipeModal() {
       });
 
       if (!result.canceled && result.assets[0]) {
-        const selectedImage = result.assets[0];
-        setImage(selectedImage.uri);
+        setImage(result.assets[0].uri);
       }
     } catch (error) {
       console.error('Ошибка выбора изображения:', error);
@@ -216,24 +219,11 @@ export default function CreateRecipeModal() {
     }
   };
 
-  // Загрузка изображения в Cloudinary
-  const uploadImageToCloudinary = async (): Promise<{
-    url: string | null;
-    publicId: string | null;
-  }> => {
-    if (!image) {
-      console.log('⚠️ Нет изображения для загрузки');
-      return { url: null, publicId: null };
-    }
-
-    // Если изображение уже загружено (URL начинается с http), возвращаем его
-    if (image.startsWith('http')) {
-      console.log('✅ Изображение уже загружено, пропускаем загрузку');
-      return { url: image, publicId: null };
-    }
+  const uploadImageToCloudinary = async (): Promise<{ url: string | null; publicId: string | null }> => {
+    if (!image) return { url: null, publicId: null };
+    if (image.startsWith('http')) return { url: image, publicId: null };
 
     try {
-      console.log('🚀 Начинаем загрузку в Cloudinary...');
       setUploadingImage(true);
       setUploadProgress(0);
       setUploadStage('Подготовка изображения...');
@@ -241,30 +231,18 @@ export default function CreateRecipeModal() {
       const onProgress = (progress: UploadProgress) => {
         setUploadProgress(progress.percent);
         setUploadStage(`Загрузка: ${Math.round(progress.percent)}%`);
-        console.log(`📊 Прогресс загрузки: ${progress.percent.toFixed(1)}%`);
       };
 
-      const result = await cloudinaryService.uploadImage(
-        image,
-        { onProgress }
-      );
+      const result = await cloudinaryService.uploadImage(image, { onProgress });
 
       if (result.success && result.url && result.publicId) {
-        console.log('✅ Изображение успешно загружено!');
         setUploadStage('Завершение...');
-        
         await new Promise(resolve => setTimeout(resolve, 300));
-        
-        return {
-          url: result.url,
-          publicId: result.publicId,
-        };
-      } else {
-        console.error('❌ Ошибка загрузки:', result.error);
-        throw new Error(result.error || 'Не удалось загрузить изображение');
+        return { url: result.url, publicId: result.publicId };
       }
+      throw new Error(result.error || 'Не удалось загрузить изображение');
     } catch (error: any) {
-      console.error('❌ Критическая ошибка при загрузке:', error);
+      console.error('Ошибка при загрузке:', error);
       throw error;
     } finally {
       setUploadingImage(false);
@@ -273,14 +251,10 @@ export default function CreateRecipeModal() {
     }
   };
 
-  // Управление ингредиентами
   const addIngredient = () => {
     const newId = (ingredients.length + 1).toString();
     setIngredients([...ingredients, { id: newId, amount: '', unit: '', name: '' }]);
-    
-    setTimeout(() => {
-      scrollViewRef.current?.scrollToEnd({ animated: true });
-    }, 100);
+    setTimeout(() => scrollViewRef.current?.scrollToEnd({ animated: true }), 100);
   };
 
   const updateIngredient = (id: string, field: keyof Ingredient, value: string) => {
@@ -295,20 +269,14 @@ export default function CreateRecipeModal() {
     }
   };
 
-  // Управление шагами
   const addStep = () => {
     const newId = (steps.length + 1).toString();
     setSteps([...steps, { id: newId, text: '' }]);
-    
-    setTimeout(() => {
-      scrollViewRef.current?.scrollToEnd({ animated: true });
-    }, 100);
+    setTimeout(() => scrollViewRef.current?.scrollToEnd({ animated: true }), 100);
   };
 
   const updateStep = (id: string, value: string) => {
-    setSteps(steps.map(step => 
-      step.id === id ? { ...step, text: value } : step
-    ));
+    setSteps(steps.map(step => step.id === id ? { ...step, text: value } : step));
   };
 
   const removeStep = (id: string) => {
@@ -317,22 +285,27 @@ export default function CreateRecipeModal() {
     }
   };
 
-  // Валидация
+  const toggleCategory = (category: string) => {
+    if (selectedCategories.includes(category)) {
+      setSelectedCategories(selectedCategories.filter(c => c !== category));
+    } else {
+      setSelectedCategories([...selectedCategories, category]);
+    }
+  };
+
   const validateForm = (): string | null => {
     if (!form.title.trim()) return 'Введите название рецепта';
     if (!form.description.trim()) return 'Введите описание рецепта';
-    if (!form.cookingTime.trim()) return 'Введите время приготовления';
+    if (!form.cookingTime.trim() && !prepTime.trim()) return 'Введите время приготовления';
     if (!form.weight.trim()) return 'Введите вес блюда';
-    if (!form.calories.trim()) return 'Введите количество калорий';
+    if (!form.totalCalories.trim()) return 'Введите количество калорий на всё блюдо';
     
-    // Проверяем ингредиенты
     for (const ing of ingredients) {
       if (!ing.amount.trim() || !ing.name.trim()) {
         return 'Заполните все поля ингредиентов';
       }
     }
     
-    // Проверяем шаги
     for (const step of steps) {
       if (!step.text.trim()) {
         return 'Заполните все шаги приготовления';
@@ -342,7 +315,6 @@ export default function CreateRecipeModal() {
     return null;
   };
 
-  // Создание или обновление рецепта
   const handleSubmit = async () => {
     const error = validateForm();
     if (error) {
@@ -355,25 +327,16 @@ export default function CreateRecipeModal() {
 
     try {
       let imageUrl: string | undefined = undefined;
-      // 🌟 ИСПРАВЛЕНО: Вместо undefined изначально ставим null, который разрешен в Firestore
-      let cloudinaryPublicId: string | null = (params.cloudinaryPublicId as string) || null; 
+      let cloudinaryPublicId: string | null = (params.cloudinaryPublicId as string) || null;
       
-      // Загружаем изображение если есть и оно новое
       if (image && !image.startsWith('http')) {
-        console.log('📤 Загрузка нового изображения в Cloudinary...');
-        
         try {
           const uploadResult = await uploadImageToCloudinary();
-          
           if (uploadResult.url) {
             imageUrl = uploadResult.url;
-            cloudinaryPublicId = uploadResult.publicId; // Здесь запишется строка string
-            
-            console.log('✅ Изображение загружено успешно');
+            cloudinaryPublicId = uploadResult.publicId;
           }
         } catch (uploadError: any) {
-          console.error('❌ Ошибка загрузки изображения:', uploadError);
-          
           const shouldContinue = await new Promise((resolve) => {
             Alert.alert(
               'Не удалось загрузить фото',
@@ -384,98 +347,82 @@ export default function CreateRecipeModal() {
               ]
             );
           });
-          
           if (!shouldContinue) {
             setLoading(false);
             return;
           }
         }
       } else if (image && image.startsWith('http')) {
-        // Используем существующее изображение
         imageUrl = image;
-        // 🌟 ИСПРАВЛЕНО: cloudinaryPublicId уже подхватил старое значение из params выше
-        console.log('✅ Используем существующее изображение. PublicId:', cloudinaryPublicId);
       }
 
-      // Преобразуем ингредиенты в массив строк
       const ingredientsArray = ingredients.map(ing => 
         `${ing.amount} ${ing.unit} ${ing.name}`
       );
       
-      // Преобразуем шаги в массив строк
       const stepsArray = steps.map(step => step.text.trim());
 
-      // Подготавливаем данные для рецепта
-      // Меняем тип на any, чтобы TypeScript не ругался на замену типов undefined -> null
+      // Получаем общий вес блюда
+      const totalWeight = parseFloat(form.weight) || 0;
+      
+      // Рассчитываем КБЖУ на 100г
+      const totalCalories = parseFloat(form.totalCalories) || 0;
+      const totalProteins = parseFloat(form.totalProteins) || 0;
+      const totalFats = parseFloat(form.totalFats) || 0;
+      const totalCarbs = parseFloat(form.totalCarbohydrates) || 0;
+      
+      const nutritionPer100g = {
+        protein: totalWeight > 0 ? Math.round((totalProteins / totalWeight) * 100 * 10) / 10 : 0,
+        fat: totalWeight > 0 ? Math.round((totalFats / totalWeight) * 100 * 10) / 10 : 0,
+        carbs: totalWeight > 0 ? Math.round((totalCarbs / totalWeight) * 100 * 10) / 10 : 0,
+        calories: totalWeight > 0 ? Math.round((totalCalories / totalWeight) * 100) : 0,
+      };
+
+      // Получаем общее время приготовления
+      const totalPrepTime = parseInt(prepTime) || parseInt(form.cookingTime) || 20;
+
       const recipeData: any = {
         title: form.title.trim(),
         description: form.description.trim(),
+        categories: selectedCategories,
+        dietType: dietType,
+        prepTime: totalPrepTime,
+        cookingTime: totalPrepTime,
+        difficulty: form.difficulty,
+        ingredientsList: ingredientsArray.map(ing => ing.toLowerCase()),
+        steps: stepsArray,
+        nutritionPer100g: nutritionPer100g,
+        isPublic: isPublic,
+        imageUrl: imageUrl || null,
+        cloudinaryPublicId: cloudinaryPublicId,
         mealType: form.mealType,
-        difficultyLevel: form.difficulty,
-        cookingTime: parseInt(form.cookingTime) || 20,
-        calories: parseInt(form.calories) || 0,
-        proteins: parseInt(form.proteins) || 0,
-        fats: parseInt(form.fats) || 0,
-        carbohydrates: parseInt(form.carbohydrates) || 0,
         weight: form.weight.trim(),
         servings: parseInt(form.servings) || 1,
-        
-        // Используем текстовое представление
-        ingredientsText: ingredientsArray.join('\n'),
-        
-        // Массив строк для совместимости с типом Recipe
+        // Сохраняем полные значения на порцию для отображения
+        totalCalories: totalCalories,
+        totalProteins: totalProteins,
+        totalFats: totalFats,
+        totalCarbohydrates: totalCarbs,
+        calories: totalCalories, // для обратной совместимости
+        proteins: totalProteins,
+        fats: totalFats,
+        carbohydrates: totalCarbs,
         ingredients: ingredientsArray,
-        
-        // Массив строк для шагов
-        steps: stepsArray,
-        
-        // Обязательное поле tags
+        ingredientsText: ingredientsArray.join('\n'),
         tags: [],
-        
-        // 🌟 ИСПРАВЛЕНО: Если значения нет, пишем null вместо undefined
-        imageUrl: imageUrl || null, 
-        isPublic: isPublic,
-        cloudinaryPublicId: cloudinaryPublicId, // 🌟 ТЕПЕРЬ ТУТ СТРОГО STRING ИЛИ NULL
-        imageMetadata: imageUrl ? {
-          source: 'cloudinary',
-          publicId: cloudinaryPublicId,
-          uploadedAt: new Date().toISOString(),
-          inRecipesFolder: cloudinaryPublicId ? cloudinaryPublicId.startsWith('recipes/') : false,
-        } : null, // 🌟 ИСПРАВЛЕНО: null вместо undefined
       };
 
-      console.log(`💾 ${isEditMode ? 'Обновление' : 'Создание'} рецепта...`);
-      
       if (isEditMode && recipeId) {
-        // Редактирование существующего рецепта
         await recipeService.updateRecipe(recipeId, recipeData);
-        Alert.alert(
-          '✅ Успех!',
-          'Рецепт успешно обновлен',
-          [{ text: 'ОК', onPress: handleClose }]
-        );
+        Alert.alert('✅ Успех!', 'Рецепт успешно обновлен', [{ text: 'ОК', onPress: handleClose }]);
       } else {
-        // Создание нового рецепта
-        const createData = {
-          ...recipeData,
-        };
-        
-        const createdRecipe = await recipeService.createRecipe(createData);
-        
-        console.log('✅ Рецепт успешно создан! ID:', createdRecipe.id);
-        Alert.alert(
-          '🎉 Успех!',
-          'Рецепт успешно создан',
-          [{ text: 'ОК', onPress: handleClose }]
-        );
+        await recipeService.createRecipe(recipeData);
+        Alert.alert('🎉 Успех!', 'Рецепт успешно создан', [{ text: 'ОК', onPress: handleClose }]);
       }
       
     } catch (error: any) {
-      console.error(`❌ Ошибка ${isEditMode ? 'обновления' : 'создания'} рецепта:`, error);
-      Alert.alert(
-        'Ошибка', 
-        error.message || `Не удалось ${isEditMode ? 'обновить' : 'создать'} рецепт. Попробуйте еще раз.`
-      );
+      console.error(`Ошибка ${isEditMode ? 'обновления' : 'создания'} рецепта:`, error);
+      Alert.alert('Ошибка', error.message || `Не удалось ${isEditMode ? 'обновить' : 'создать'} рецепт`);
     } finally {
       setLoading(false);
     }
@@ -487,6 +434,26 @@ export default function CreateRecipeModal() {
 
   const mealTypes = ['Завтрак', 'Обед', 'Ужин', 'Перекусы'];
   const difficulties = ['Легко', 'Средне', 'Сложно'];
+
+  // Автоматический расчет КБЖУ на 100г при изменении веса или общего КБЖУ
+  const calculatePer100g = () => {
+    const weight = parseFloat(form.weight) || 0;
+    if (weight === 0) return { calories: 0, proteins: 0, fats: 0, carbs: 0 };
+    
+    const totalCalories = parseFloat(form.totalCalories) || 0;
+    const totalProteins = parseFloat(form.totalProteins) || 0;
+    const totalFats = parseFloat(form.totalFats) || 0;
+    const totalCarbs = parseFloat(form.totalCarbohydrates) || 0;
+    
+    return {
+      calories: Math.round((totalCalories / weight) * 100),
+      proteins: Math.round((totalProteins / weight) * 100 * 10) / 10,
+      fats: Math.round((totalFats / weight) * 100 * 10) / 10,
+      carbs: Math.round((totalCarbs / weight) * 100 * 10) / 10,
+    };
+  };
+
+  const per100g = calculatePer100g();
 
   return (
     <Modal
@@ -504,15 +471,11 @@ export default function CreateRecipeModal() {
               { transform: [{ translateY: slideAnim }] }
             ]}
           >
-            {/* Хедер с заголовком и крестиком */}
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>
                 {isEditMode ? 'Редактировать рецепт' : 'Создать рецепт'}
               </Text>
-              <TouchableOpacity 
-                onPress={handleClose}
-                style={styles.closeButton}
-              >
+              <TouchableOpacity onPress={handleClose} style={styles.closeButton}>
                 <Ionicons name="close" size={24} color="#6A9AA9" />
               </TouchableOpacity>
             </View>
@@ -525,12 +488,12 @@ export default function CreateRecipeModal() {
               <ScrollView 
                 ref={scrollViewRef}
                 style={styles.scrollView}
-                showsVerticalScrollIndicator={false}
+                showsVerticalScrollIndicator={true}
                 contentContainerStyle={styles.scrollContainer}
                 keyboardShouldPersistTaps="handled"
                 keyboardDismissMode="on-drag"
-                scrollEventThrottle={16}
                 bounces={true}
+                nestedScrollEnabled={true}
               >
                 <View style={styles.form}>
                   {/* Название */}
@@ -557,7 +520,6 @@ export default function CreateRecipeModal() {
                       onChangeText={(value) => updateForm('description', value)}
                       multiline
                       numberOfLines={3}
-                      maxLength={500}
                     />
                   </View>
 
@@ -570,180 +532,189 @@ export default function CreateRecipeModal() {
                       </Text>
                     </View>
                     
-                    {/* Кнопка выбора изображения */}
                     <TouchableOpacity 
-                      style={[
-                        styles.imageButton,
-                        uploadingImage && styles.imageButtonDisabled
-                      ]}
+                      style={[styles.imageButton, uploadingImage && styles.imageButtonDisabled]}
                       onPress={pickImage}
                       disabled={uploadingImage}
                     >
-                      <Ionicons 
-                        name={image ? "image" : "image-outline"} 
-                        size={24} 
-                        color={uploadingImage ? "#999" : "#6A9AA9"} 
-                      />
-                      <Text style={[
-                        styles.imageButtonText,
-                        uploadingImage && styles.imageButtonTextDisabled
-                      ]}>
+                      <Ionicons name={image ? "image" : "image-outline"} size={24} color={uploadingImage ? "#999" : "#6A9AA9"} />
+                      <Text style={[styles.imageButtonText, uploadingImage && styles.imageButtonTextDisabled]}>
                         {image ? (image.startsWith('http') ? 'Изменить фото' : 'Заменить фото') : 'Добавить фото'}
                       </Text>
                     </TouchableOpacity>
                     
-                    {/* Контейнер состояния загрузки */}
                     {uploadingImage && (
                       <View style={styles.uploadStatusContainer}>
                         <View style={styles.uploadStatusHeader}>
                           <ActivityIndicator size="small" color="#6A9AA9" style={styles.uploadSpinner} />
                           <Text style={styles.uploadStatusTitle}>Загрузка фотографии</Text>
                         </View>
-                        
-                        {/* Прогресс-бар */}
                         <View style={styles.progressContainer}>
                           <View style={styles.progressBar}>
-                            <View 
-                              style={[
-                                styles.progressFill,
-                                { width: `${uploadProgress}%` }
-                              ]} 
-                            />
+                            <View style={[styles.progressFill, { width: `${uploadProgress}%` }]} />
                           </View>
                           <View style={styles.progressInfo}>
-                            <Text style={styles.progressText}>
-                              {uploadStage || `Загрузка: ${Math.round(uploadProgress)}%`}
-                            </Text>
+                            <Text style={styles.progressText}>{uploadStage || `Загрузка: ${Math.round(uploadProgress)}%`}</Text>
                             <Text style={styles.progressPercent}>{Math.round(uploadProgress)}%</Text>
                           </View>
                         </View>
-                        
-                        <Text style={styles.uploadHint}>
-                          Пожалуйста, не закрывайте приложение
-                        </Text>
+                        <Text style={styles.uploadHint}>Пожалуйста, не закрывайте приложение</Text>
                       </View>
                     )}
                     
-                    {/* Предпросмотр изображения */}
                     {image && !uploadingImage && (
                       <View style={styles.previewContainer}>
-                        <Image 
-                          source={{ uri: image }} 
-                          style={styles.previewImage} 
-                          resizeMode="cover"
-                        />
+                        <Image source={{ uri: image }} style={styles.previewImage} resizeMode="cover" />
                         <View style={styles.previewOverlay}>
-                          <Ionicons 
-                            name={image.startsWith('http') ? "checkmark-circle" : "cloud-upload"} 
-                            size={20} 
-                            color={image.startsWith('http') ? "#4CAF50" : "#6A9AA9"} 
-                          />
-                          <Text style={styles.previewStatus}>
-                            {image.startsWith('http') ? 'Загружено' : 'Готово к загрузке'}
-                          </Text>
+                          <Ionicons name={image.startsWith('http') ? "checkmark-circle" : "cloud-upload"} size={20} color={image.startsWith('http') ? "#4CAF50" : "#6A9AA9"} />
+                          <Text style={styles.previewStatus}>{image.startsWith('http') ? 'Загружено' : 'Готово к загрузке'}</Text>
                         </View>
                       </View>
                     )}
                   </View>
 
-                  {/* Категория */}
+                  {/* Категории */}
                   <View style={styles.inputGroup}>
-                    <Text style={styles.label}>Категория *</Text>
+                    <Text style={styles.label}>Категории</Text>
+                    <Text style={styles.hint}>Выберите одну или несколько категорий</Text>
                     <View style={styles.optionsContainer}>
-                      {mealTypes.map((type) => (
+                      {AVAILABLE_CATEGORIES.map((category) => (
                         <TouchableOpacity
-                          key={type}
+                          key={category}
                           style={[
                             styles.optionButton,
-                            form.mealType === type && styles.optionButtonActive,
+                            selectedCategories.includes(category) && styles.optionButtonActive,
                           ]}
-                          onPress={() => updateForm('mealType', type)}
+                          onPress={() => toggleCategory(category)}
                         >
                           <Text style={[
                             styles.optionText,
-                            form.mealType === type && styles.optionTextActive,
+                            selectedCategories.includes(category) && styles.optionTextActive,
                           ]}>
-                            {type}
+                            {category}
                           </Text>
                         </TouchableOpacity>
                       ))}
                     </View>
                   </View>
 
-                  {/* Сложность */}
+                  {/* Тип питания с иконкой информации */}
                   <View style={styles.inputGroup}>
-                    <Text style={styles.label}>Сложность *</Text>
+                    <View style={styles.sectionHeader}>
+                      <Text style={styles.label}>Тип питания *</Text>
+                      <TouchableOpacity 
+                        style={styles.infoIcon}
+                        onPress={() => {
+                          const allTypes = DIET_TYPES_WITH_INFO.map(d => `${d.name}: ${d.description}`).join('\n\n');
+                          Alert.alert('Типы питания', allTypes);
+                        }}
+                      >
+                        <Ionicons name="information-circle-outline" size={20} color="#6A9AA9" />
+                      </TouchableOpacity>
+                    </View>
+                    <Text style={styles.hint}>Выберите подходящий тип питания</Text>
                     <View style={styles.optionsContainer}>
-                      {difficulties.map((diff) => (
+                      {DIET_TYPES_WITH_INFO.map((type) => (
                         <TouchableOpacity
-                          key={diff}
+                          key={type.id}
                           style={[
                             styles.optionButton,
-                            form.difficulty === diff && styles.optionButtonActive,
+                            dietType === type.id && styles.optionButtonActive,
                           ]}
-                          onPress={() => updateForm('difficulty', diff)}
+                          onPress={() => setDietType(type.id as DietType)}
                         >
                           <Text style={[
                             styles.optionText,
-                            form.difficulty === diff && styles.optionTextActive,
+                            dietType === type.id && styles.optionTextActive,
                           ]}>
-                            {diff}
+                            {type.name}
                           </Text>
                         </TouchableOpacity>
                       ))}
                     </View>
                   </View>
 
-                  {/* Время приготовления, Вес и Порции */}
+                  {/* Время приготовления и сложность */}
                   <View style={styles.row}>
                     <View style={[styles.inputGroup, styles.equalInput]}>
                       <Text style={styles.label}>Время (мин) *</Text>
                       <TextInput
                         style={styles.smallInput}
-                        placeholder="20"
+                        placeholder="30"
                         placeholderTextColor="#999"
-                        value={form.cookingTime}
-                        onChangeText={(value) => updateForm('cookingTime', value)}
                         keyboardType="numeric"
+                        value={prepTime || form.cookingTime}
+                        onChangeText={setPrepTime}
                       />
                     </View>
 
                     <View style={[styles.inputGroup, styles.equalInput]}>
-                      <Text style={styles.label}>Вес (гр) *</Text>
+                      <Text style={styles.label}>Сложность *</Text>
+                      <View style={styles.optionsRow}>
+                        {difficulties.map((diff) => (
+                          <TouchableOpacity
+                            key={diff}
+                            style={[
+                              styles.smallOptionButton,
+                              form.difficulty === diff && styles.optionButtonActive,
+                            ]}
+                            onPress={() => updateForm('difficulty', diff)}
+                          >
+                            <Text style={[
+                              styles.smallOptionText,
+                              form.difficulty === diff && styles.optionTextActive,
+                            ]}>
+                              {diff}
+                            </Text>
+                          </TouchableOpacity>
+                        ))}
+                      </View>
+                    </View>
+                  </View>
+
+                  {/* Вес и порции */}
+                  <View style={styles.row}>
+                    <View style={[styles.inputGroup, styles.equalInput]}>
+                      <Text style={styles.label}>Вес блюда (гр) *</Text>
                       <TextInput
                         style={styles.smallInput}
-                        placeholder="300 гр"
+                        placeholder="300"
                         placeholderTextColor="#999"
+                        keyboardType="numeric"
                         value={form.weight}
                         onChangeText={(value) => updateForm('weight', value)}
                       />
                     </View>
 
                     <View style={[styles.inputGroup, styles.equalInput]}>
-                      <Text style={styles.label}>Порции *</Text>
+                      <Text style={styles.label}>Количество порций *</Text>
                       <TextInput
                         style={styles.smallInput}
                         placeholder="1"
                         placeholderTextColor="#999"
+                        keyboardType="numeric"
                         value={form.servings}
                         onChangeText={(value) => updateForm('servings', value)}
-                        keyboardType="numeric"
                       />
                     </View>
                   </View>
 
-                  {/* КБЖУ */}
+                  {/* КБЖУ на всё блюдо */}
                   <View style={styles.inputGroup}>
-                    <Text style={styles.label}>Пищевая ценность *</Text>
+                    <View style={styles.sectionHeader}>
+                      <Text style={styles.label}>Пищевая ценность на всё блюдо *</Text>
+                    </View>
+                    <Text style={styles.hint}>Укажите общие значения для всего блюда</Text>
+                    
                     <View style={styles.nutritionGrid}>
                       <View style={styles.nutritionItem}>
-                        <Text style={styles.nutritionLabel}>Калории</Text>
+                        <Text style={styles.nutritionLabel}>Калории (ккал)</Text>
                         <TextInput
                           style={styles.nutritionInput}
                           placeholder="0"
                           placeholderTextColor="#999"
-                          value={form.calories}
-                          onChangeText={(value) => updateForm('calories', value)}
+                          value={form.totalCalories}
+                          onChangeText={(value) => updateForm('totalCalories', value)}
                           keyboardType="numeric"
                         />
                       </View>
@@ -753,8 +724,8 @@ export default function CreateRecipeModal() {
                           style={styles.nutritionInput}
                           placeholder="0"
                           placeholderTextColor="#999"
-                          value={form.proteins}
-                          onChangeText={(value) => updateForm('proteins', value)}
+                          value={form.totalProteins}
+                          onChangeText={(value) => updateForm('totalProteins', value)}
                           keyboardType="numeric"
                         />
                       </View>
@@ -764,8 +735,8 @@ export default function CreateRecipeModal() {
                           style={styles.nutritionInput}
                           placeholder="0"
                           placeholderTextColor="#999"
-                          value={form.fats}
-                          onChangeText={(value) => updateForm('fats', value)}
+                          value={form.totalFats}
+                          onChangeText={(value) => updateForm('totalFats', value)}
                           keyboardType="numeric"
                         />
                       </View>
@@ -775,22 +746,32 @@ export default function CreateRecipeModal() {
                           style={styles.nutritionInput}
                           placeholder="0"
                           placeholderTextColor="#999"
-                          value={form.carbohydrates}
-                          onChangeText={(value) => updateForm('carbohydrates', value)}
+                          value={form.totalCarbohydrates}
+                          onChangeText={(value) => updateForm('totalCarbohydrates', value)}
                           keyboardType="numeric"
                         />
                       </View>
                     </View>
+                    
+                    {/* Показываем рассчитанные значения на 100г */}
+                    {form.weight && parseFloat(form.weight) > 0 && (
+                      <View style={styles.per100gContainer}>
+                        <Text style={styles.per100gTitle}>
+                          <Ionicons name="calculator-outline" size={14} color="#6A9AA9" /> 
+                          {' '}Рассчитано на 100г:
+                        </Text>
+                        <Text style={styles.per100gText}>
+                          {per100g.calories} ккал • {per100g.proteins}г белков • {per100g.fats}г жиров • {per100g.carbs}г углеводов
+                        </Text>
+                      </View>
+                    )}
                   </View>
 
-                  {/* Ингредиенты */}
+                  {/* Ингредиенты с количеством */}
                   <View style={styles.inputGroup}>
                     <View style={styles.sectionHeader}>
                       <Text style={styles.label}>Ингредиенты *</Text>
-                      <TouchableOpacity 
-                        style={styles.addButton}
-                        onPress={addIngredient}
-                      >
+                      <TouchableOpacity style={styles.addButton} onPress={addIngredient}>
                         <Ionicons name="add-circle" size={24} color="#6A9AA9" />
                       </TouchableOpacity>
                     </View>
@@ -832,10 +813,7 @@ export default function CreateRecipeModal() {
                         </View>
                         
                         {ingredients.length > 1 && (
-                          <TouchableOpacity 
-                            style={styles.removeButton}
-                            onPress={() => removeIngredient(ingredient.id)}
-                          >
+                          <TouchableOpacity style={styles.removeButton} onPress={() => removeIngredient(ingredient.id)}>
                             <Ionicons name="trash-outline" size={18} color="#F44336" />
                           </TouchableOpacity>
                         )}
@@ -847,10 +825,7 @@ export default function CreateRecipeModal() {
                   <View style={styles.inputGroup}>
                     <View style={styles.sectionHeader}>
                       <Text style={styles.label}>Шаги приготовления *</Text>
-                      <TouchableOpacity 
-                        style={styles.addButton}
-                        onPress={addStep}
-                      >
+                      <TouchableOpacity style={styles.addButton} onPress={addStep}>
                         <Ionicons name="add-circle" size={24} color="#6A9AA9" />
                       </TouchableOpacity>
                     </View>
@@ -871,10 +846,7 @@ export default function CreateRecipeModal() {
                           />
                         </View>
                         {steps.length > 1 && (
-                          <TouchableOpacity 
-                            style={styles.removeButton}
-                            onPress={() => removeStep(step.id)}
-                          >
+                          <TouchableOpacity style={styles.removeButton} onPress={() => removeStep(step.id)}>
                             <Ionicons name="trash-outline" size={18} color="#F44336" />
                           </TouchableOpacity>
                         )}
@@ -887,52 +859,25 @@ export default function CreateRecipeModal() {
                     <Text style={styles.label}>Видимость рецепта</Text>
                     <View style={styles.visibilityButtons}>
                       <TouchableOpacity
-                        style={[
-                          styles.visibilityButton,
-                          isPublic && styles.visibilityButtonActive,
-                        ]}
+                        style={[styles.visibilityButton, isPublic && styles.visibilityButtonActive]}
                         onPress={() => setIsPublic(true)}
                       >
-                        <Ionicons 
-                          name={isPublic ? "earth" : "earth-outline"} 
-                          size={20} 
-                          color={isPublic ? "#000000" : "#666"} 
-                        />
-                        <Text style={[
-                          styles.visibilityButtonText,
-                          isPublic && styles.visibilityButtonTextActive,
-                        ]}>
-                          Публичный
-                        </Text>
+                        <Ionicons name={isPublic ? "earth" : "earth-outline"} size={20} color={isPublic ? "#000000" : "#666"} />
+                        <Text style={[styles.visibilityButtonText, isPublic && styles.visibilityButtonTextActive]}>Публичный</Text>
                       </TouchableOpacity>
                       <TouchableOpacity
-                        style={[
-                          styles.visibilityButton,
-                          !isPublic && styles.visibilityButtonActive,
-                        ]}
+                        style={[styles.visibilityButton, !isPublic && styles.visibilityButtonActive]}
                         onPress={() => setIsPublic(false)}
                       >
-                        <Ionicons 
-                          name={!isPublic ? "lock-closed" : "lock-closed-outline"} 
-                          size={20} 
-                          color={!isPublic ? "#000000" : "#666"} 
-                        />
-                        <Text style={[
-                          styles.visibilityButtonText,
-                          !isPublic && styles.visibilityButtonTextActive,
-                        ]}>
-                          Приватный
-                        </Text>
+                        <Ionicons name={!isPublic ? "lock-closed" : "lock-closed-outline"} size={20} color={!isPublic ? "#000000" : "#666"} />
+                        <Text style={[styles.visibilityButtonText, !isPublic && styles.visibilityButtonTextActive]}>Приватный</Text>
                       </TouchableOpacity>
                     </View>
                   </View>
 
-                  {/* Кнопка сохранения/создания */}
+                  {/* Кнопка сохранения */}
                   <TouchableOpacity 
-                    style={[
-                      styles.submitButton, 
-                      (loading || uploadingImage) && styles.submitButtonDisabled
-                    ]}
+                    style={[styles.submitButton, (loading || uploadingImage) && styles.submitButtonDisabled]}
                     onPress={handleSubmit}
                     disabled={loading || uploadingImage}
                   >
@@ -953,9 +898,8 @@ export default function CreateRecipeModal() {
                     )}
                   </TouchableOpacity>
 
-                  <Text style={styles.hintText}>
-                    * - обязательные поля для заполнения
-                  </Text>
+                  <Text style={styles.hintText}>* - обязательные поля для заполнения</Text>
+                  <Text style={styles.hintText}>📊 КБЖУ на 100г рассчитываются автоматически</Text>
                 </View>
               </ScrollView>
             </KeyboardAvoidingView>
@@ -966,407 +910,92 @@ export default function CreateRecipeModal() {
   );
 }
 
-
 const styles = StyleSheet.create({
-  overlay: {
-    flex: 1,
-    backgroundColor: '#FFFFFF',
-  },
-  modalContainer: {
-    flex: 1,
-    backgroundColor: '#FFFFFF',
-  },
+  overlay: { flex: 1, backgroundColor: '#FFFFFF' },
+  modalContainer: { flex: 1, backgroundColor: '#FFFFFF' },
   modalHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 20,
-    paddingTop: 20, 
-    paddingBottom: 20,
+    paddingTop: 50,
+    paddingBottom: 16,
     backgroundColor: '#FFFFFF',
     borderBottomWidth: 1,
     borderBottomColor: '#E0E0E0',
   },
-  modalTitle: {
-    fontSize: 18,
-    fontFamily: 'Playfair Display Bold',
-    color: '#1a1a1a',
-    textAlign: 'center',
-    flex: 1,
-  },
-  closeButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: '#F8F8F8',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#E0E0E0',
-  },
-  keyboardView: {
-    flex: 1,
-  },
-  scrollView: {
-    flex: 1,
-  },
-  scrollContainer: {
-    paddingBottom: 100,
-  },
-  form: {
-    paddingHorizontal: 20,
-  },
-  inputGroup: {
-    marginBottom: 20,
-  },
-  row: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 20,
-    gap: 8,
-  },
-  equalInput: {
-    flex: 1,
-  },
-  label: {
-    fontSize: 14,
-    color: '#666',
-    marginBottom: 8,
-    fontFamily: 'Playfair Display Regular',
-  },
-  optionalText: {
-    color: '#999',
-    fontSize: 12,
-    fontFamily: 'Playfair Display Regular',
-  },
-  smallLabel: {
-    fontSize: 11,
-    color: '#999',
-    marginBottom: 4,
-    fontFamily: 'Playfair Display Regular',
-  },
-  input: {
-    backgroundColor: '#F8F8F8',
-    borderWidth: 1,
-    borderColor: '#C2DAE2',
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    fontSize: 16,
-    color: '#1a1a1a',
-    fontFamily: 'Playfair Display Regular',
-    minHeight: 50,
-  },
-  smallInput: {
-    backgroundColor: '#F8F8F8',
-    borderWidth: 1,
-    borderColor: '#C2DAE2',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 14,
-    color: '#1a1a1a',
-    fontFamily: 'Playfair Display Regular',
-  },
-  textArea: {
-    minHeight: 100,
-    textAlignVertical: 'top',
-    paddingTop: 12,
-    paddingBottom: 12,
-  },
-  optionsContainer: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  optionButton: {
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 20,
-    backgroundColor: '#F8F8F8',
-    borderWidth: 2,
-    borderColor: '#C2DAE2',
-    minWidth: 80,
-    alignItems: 'center',
-  },
-  optionButtonActive: {
-    backgroundColor: '#9BDF11',
-    borderColor: '#9BDF11',
-  },
-  optionText: {
-    fontSize: 14,
-    color: '#666',
-    fontFamily: 'Playfair Display Regular',
-  },
-  optionTextActive: {
-    color: '#000000',
-    fontFamily: 'Playfair Display Bold',
-  },
-  imageButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#F8F8F8',
-    borderWidth: 2,
-    borderColor: '#C2DAE2',
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    gap: 12,
-  },
-  imageButtonDisabled: {
-    opacity: 0.6,
-    backgroundColor: '#F0F0F0',
-  },
-  imageButtonText: {
-    fontSize: 16,
-    color: '#6A9AA9',
-    fontFamily: 'Playfair Display Regular',
-  },
-  imageButtonTextDisabled: {
-    color: '#999',
-  },
-  // Новые стили для статуса загрузки
-  uploadStatusContainer: {
-    marginTop: 12,
-    padding: 16,
-    backgroundColor: '#F8F8F8',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#C2DAE2',
-  },
-  uploadStatusHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  uploadSpinner: {
-    marginRight: 8,
-  },
-  uploadStatusTitle: {
-    fontSize: 14,
-    color: '#1a1a1a',
-    fontFamily: 'Playfair Display Bold',
-  },
-  progressContainer: {
-    marginBottom: 8,
-  },
-  progressBar: {
-    height: 6,
-    backgroundColor: '#E0E0E0',
-    borderRadius: 3,
-    overflow: 'hidden',
-    marginBottom: 8,
-  },
-  progressFill: {
-    height: '100%',
-    backgroundColor: '#6A9AA9',
-    borderRadius: 3,
-  },
-  progressInfo: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  progressText: {
-    fontSize: 12,
-    color: '#666',
-    fontFamily: 'Playfair Display Regular',
-    flex: 1,
-  },
-  progressPercent: {
-    fontSize: 12,
-    color: '#6A9AA9',
-    fontFamily: 'Playfair Display Bold',
-    marginLeft: 8,
-  },
-  uploadHint: {
-    fontSize: 11,
-    color: '#999',
-    fontStyle: 'italic',
-    textAlign: 'center',
-    fontFamily: 'Playfair Display Regular',
-    marginTop: 4,
-  },
-  previewContainer: {
-    marginTop: 12,
-    position: 'relative',
-  },
-  previewImage: {
-    width: '100%',
-    height: 200,
-    borderRadius: 12,
-    backgroundColor: '#F8F8F8',
-  },
-  previewOverlay: {
-    position: 'absolute',
-    top: 8,
-    right: 8,
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.9)',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 16,
-    gap: 4,
-  },
-  previewStatus: {
-    fontSize: 11,
-    color: '#4CAF50',
-    fontFamily: 'Playfair Display Regular',
-  },
-  nutritionGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    justifyContent: 'space-between',
-  },
-  nutritionItem: {
-    width: '48%',
-    marginBottom: 8,
-  },
-  nutritionLabel: {
-    fontSize: 12,
-    color: '#666',
-    marginBottom: 4,
-    fontFamily: 'Playfair Display Regular',
-  },
-  nutritionInput: {
-    backgroundColor: '#F8F8F8',
-    borderWidth: 1,
-    borderColor: '#C2DAE2',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 14,
-    color: '#1a1a1a',
-    fontFamily: 'Playfair Display Regular',
-    textAlign: 'center',
-  },
-  sectionHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  addButton: {
-    padding: 4,
-  },
-  ingredientRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    marginBottom: 12,
-    gap: 8,
-  },
-  ingredientInputGroup: {
-    flex: 1,
-  },
-  ingredientName: {
-    flex: 2,
-  },
-  ingredientInput: {
-    minHeight: 44,
-  },
-  stepRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    marginBottom: 12,
-    gap: 8,
-  },
-  stepNumber: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: '#6A9AA9',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginTop: 12,
-  },
-  stepNumberText: {
-    fontSize: 12,
-    color: '#FFFFFF',
-    fontFamily: 'Playfair Display Bold',
-  },
-  stepInputContainer: {
-    flex: 1,
-  },
-  stepInput: {
-    minHeight: 80,
-  },
-  removeButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: '#F8F8F8',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginTop: 12,
-    borderWidth: 1,
-    borderColor: '#E0E0E0',
-  },
-  visibilityButtons: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  visibilityButton: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#F8F8F8',
-    borderWidth: 2,
-    borderColor: '#C2DAE2',
-    borderRadius: 12,
-    paddingVertical: 12,
-    gap: 8,
-  },
-  visibilityButtonActive: {
-    backgroundColor: '#9BDF11',
-    borderColor: '#9BDF11',
-  },
-  visibilityButtonText: {
-    fontSize: 14,
-    color: '#666',
-    fontFamily: 'Playfair Display Regular',
-  },
-  visibilityButtonTextActive: {
-    color: '#000000',
-    fontFamily: 'Playfair Display Bold',
-  },
-  submitButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#9BDF11',
-    paddingVertical: 18,
-    borderRadius: 16,
-    gap: 12,
-    marginBottom: 12,
-    borderWidth: 2,
-    borderColor: '#C2DAE2',
-  },
-  submitButtonDisabled: {
-    backgroundColor: '#C2DAE2',
-  },
-  submitButtonContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 12,
-  },
-  buttonSpinner: {
-    marginRight: 8,
-  },
-  submitButtonText: {
-    color: '#000000',
-    fontSize: 16,
-    fontFamily: 'Playfair Display Bold',
-  },
-  hintText: {
-    fontSize: 12,
-    color: '#999',
-    textAlign: 'center',
-    fontFamily: 'Playfair Display Regular',
-    fontStyle: 'italic',
-    marginTop: 8,
-  },
+  modalTitle: { fontSize: 18, fontFamily: 'Playfair Display Bold', color: '#1a1a1a', textAlign: 'center', flex: 1 },
+  closeButton: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#F8F8F8', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: '#E0E0E0' },
+  keyboardView: { flex: 1 },
+  scrollView: { flex: 1, backgroundColor: '#FFFFFF' },
+  scrollContainer: { paddingBottom: 40, paddingTop: 8 },
+  form: { paddingHorizontal: 16 },
+  inputGroup: { marginBottom: 20 },
+  row: { flexDirection: 'row', justifyContent: 'space-between', gap: 12 },
+  equalInput: { flex: 1 },
+  label: { fontSize: 14, color: '#666', marginBottom: 8, fontFamily: 'Playfair Display Bold' },
+  optionalText: { color: '#999', fontSize: 12, fontFamily: 'Playfair Display Regular' },
+  smallLabel: { fontSize: 11, color: '#999', marginBottom: 4, fontFamily: 'Playfair Display Regular' },
+  hint: { fontSize: 12, color: '#999', marginBottom: 8, fontFamily: 'Playfair Display Regular' },
+  input: { backgroundColor: '#F8F8F8', borderWidth: 1, borderColor: '#C2DAE2', borderRadius: 12, paddingHorizontal: 16, paddingVertical: 12, fontSize: 16, color: '#1a1a1a', minHeight: 50, fontFamily: 'Playfair Display Regular' },
+  smallInput: { backgroundColor: '#F8F8F8', borderWidth: 1, borderColor: '#C2DAE2', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, fontSize: 14, color: '#1a1a1a', fontFamily: 'Playfair Display Regular' },
+  textArea: { minHeight: 100, textAlignVertical: 'top', paddingTop: 12, paddingBottom: 12 },
+  optionsContainer: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  optionsRow: { flexDirection: 'row', gap: 8 },
+  optionButton: { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 20, backgroundColor: '#F8F8F8', borderWidth: 2, borderColor: '#C2DAE2', minWidth: 80, alignItems: 'center' },
+  optionButtonActive: { backgroundColor: '#9BDF11', borderColor: '#9BDF11' },
+  optionText: { fontSize: 14, color: '#666', fontFamily: 'Playfair Display Regular' },
+  smallOptionButton: { flex: 1, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 20, backgroundColor: '#F8F8F8', borderWidth: 2, borderColor: '#C2DAE2', alignItems: 'center' },
+  smallOptionText: { fontSize: 12, color: '#666', fontFamily: 'Playfair Display Regular' },
+  optionTextActive: { color: '#000000', fontFamily: 'Playfair Display Bold' },
+  imageButton: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F8F8F8', borderWidth: 2, borderColor: '#C2DAE2', borderRadius: 12, paddingHorizontal: 16, paddingVertical: 14, gap: 12 },
+  imageButtonDisabled: { opacity: 0.6, backgroundColor: '#F0F0F0' },
+  imageButtonText: { fontSize: 16, color: '#6A9AA9', fontFamily: 'Playfair Display Regular' },
+  imageButtonTextDisabled: { color: '#999' },
+  uploadStatusContainer: { marginTop: 12, padding: 16, backgroundColor: '#F8F8F8', borderRadius: 12, borderWidth: 1, borderColor: '#C2DAE2' },
+  uploadStatusHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 12 },
+  uploadSpinner: { marginRight: 8 },
+  uploadStatusTitle: { fontSize: 14, color: '#1a1a1a', fontFamily: 'Playfair Display Bold' },
+  progressContainer: { marginBottom: 8 },
+  progressBar: { height: 6, backgroundColor: '#E0E0E0', borderRadius: 3, overflow: 'hidden', marginBottom: 8 },
+  progressFill: { height: '100%', backgroundColor: '#6A9AA9', borderRadius: 3 },
+  progressInfo: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  progressText: { fontSize: 12, color: '#666', flex: 1, fontFamily: 'Playfair Display Regular' },
+  progressPercent: { fontSize: 12, color: '#6A9AA9', marginLeft: 8, fontFamily: 'Playfair Display Bold' },
+  uploadHint: { fontSize: 11, color: '#999', fontStyle: 'italic', textAlign: 'center', marginTop: 4, fontFamily: 'Playfair Display Regular' },
+  previewContainer: { marginTop: 12, position: 'relative' },
+  previewImage: { width: '100%', height: 200, borderRadius: 12, backgroundColor: '#F8F8F8' },
+  previewOverlay: { position: 'absolute', top: 8, right: 8, flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.9)', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 16, gap: 4 },
+  previewStatus: { fontSize: 11, color: '#4CAF50', fontFamily: 'Playfair Display Regular' },
+  nutritionGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, justifyContent: 'space-between' },
+  nutritionItem: { width: '48%', marginBottom: 8 },
+  nutritionLabel: { fontSize: 12, color: '#666', marginBottom: 4, fontFamily: 'Playfair Display Regular' },
+  nutritionInput: { backgroundColor: '#F8F8F8', borderWidth: 1, borderColor: '#C2DAE2', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, fontSize: 14, textAlign: 'center', fontFamily: 'Playfair Display Regular' },
+  per100gContainer: { marginTop: 12, padding: 12, backgroundColor: '#E8F5E9', borderRadius: 10, borderWidth: 1, borderColor: '#C8E6C9' },
+  per100gTitle: { fontSize: 12, fontWeight: '600', color: '#2E7D32', marginBottom: 6, fontFamily: 'Playfair Display Bold' },
+  per100gText: { fontSize: 12, color: '#1B5E20', fontFamily: 'Playfair Display Regular', lineHeight: 18 },
+  sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
+  infoIcon: { padding: 4 },
+  addButton: { padding: 4 },
+  ingredientRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginBottom: 12 },
+  ingredientInputGroup: { flex: 1 },
+  ingredientName: { flex: 2 },
+  ingredientInput: { minHeight: 44 },
+  stepRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginBottom: 12 },
+  stepNumber: { width: 28, height: 28, borderRadius: 14, backgroundColor: '#6A9AA9', justifyContent: 'center', alignItems: 'center', marginTop: 12 },
+  stepNumberText: { fontSize: 12, color: '#FFFFFF', fontFamily: 'Playfair Display Bold' },
+  stepInputContainer: { flex: 1 },
+  stepInput: { minHeight: 80 },
+  removeButton: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#F8F8F8', justifyContent: 'center', alignItems: 'center', marginTop: 12, borderWidth: 1, borderColor: '#E0E0E0' },
+  visibilityButtons: { flexDirection: 'row', gap: 12 },
+  visibilityButton: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#F8F8F8', borderWidth: 2, borderColor: '#C2DAE2', borderRadius: 12, paddingVertical: 12, gap: 8 },
+  visibilityButtonActive: { backgroundColor: '#9BDF11', borderColor: '#9BDF11' },
+  visibilityButtonText: { fontSize: 14, color: '#666', fontFamily: 'Playfair Display Regular' },
+  visibilityButtonTextActive: { color: '#000000', fontFamily: 'Playfair Display Bold' },
+  submitButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#9BDF11', paddingVertical: 18, borderRadius: 16, gap: 12, marginBottom: 12, borderWidth: 2, borderColor: '#C2DAE2' },
+  submitButtonDisabled: { backgroundColor: '#C2DAE2' },
+  submitButtonContent: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 12 },
+  buttonSpinner: { marginRight: 8 },
+  submitButtonText: { color: '#000000', fontSize: 16, fontFamily: 'Playfair Display Bold' },
+  hintText: { fontSize: 12, color: '#999', textAlign: 'center', fontStyle: 'italic', marginTop: 8, fontFamily: 'Playfair Display Regular' },
 });

@@ -19,36 +19,62 @@ import {
 } from "firebase/firestore";
 import { db, auth } from "@/app/firebase/config";
 
-// Максимальное количество документов за один запрос
 const RECIPES_PER_PAGE = 20;
 
+// Типы питания
+export type DietType = 'Обычное' | 'Вегетарианское' | 'Веганское' | 'Безглютеновое' | 'Безлактозное' | 'Низкоуглеводное' | 'Высокобелковое' | 'Средиземноморское' | 'Кето';
+
+// Питательная ценность на 100г
+export interface NutritionPer100g {
+  protein: number;
+  fat: number;
+  carbs: number;
+  calories: number;
+}
+
+// НОВЫЙ ИНТЕРФЕЙС ДЛЯ ИНГРЕДИЕНТОВ С ВЕСАМИ
+export interface IngredientWithWeight {
+  name: string;
+  amount: number;
+  unit: string; // "г", "мл", "шт", "ст.л.", "ч.л."
+}
+
+// Обновленный интерфейс Recipe
 export interface Recipe {
-  id: string;
+  id?: string;
   title: string;
   description?: string;
-  userId: string;
-  isPublic: boolean;
-  mealType: string;
-  difficultyLevel: string;
-  averageRating: number;
-  ratingsCount: number;
-  calories: number;
-  proteins: number;
-  fats: number;
-  carbohydrates: number;
-  cookingTime: number | string; 
-  ingredients: string[];
-  ingredientsText?: string; 
+  categories: string[];
+  dietType: DietType;
+  prepTime: number;
+  difficulty: string;
+  ingredientsList: string[];      // Массив названий ингредиентов (для проверки аллергий)
+  ingredientsWithWeights?: IngredientWithWeight[];  // НОВОЕ ПОЛЕ: ингредиенты с граммовками
   steps: string[];
-  tags: string[];
-  imageUrl?: string;
-  weight?: string;
+  nutritionPer100g: NutritionPer100g;
+  caloriesPerGram: number;
+  totalWeight?: number;
   servings?: number;
+  imageUrl?: string;
   cloudinaryPublicId?: string;
-  imageMetadata?: any;
+  isPublic: boolean;
+  userId: string;
   createdAt: Date | Timestamp;
   updatedAt: Date | Timestamp;
-  category?: string; 
+  // Для обратной совместимости со старыми методами
+  averageRating?: number;
+  ratingsCount?: number;
+  likesCount?: number;
+  savesCount?: number;
+  tags?: string[];
+  weight?: string;
+  mealType?: string;
+  calories?: number;
+  proteins?: number;
+  fats?: number;
+  carbohydrates?: number;
+  ingredients?: string[];
+  ingredientsText?: string;
 }
 
 interface RecipesResponse {
@@ -60,14 +86,15 @@ interface RecipesResponse {
 }
 
 interface Filters {
-  mealType?: string;
+  categories?: string[];
+  dietType?: DietType;
   difficulty?: string;
-  minRating?: number;
+  maxPrepTime?: number;
   search?: string;
+  excludeIngredients?: string[];
 }
 
 class RecipeService {
-  // СУЩЕСТВУЮЩИЕ МЕТОДЫ (оставляем без изменений)
   async updateRecipeRatingStats(
     recipeId: string,
     countChange: number,
@@ -75,14 +102,11 @@ class RecipeService {
   ): Promise<void> {
     try {
       if (!recipeId) throw new Error("Recipe ID is required");
-
       const recipeRef = doc(db, "recipes", recipeId);
-
       await updateDoc(recipeRef, {
         ratingsCount: increment(countChange),
+        averageRating: ratingChange ? increment(ratingChange) : undefined,
       });
-
-      console.log(`Recipe ${recipeId} ratingsCount updated by ${countChange}`);
     } catch (error) {
       console.error("Error updating recipe rating stats:", error);
       throw error;
@@ -111,16 +135,20 @@ class RecipeService {
       const applyFilters = (baseQuery: any) => {
         let q = baseQuery;
 
-        if (filters.mealType) {
-          q = query(q, where("mealType", "==", filters.mealType));
+        if (filters.categories && filters.categories.length > 0) {
+          q = query(q, where("categories", "array-contains-any", filters.categories));
+        }
+
+        if (filters.dietType) {
+          q = query(q, where("dietType", "==", filters.dietType));
         }
 
         if (filters.difficulty) {
-          q = query(q, where("difficultyLevel", "==", filters.difficulty));
+          q = query(q, where("difficulty", "==", filters.difficulty));
         }
 
-        if (filters.minRating) {
-          q = query(q, where("averageRating", ">=", filters.minRating));
+        if (filters.maxPrepTime) {
+          q = query(q, where("prepTime", "<=", filters.maxPrepTime));
         }
 
         q = query(q, orderBy(sortField, sortDirection));
@@ -178,12 +206,8 @@ class RecipeService {
             recipe.title.toLowerCase().includes(searchLower) ||
             (recipe.description &&
               recipe.description.toLowerCase().includes(searchLower)) ||
-            (Array.isArray(recipe.tags) &&
-              recipe.tags.some((tag) =>
-                tag.toLowerCase().includes(searchLower)
-              )) ||
-            (recipe.ingredientsText &&
-              recipe.ingredientsText.toLowerCase().includes(searchLower))
+            (recipe.ingredientsList &&
+              recipe.ingredientsList.some(ing => ing.toLowerCase().includes(searchLower)))
         );
       }
 
@@ -206,7 +230,6 @@ class RecipeService {
       if (!user) return [];
 
       const recipesRef = collection(db, "recipes");
-
       const userQ = query(recipesRef, where("userId", "==", user.uid));
       const publicQ = query(recipesRef, where("isPublic", "==", true));
 
@@ -222,10 +245,7 @@ class RecipeService {
       });
 
       publicSnapshot.docs.forEach((doc) => {
-        if (
-          !allRecipesMap.has(doc.id) ||
-          (doc.data() as Recipe).userId !== user.uid
-        ) {
+        if (!allRecipesMap.has(doc.id)) {
           allRecipesMap.set(doc.id, { id: doc.id, ...doc.data() } as Recipe);
         }
       });
@@ -260,42 +280,26 @@ class RecipeService {
     }
   }
 
-  async createRecipe(
-    recipeData: Omit<
-      Recipe,
-      | "id"
-      | "createdAt"
-      | "updatedAt"
-      | "userId"
-      | "likesCount"
-      | "savesCount"
-      | "averageRating"
-      | "ratingsCount"
-    >
-  ): Promise<Recipe> {
+  async createRecipe(recipeData: Omit<Recipe, "id" | "createdAt" | "updatedAt" | "userId" | "averageRating" | "ratingsCount" | "likesCount" | "savesCount">): Promise<Recipe> {
     try {
       const user = auth.currentUser;
       if (!user) throw new Error("User not authenticated");
 
-      const recipeWithMetadata: Omit<Recipe, "id"> = {
+      const caloriesPerGram = recipeData.nutritionPer100g.calories / 100;
+
+      const recipeWithMetadata: any = {
         ...recipeData,
         userId: user.uid,
+        caloriesPerGram,
         likesCount: 0,
         savesCount: 0,
         averageRating: 0,
         ratingsCount: 0,
-        calories: recipeData.calories || 0,
-        proteins: recipeData.proteins || 0,
-        fats: recipeData.fats || 0,
-        carbohydrates: recipeData.carbohydrates || 0,
         createdAt: Timestamp.now(),
         updatedAt: Timestamp.now(),
-      } as Omit<Recipe, "id">;
+      };
 
-      const docRef = await addDoc(
-        collection(db, "recipes"),
-        recipeWithMetadata
-      );
+      const docRef = await addDoc(collection(db, "recipes"), recipeWithMetadata);
       return { id: docRef.id, ...recipeWithMetadata } as Recipe;
     } catch (error) {
       console.error("Error creating recipe:", error);
@@ -321,6 +325,10 @@ class RecipeService {
       const recipeData = recipeDoc.data() as Recipe;
       if (recipeData.userId !== user.uid) {
         throw new Error("Not authorized to update this recipe");
+      }
+
+      if (updates.nutritionPer100g) {
+        updates.caloriesPerGram = updates.nutritionPer100g.calories / 100;
       }
 
       await updateDoc(recipeRef, {
@@ -362,10 +370,8 @@ class RecipeService {
 
   async getUserRecipes(userId?: string | null): Promise<Recipe[]> {
     try {
-      // Определяем, какой userId использовать
       let targetUserId = userId;
 
-      // Если userId не передан, пробуем взять из текущего пользователя
       if (!targetUserId) {
         const user = auth.currentUser;
         if (!user) {
@@ -399,11 +405,6 @@ class RecipeService {
     }
   }
 
-  // НОВЫЕ МЕТОДЫ ДЛЯ РАБОТЫ С ВЫБОРОМ РЕЦЕПТОВ
-
-  /**
-   * Получает все публичные рецепты + рецепты текущего пользователя
-   */
   async getAllRecipes(): Promise<Recipe[]> {
     try {
       console.log('📋 Загрузка всех рецептов (публичные + пользовательские)...');
@@ -411,36 +412,21 @@ class RecipeService {
       const user = auth.currentUser;
       if (!user) {
         console.log('Пользователь не авторизован, загружаем только публичные рецепты');
-        // Загружаем только публичные рецепты если пользователь не авторизован
         const publicRecipes = await this.getPublicRecipes();
         return publicRecipes;
       }
 
-      // Загружаем публичные рецепты
       const publicRecipes = await this.getPublicRecipes();
-      
-      // Загружаем рецепты пользователя
       const userRecipes = await this.getUserRecipes(user.uid);
       
-      // Объединяем, убирая дубликаты
       const allRecipesMap = new Map<string, Recipe>();
       
-      // Сначала добавляем публичные
-      publicRecipes.forEach(recipe => {
-        allRecipesMap.set(recipe.id, recipe);
-      });
-      
-      // Затем добавляем рецепты пользователя (перезаписывая если есть дубликаты)
-      userRecipes.forEach(recipe => {
-        allRecipesMap.set(recipe.id, recipe);
-      });
+      publicRecipes.forEach(recipe => allRecipesMap.set(recipe.id!, recipe));
+      userRecipes.forEach(recipe => allRecipesMap.set(recipe.id!, recipe));
       
       const allRecipes = Array.from(allRecipesMap.values());
       
       console.log(`✅ Загружено всего рецептов: ${allRecipes.length}`);
-      console.log(`📊 Публичных: ${publicRecipes.length}`);
-      console.log(`👤 Пользовательских: ${userRecipes.length}`);
-      
       return allRecipes;
     } catch (error) {
       console.error('❌ Ошибка загрузки всех рецептов:', error);
@@ -448,9 +434,6 @@ class RecipeService {
     }
   }
 
-  /**
-   * Получает только публичные рецепты
-   */
   async getPublicRecipes(): Promise<Recipe[]> {
     try {
       console.log('📋 Загрузка публичных рецептов...');
@@ -478,43 +461,40 @@ class RecipeService {
     }
   }
 
-  /**
-   * Ищет рецепты по названию, описанию или тегам
-   */
-  async searchRecipes(searchTerm: string, category?: string): Promise<Recipe[]> {
+  async searchRecipes(searchTerm: string, filters?: Filters): Promise<Recipe[]> {
     try {
       console.log(`🔍 Поиск рецептов: "${searchTerm}"`);
       
-      // Получаем все доступные рецепты
       const allRecipes = await this.getAllRecipes();
-      
       const searchLower = searchTerm.toLowerCase();
       
-      // Фильтруем рецепты
       let filteredRecipes = allRecipes.filter(recipe => {
-        // Поиск по названию
         const titleMatch = recipe.title.toLowerCase().includes(searchLower);
-        
-        // Поиск по описанию
         const descriptionMatch = recipe.description?.toLowerCase().includes(searchLower) || false;
-        
-        // Поиск по тегам
-        const tagsMatch = Array.isArray(recipe.tags) && 
-          recipe.tags.some(tag => tag.toLowerCase().includes(searchLower));
-        
-        // Поиск по типу блюда
-        const mealTypeMatch = recipe.mealType?.toLowerCase().includes(searchLower) || false;
-        
-        return titleMatch || descriptionMatch || tagsMatch || mealTypeMatch;
+        const ingredientsMatch = recipe.ingredientsList?.some(ing => ing.toLowerCase().includes(searchLower)) || false;
+        return titleMatch || descriptionMatch || ingredientsMatch;
       });
       
-      // Дополнительная фильтрация по категории если указана
-      if (category) {
-        const categoryLower = category.toLowerCase();
-        filteredRecipes = filteredRecipes.filter(recipe => 
-          recipe.mealType?.toLowerCase().includes(categoryLower) ||
-          recipe.category?.toLowerCase().includes(categoryLower)
-        );
+      if (filters) {
+        if (filters.dietType) {
+          filteredRecipes = filteredRecipes.filter(r => r.dietType === filters.dietType);
+        }
+        if (filters.maxPrepTime) {
+          filteredRecipes = filteredRecipes.filter(r => r.prepTime <= filters.maxPrepTime!);
+        }
+        if (filters.difficulty) {
+          filteredRecipes = filteredRecipes.filter(r => r.difficulty === filters.difficulty);
+        }
+        if (filters.categories && filters.categories.length > 0) {
+          filteredRecipes = filteredRecipes.filter(r => 
+            r.categories.some(cat => filters.categories!.includes(cat))
+          );
+        }
+        if (filters.excludeIngredients && filters.excludeIngredients.length > 0) {
+          filteredRecipes = filteredRecipes.filter(r => 
+            !r.ingredientsList.some(ing => filters.excludeIngredients!.includes(ing))
+          );
+        }
       }
       
       console.log(`✅ Найдено рецептов: ${filteredRecipes.length}`);
@@ -525,22 +505,16 @@ class RecipeService {
     }
   }
 
-  /**
-   * Получает рецепты по категории
-   */
   async getRecipesByCategory(category: string): Promise<Recipe[]> {
     try {
       console.log(`📂 Загрузка рецептов категории: ${category}`);
       
       const allRecipes = await this.getAllRecipes();
-      
       const categoryLower = category.toLowerCase();
-      const filteredRecipes = allRecipes.filter(recipe => {
-        return (
-          recipe.mealType?.toLowerCase().includes(categoryLower) ||
-          recipe.category?.toLowerCase().includes(categoryLower)
-        );
-      });
+      
+      const filteredRecipes = allRecipes.filter(recipe => 
+        recipe.categories.some(cat => cat.toLowerCase().includes(categoryLower))
+      );
       
       console.log(`✅ Найдено рецептов в категории: ${filteredRecipes.length}`);
       return filteredRecipes;
@@ -550,22 +524,16 @@ class RecipeService {
     }
   }
 
-  /**
-   * Получает рецепты для дневного плана (упрощенная версия)
-   * для быстрого обновления при выборе рецепта
-   */
   async getMealPlanRecipes(): Promise<Recipe[]> {
     try {
       const user = auth.currentUser;
       if (!user) return [];
       
-      // Получаем публичные рецепты
       const publicQuery = query(
         collection(db, "recipes"),
         where("isPublic", "==", true)
       );
       
-      // Получаем рецепты пользователя
       const userQuery = query(
         collection(db, "recipes"),
         where("userId", "==", user.uid)
@@ -597,9 +565,6 @@ class RecipeService {
     }
   }
 
-  /**
-   * Получает количество рецептов пользователя
-   */
   async getUserRecipesCount(): Promise<number> {
     try {
       const user = auth.currentUser;
@@ -613,8 +578,6 @@ class RecipeService {
     }
   }
 }
-
-
 
 export const recipeService = new RecipeService();
 export default recipeService;

@@ -33,13 +33,19 @@ interface FullRecipeData {
   title: string;
   mealType: string;
   description: string;
-  calories: number;
-  proteins: number;
-  fats: number;
-  carbohydrates: number;
-  weight: string;
-  cookingTime: string;
-  servings: string;
+  // КБЖУ на 100г
+  caloriesPer100g: number;
+  proteinsPer100g: number;
+  fatsPer100g: number;
+  carbsPer100g: number;
+  // Общее КБЖУ на всё блюдо
+  totalCalories: number;
+  totalProteins: number;
+  totalFats: number;
+  totalCarbs: number;
+  totalWeight: number;
+  servings: number;
+  cookingTime: number;
   difficulty: string;
   averageRating: number;
   totalRatings: number;
@@ -51,6 +57,17 @@ interface FullRecipeData {
 declare const __app_id: string | undefined;
 declare const __firebase_config: string | undefined;
 declare const __initial_auth_token: string | undefined;
+
+const formatMinutes = (minutes: number): string => {
+  const absMinutes = Math.abs(minutes);
+  const lastDigit = absMinutes % 10;
+  const lastTwoDigits = absMinutes % 100;
+
+  if (lastTwoDigits >= 11 && lastTwoDigits <= 14) return `${absMinutes} минут`;
+  if (lastDigit === 1) return `${absMinutes} минута`;
+  if (lastDigit >= 2 && lastDigit <= 4) return `${absMinutes} минуты`;
+  return `${absMinutes} минут`;
+};
 
 const getCategoryIcon = (category: string | undefined) => {
   const normalizedCategory = String(category || "").trim().toLowerCase();
@@ -98,25 +115,36 @@ const DifficultyBadge = ({ difficulty }: { difficulty: string }) => {
   );
 };
 
-const fallbackMealData = (mealName: string, mealType: string): FullRecipeData => ({
-  id: "fallback",
-  title: mealName,
-  mealType: mealType,
-  description: "Это стандартный, зарезервированный рецепт, используемый в качестве запасного варианта.",
-  calories: 450,
-  proteins: 15,
-  fats: 10,
-  carbohydrates: 70,
-  weight: "300 гр.",
-  cookingTime: "10 мин",
-  servings: "1 чел.",
-  difficulty: "Легкая",
-  averageRating: 4.5,
-  totalRatings: 53,
-  ingredients: ["300 мл. молока", "1 банан", "100 гр. овсянки", "1 ст. ложка меда", "100 гр. ягод"],
-  instructions: ["Разогреть молоко", "Добавить овсянку и мед", "Снять с огня, добавить фрукты"],
-  imageUrl: undefined,
-});
+const fallbackMealData = (mealName: string, mealType: string): FullRecipeData => {
+  // Генерируем случайный вес для демонстрации
+  const randomWeight = [250, 300, 350, 400, 450][Math.floor(Math.random() * 5)];
+  const totalCalories = Math.floor(Math.random() * 500) + 300;
+  const caloriesPer100g = Math.round((totalCalories / randomWeight) * 100);
+  
+  return {
+    id: "fallback",
+    title: mealName,
+    mealType: mealType,
+    description: "Это стандартный, зарезервированный рецепт, используемый в качестве запасного варианта.",
+    caloriesPer100g: caloriesPer100g,
+    proteinsPer100g: Math.round(caloriesPer100g * 0.04 * 10) / 10,
+    fatsPer100g: Math.round(caloriesPer100g * 0.03 * 10) / 10,
+    carbsPer100g: Math.round(caloriesPer100g * 0.13 * 10) / 10,
+    totalCalories: totalCalories,
+    totalProteins: Math.round(totalCalories * 0.04),
+    totalFats: Math.round(totalCalories * 0.03),
+    totalCarbs: Math.round(totalCalories * 0.13),
+    totalWeight: randomWeight,
+    servings: 1,
+    cookingTime: 10,
+    difficulty: "Легко",
+    averageRating: 4.5,
+    totalRatings: 53,
+    ingredients: ["300 мл. молока", "1 банан", "100 гр. овсянки", "1 ст. ложка меда", "100 гр. ягод"],
+    instructions: ["Разогреть молоко", "Добавить овсянку и мед", "Снять с огня, добавить фрукты"],
+    imageUrl: undefined,
+  };
+};
 
 export default function Meal() {
   const router = useRouter();
@@ -137,8 +165,8 @@ export default function Meal() {
   const proteins = Array.isArray(params.proteins) ? params.proteins[0] : params.proteins || "20";
   const fats = Array.isArray(params.fats) ? params.fats[0] : params.fats || "10";
   const carbohydrates = Array.isArray(params.carbohydrates) ? params.carbohydrates[0] : params.carbohydrates || "30";
-  const weight = Array.isArray(params.weight) ? params.weight[0] : params.weight || "250г";
-  const cookingTime = Array.isArray(params.cookingTime) ? params.cookingTime[0] : params.cookingTime || "20 минут";
+  const weight = Array.isArray(params.weight) ? params.weight[0] : params.weight || "250";
+  const cookingTimeParam = Array.isArray(params.cookingTime) ? params.cookingTime[0] : params.cookingTime || "20";
 
   const isFromHome = fromScreen === "home";
   const isCustomMeal = isCustom === "true";
@@ -244,81 +272,157 @@ export default function Meal() {
   };
 
   const loadRecipeDetails = useCallback(async () => {
-    if (hasLoadedRef.current) return;
-    if (!isAuthReady || !db) {
+  if (hasLoadedRef.current) return;
+  if (!isAuthReady || !db) {
+    setLoading(false);
+    return;
+  }
+
+  hasLoadedRef.current = true;
+  setLoading(true);
+
+  try {
+    if (isCustomMeal) {
+      const totalWeight = parseFloat(weight) || 250;
+      const totalCal = Number(calories) || 300;
+      const totalProt = Number(proteins) || 20;
+      const totalFat = Number(fats) || 10;
+      const totalCarb = Number(carbohydrates) || 30;
+      
+      setRecipeDetails({
+        id: mealId,
+        title: mealName,
+        mealType: mealTypeParam || category || "Обед",
+        description: "Этот рецепт был добавлен вами в дневной рацион.",
+        caloriesPer100g: totalWeight > 0 ? Math.round((totalCal / totalWeight) * 100) : 0,
+        proteinsPer100g: totalWeight > 0 ? Math.round((totalProt / totalWeight) * 100 * 10) / 10 : 0,
+        fatsPer100g: totalWeight > 0 ? Math.round((totalFat / totalWeight) * 100 * 10) / 10 : 0,
+        carbsPer100g: totalWeight > 0 ? Math.round((totalCarb / totalWeight) * 100 * 10) / 10 : 0,
+        totalCalories: totalCal,
+        totalProteins: totalProt,
+        totalFats: totalFat,
+        totalCarbs: totalCarb,
+        totalWeight: totalWeight,
+        servings: 1,
+        cookingTime: typeof cookingTimeParam === 'number' ? cookingTimeParam : parseInt(cookingTimeParam, 10) || 20,
+        difficulty: difficultyLevel || "Легко",
+        averageRating: Number(rating) || 0,
+        totalRatings: 0,
+        ingredients: ["Ингредиенты не указаны"],
+        instructions: ["Инструкции не указаны"],
+        imageUrl: imageUrl || undefined,
+      });
       setLoading(false);
       return;
     }
 
-    hasLoadedRef.current = true;
-    setLoading(true);
-
-    try {
-      if (isCustomMeal) {
-        setRecipeDetails({
-          id: mealId,
-          title: mealName,
-          mealType: mealTypeParam || category || "Обед",
-          description: "Этот рецепт был добавлен вами в дневной рацион.",
-          calories: Number(calories) || 300,
-          proteins: Number(proteins) || 20,
-          fats: Number(fats) || 10,
-          carbohydrates: Number(carbohydrates) || 30,
-          weight: weight || "250г",
-          imageUrl: imageUrl || undefined,
-          cookingTime: cookingTime || "20 минут",
-          servings: "1 порция",
-          difficulty: difficultyLevel || "Легко",
-          averageRating: Number(rating) || 0,
-          totalRatings: 0,
-          ingredients: ["Ингредиенты не указаны"],
-          instructions: ["Инструкции не указаны"],
-        });
-        setLoading(false);
-        return;
-      }
-
-      const actualRecipeId = recipeId || mealId;
-      if (!actualRecipeId || actualRecipeId === "undefined" || actualRecipeId === "null") {
-        setRecipeDetails(fallbackMealData(mealName, mealTypeParam || category || "Обед"));
-        setLoading(false);
-        return;
-      }
-
-      const docRef = doc(db, "recipes", actualRecipeId);
-      const docSnap = await getDoc(docRef);
-
-      if (docSnap.exists()) {
-        const data = docSnap.data();
-        setRecipeDetails({
-          id: actualRecipeId,
-          title: data.title || mealName,
-          mealType: data.mealType || mealTypeParam || category || "Обед",
-          description: data.description || "Описание не предоставлено.",
-          calories: data.calories || Number(calories) || 0,
-          proteins: data.proteins || Number(proteins) || 0,
-          fats: data.fats || Number(fats) || 0,
-          carbohydrates: data.carbohydrates || Number(carbohydrates) || 0,
-          weight: data.weight || weight || "300 гр.",
-          imageUrl: data.imageUrl || imageUrl || undefined,
-          cookingTime: data.cookingTime || cookingTime || "15 мин",
-          servings: data.servings || "1 порция",
-          difficulty: data.difficultyLevel || difficultyLevel || "Средняя",
-          averageRating: data.averageRating || Number(rating) || 0,
-          totalRatings: data.ratingsCount || 0,
-          ingredients: formatIngredients(data.ingredients),
-          instructions: formatSteps(data.steps || data.instructions),
-        });
-      } else {
-        setRecipeDetails(fallbackMealData(mealName, mealTypeParam || category || "Обед"));
-      }
-    } catch (error) {
-      console.error("Error loading recipe:", error);
+    const actualRecipeId = recipeId || mealId;
+    if (!actualRecipeId || actualRecipeId === "undefined" || actualRecipeId === "null") {
       setRecipeDetails(fallbackMealData(mealName, mealTypeParam || category || "Обед"));
-    } finally {
       setLoading(false);
+      return;
     }
-  }, [isAuthReady, db, mealId, recipeId, mealName, mealTypeParam, category, isCustomMeal, calories, proteins, fats, carbohydrates, weight, cookingTime, difficultyLevel, rating, imageUrl]);
+
+    const docRef = doc(db, "recipes", actualRecipeId);
+    const docSnap = await getDoc(docRef);
+
+    if (docSnap.exists()) {
+      const data = docSnap.data();
+      
+      // Получаем время приготовления
+      let cookingTimeValue = 20;
+      if (data.cookingTime) {
+        cookingTimeValue = typeof data.cookingTime === 'number' ? data.cookingTime : parseInt(data.cookingTime, 10) || 20;
+      } else if (data.prepTime) {
+        cookingTimeValue = typeof data.prepTime === 'number' ? data.prepTime : parseInt(data.prepTime, 10) || 20;
+      } else if (cookingTimeParam) {
+        cookingTimeValue = typeof cookingTimeParam === 'number' ? cookingTimeParam : parseInt(cookingTimeParam, 10) || 20;
+      }
+      
+      // Получаем вес блюда (сохраняем исходный вес)
+      const totalWeight = parseFloat(data.totalWeight) || parseFloat(data.weight) || 100;
+      
+      // Получаем КБЖУ на 100г из nutritionPer100g или вычисляем из общих значений
+      let caloriesPer100g = 0;
+      let proteinsPer100g = 0;
+      let fatsPer100g = 0;
+      let carbsPer100g = 0;
+      let totalCalories = 0;
+      let totalProteins = 0;
+      let totalFats = 0;
+      let totalCarbs = 0;
+      
+      if (data.nutritionPer100g && data.nutritionPer100g.calories) {
+        // Используем данные на 100г
+        caloriesPer100g = data.nutritionPer100g.calories || 0;
+        proteinsPer100g = data.nutritionPer100g.protein || 0;
+        fatsPer100g = data.nutritionPer100g.fat || 0;
+        carbsPer100g = data.nutritionPer100g.carbs || 0;
+        
+        // Вычисляем общие значения на основе веса блюда
+        totalCalories = Math.round((caloriesPer100g * totalWeight) / 100);
+        totalProteins = Math.round((proteinsPer100g * totalWeight) / 100 * 10) / 10;
+        totalFats = Math.round((fatsPer100g * totalWeight) / 100 * 10) / 10;
+        totalCarbs = Math.round((carbsPer100g * totalWeight) / 100 * 10) / 10;
+      } else if (data.totalCalories) {
+        // Используем общие значения (на всё блюдо)
+        totalCalories = data.totalCalories || Number(calories) || 0;
+        totalProteins = data.totalProteins || Number(proteins) || 0;
+        totalFats = data.totalFats || Number(fats) || 0;
+        totalCarbs = data.totalCarbohydrates || Number(carbohydrates) || 0;
+        
+        // Вычисляем на 100г
+        caloriesPer100g = totalWeight > 0 ? Math.round((totalCalories / totalWeight) * 100) : 0;
+        proteinsPer100g = totalWeight > 0 ? Math.round((totalProteins / totalWeight) * 100 * 10) / 10 : 0;
+        fatsPer100g = totalWeight > 0 ? Math.round((totalFats / totalWeight) * 100 * 10) / 10 : 0;
+        carbsPer100g = totalWeight > 0 ? Math.round((totalCarbs / totalWeight) * 100 * 10) / 10 : 0;
+      } else {
+        // Используем старые поля (на порцию) - предполагаем, что это на вес блюда
+        totalCalories = data.calories || Number(calories) || 0;
+        totalProteins = data.proteins || Number(proteins) || 0;
+        totalFats = data.fats || Number(fats) || 0;
+        totalCarbs = data.carbohydrates || Number(carbohydrates) || 0;
+        
+        // Вычисляем на 100г
+        caloriesPer100g = totalWeight > 0 ? Math.round((totalCalories / totalWeight) * 100) : 0;
+        proteinsPer100g = totalWeight > 0 ? Math.round((totalProteins / totalWeight) * 100 * 10) / 10 : 0;
+        fatsPer100g = totalWeight > 0 ? Math.round((totalFats / totalWeight) * 100 * 10) / 10 : 0;
+        carbsPer100g = totalWeight > 0 ? Math.round((totalCarbs / totalWeight) * 100 * 10) / 10 : 0;
+      }
+      
+      setRecipeDetails({
+        id: actualRecipeId,
+        title: data.title || mealName,
+        mealType: data.mealType || data.categories?.[0] || mealTypeParam || category || "Обед",
+        description: data.description || "Описание не предоставлено.",
+        caloriesPer100g: caloriesPer100g,
+        proteinsPer100g: proteinsPer100g,
+        fatsPer100g: fatsPer100g,
+        carbsPer100g: carbsPer100g,
+        totalCalories: totalCalories,
+        totalProteins: totalProteins,
+        totalFats: totalFats,
+        totalCarbs: totalCarbs,
+        totalWeight: totalWeight,
+        servings: data.servings || 1,
+        cookingTime: cookingTimeValue,
+        difficulty: data.difficultyLevel || data.difficulty || difficultyLevel || "Средне",
+        averageRating: data.averageRating || Number(rating) || 0,
+        totalRatings: data.ratingsCount || 0,
+        ingredients: formatIngredients(data.ingredients || data.ingredientsList),
+        instructions: formatSteps(data.steps || data.instructions),
+        imageUrl: data.imageUrl || imageUrl || undefined,
+      });
+    } else {
+      setRecipeDetails(fallbackMealData(mealName, mealTypeParam || category || "Обед"));
+    }
+  } catch (error) {
+    console.error("Error loading recipe:", error);
+    setRecipeDetails(fallbackMealData(mealName, mealTypeParam || category || "Обед"));
+  } finally {
+    setLoading(false);
+  }
+}, [isAuthReady, db, mealId, recipeId, mealName, mealTypeParam, category, isCustomMeal, calories, proteins, fats, carbohydrates, weight, cookingTimeParam, difficultyLevel, rating, imageUrl]);
 
   useEffect(() => {
     if (isAuthReady && db) {
@@ -409,15 +513,15 @@ export default function Meal() {
         id: `meal-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
         category: newRecipeData.category || newRecipeData.mealType || category,
         name: newRecipeData.title,
-        calories: newRecipeData.calories || 0,
-        proteins: newRecipeData.proteins || 0,
-        fats: newRecipeData.fats || 0,
-        carbohydrates: newRecipeData.carbohydrates || 0,
-        weight: newRecipeData.weight || "250г",
+        calories: newRecipeData.totalCalories || newRecipeData.calories || 0,
+        proteins: newRecipeData.totalProteins || newRecipeData.proteins || 0,
+        fats: newRecipeData.totalFats || newRecipeData.fats || 0,
+        carbohydrates: newRecipeData.totalCarbs || newRecipeData.carbohydrates || 0,
+        weight: newRecipeData.totalWeight || newRecipeData.weight || "250",
         marked: false,
         cookingTime: typeof newRecipeData.cookingTime === 'number' ? newRecipeData.cookingTime : 20,
-        difficultyLevel: newRecipeData.difficultyLevel || "Легко",
-        rating: newRecipeData.rating || 0,
+        difficultyLevel: newRecipeData.difficulty || "Легко",
+        rating: newRecipeData.averageRating || 0,
         recipeId: newRecipeData.id,
         isCustom: false,
         canBeRemoved: true,
@@ -464,7 +568,6 @@ export default function Meal() {
   // Обертка для замены с проверкой авторизации
   const confirmReplaceMeal = useCallback((newRecipeData: any) => {
     if (!isAuthReady || !currentUser?.uid) {
-      // Если еще не авторизованы, сохраняем данные для отложенной замены
       console.log("⏳ Waiting for auth to complete...");
       setPendingReplaceData(newRecipeData);
       Alert.alert("Информация", "Пожалуйста, подождите, идет авторизация...");
@@ -537,7 +640,6 @@ export default function Meal() {
     router.back();
   };
 
-  // Функции для оценок
   const handleLike = async () => {
     setLiked(true);
     Alert.alert("Спасибо", "Спасибо за вашу оценку!");
@@ -574,6 +676,12 @@ export default function Meal() {
   }
 
   const iconInfo = getCategoryIcon(currentMealData.mealType);
+  const cookingTimeFormatted = formatMinutes(currentMealData.cookingTime);
+  
+  // Форматируем вес для отображения
+  const weightDisplay = currentMealData.totalWeight >= 1000 
+    ? `${(currentMealData.totalWeight / 1000).toFixed(1)} кг` 
+    : `${currentMealData.totalWeight} г`;
 
   return (
     <View style={styles.container}>
@@ -584,8 +692,7 @@ export default function Meal() {
         </TouchableOpacity>
         <View style={styles.headerTitleContainer}>
           <Text style={styles.headerTitle}>
-            Ваш {currentMealData.mealType.toLowerCase()} на сегодня
-            {isCustomMeal && " (Добавлен вами)"}
+            {currentMealData.mealType.toLowerCase()}
           </Text>
         </View>
         <View style={styles.placeholder} />
@@ -598,7 +705,6 @@ export default function Meal() {
           ) : (
             <View style={styles.mealImagePlaceholder}>
               <Ionicons name={iconInfo.name as any} size={80} color={iconInfo.color} />
-              <Text style={styles.mealTypeText}>{currentMealData.mealType}</Text>
             </View>
           )}
           <View style={styles.difficultyBadgeContainer}>
@@ -636,46 +742,79 @@ export default function Meal() {
           <View style={styles.detailsRow}>
             <View style={styles.detailItem}>
               <MaterialIcons name="access-time" size={28} color="#6A9AA9" />
-              <Text style={styles.detailText}>{currentMealData.cookingTime} мин.</Text>
+              <Text style={styles.detailText}>{cookingTimeFormatted}</Text>
               <Text style={styles.detailLabel}>время</Text>
             </View>
             <View style={styles.detailItem}>
               <Ionicons name="people-outline" size={28} color="#6A9AA9" />
               <Text style={styles.detailText}>{currentMealData.servings}</Text>
-              <Text style={styles.detailLabel}>порций</Text>
+              <Text style={styles.detailLabel}>порции</Text>
             </View>
             <View style={styles.detailItem}>
-              <MaterialIcons name="restaurant" size={28} color="#6A9AA9" />
-              <Text style={styles.detailText}>{currentMealData.weight}</Text>
-              <Text style={styles.detailLabel}>вес</Text>
+              <MaterialIcons name="scale" size={28} color="#6A9AA9" />
+              <Text style={styles.detailText}>{weightDisplay}</Text>
+              <Text style={styles.detailLabel}>вес блюда</Text>
             </View>
           </View>
 
+          {/* КБЖУ на 100г */}
           <View style={styles.nutritionContainer}>
+            <View style={styles.nutritionHeader}>
+              <Ionicons name="nutrition-outline" size={18} color="#6A9AA9" />
+              <Text style={styles.nutritionHeaderTitle}>Пищевая ценность на 100 г</Text>
+            </View>
             <View style={styles.nutritionRow}>
               <View style={styles.nutritionItem}>
                 <Text style={styles.nutritionLabelSmall}>Ккал</Text>
-                <Text style={styles.nutritionValue}>{currentMealData.calories}</Text>
+                <Text style={styles.nutritionValue}>{currentMealData.caloriesPer100g}</Text>
               </View>
               <View style={styles.nutritionItem}>
                 <Text style={styles.nutritionLabelSmall}>Белки</Text>
-                <Text style={styles.nutritionValue}>{currentMealData.proteins} г</Text>
+                <Text style={styles.nutritionValue}>{currentMealData.proteinsPer100g} г</Text>
               </View>
               <View style={styles.nutritionItem}>
                 <Text style={styles.nutritionLabelSmall}>Жиры</Text>
-                <Text style={styles.nutritionValue}>{currentMealData.fats} г</Text>
+                <Text style={styles.nutritionValue}>{currentMealData.fatsPer100g} г</Text>
               </View>
               <View style={styles.nutritionItem}>
                 <Text style={styles.nutritionLabelSmall}>Углеводы</Text>
-                <Text style={styles.nutritionValue}>{currentMealData.carbohydrates} г</Text>
+                <Text style={styles.nutritionValue}>{currentMealData.carbsPer100g} г</Text>
               </View>
             </View>
           </View>
 
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Описание</Text>
-            <Text style={styles.descriptionText}>{currentMealData.description}</Text>
+          {/* КБЖУ на всё блюдо */}
+          <View style={[styles.nutritionContainer, styles.totalNutritionContainer]}>
+            <View style={styles.nutritionHeader}>
+              <Ionicons name="restaurant-outline" size={18} color="#9BDF11" />
+              <Text style={[styles.nutritionHeaderTitle, styles.totalNutritionTitle]}>На всё блюдо ({weightDisplay})</Text>
+            </View>
+            <View style={styles.nutritionRow}>
+              <View style={styles.nutritionItem}>
+                <Text style={styles.nutritionLabelSmall}>Ккал</Text>
+                <Text style={[styles.nutritionValue, styles.totalNutritionValue]}>{currentMealData.totalCalories}</Text>
+              </View>
+              <View style={styles.nutritionItem}>
+                <Text style={styles.nutritionLabelSmall}>Белки</Text>
+                <Text style={[styles.nutritionValue, styles.totalNutritionValue]}>{currentMealData.totalProteins} г</Text>
+              </View>
+              <View style={styles.nutritionItem}>
+                <Text style={styles.nutritionLabelSmall}>Жиры</Text>
+                <Text style={[styles.nutritionValue, styles.totalNutritionValue]}>{currentMealData.totalFats} г</Text>
+              </View>
+              <View style={styles.nutritionItem}>
+                <Text style={styles.nutritionLabelSmall}>Углеводы</Text>
+                <Text style={[styles.nutritionValue, styles.totalNutritionValue]}>{currentMealData.totalCarbs} г</Text>
+              </View>
+            </View>
           </View>
+
+          {currentMealData.description && currentMealData.description !== "Описание не предоставлено." && (
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>Описание</Text>
+              <Text style={styles.descriptionText}>{currentMealData.description}</Text>
+            </View>
+          )}
 
           {liked === null && !isCustomMeal && (
             <View style={styles.likeSection}>
@@ -731,7 +870,7 @@ const styles = StyleSheet.create({
   header: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingHorizontal: 20, paddingTop: 50, paddingBottom: 15, backgroundColor: "#FFFFFF", borderBottomWidth: 1, borderBottomColor: "#E0E0E0" },
   backButton: { padding: 8 },
   headerTitleContainer: { flex: 1, alignItems: "center" },
-  headerTitle: { fontSize: 16, fontWeight: "600", color: "#000000", fontFamily: "Playfair Display Regular", textAlign: "center", maxWidth: "80%" },
+  headerTitle: { fontSize: 18, fontWeight: "600", color: "#000000", fontFamily: "Playfair Display Bold", textAlign: "center" },
   placeholder: { width: 40 },
   imageContainer: { position: "relative", height: 220, backgroundColor: "#E5F0F5", justifyContent: "center", alignItems: "center", borderBottomWidth: 1, borderBottomColor: "#C2DAE2" },
   mealImage: { width: "100%", height: "100%" },
@@ -752,10 +891,15 @@ const styles = StyleSheet.create({
   detailItem: { alignItems: "center", flex: 1 },
   detailText: { fontSize: 16, fontWeight: "600", color: "#000000", fontFamily: "Playfair Display Bold", marginBottom: 4 },
   detailLabel: { fontSize: 12, color: "#6C757D", fontFamily: "Playfair Display Regular", textAlign: "center" },
-  nutritionContainer: { backgroundColor: "#F7F7F7", borderRadius: 12, padding: 16, marginBottom: 24, borderWidth: 1, borderColor: "#E0E0E0" },
+  nutritionContainer: { backgroundColor: "#F7F7F7", borderRadius: 12, padding: 16, marginBottom: 16, borderWidth: 1, borderColor: "#E0E0E0" },
+  totalNutritionContainer: { backgroundColor: "#E8F5E9", borderColor: "#C8E6C9" },
+  nutritionHeader: { flexDirection: "row", alignItems: "center", justifyContent: "center", marginBottom: 12, gap: 8 },
+  nutritionHeaderTitle: { fontSize: 14, fontWeight: "600", color: "#212529", fontFamily: "Playfair Display Bold" },
+  totalNutritionTitle: { color: "#2E7D32" },
   nutritionRow: { flexDirection: "row", justifyContent: "space-between" },
   nutritionItem: { alignItems: "center", flex: 1 },
   nutritionValue: { fontSize: 18, fontWeight: "700", color: "#000000", fontFamily: "Playfair Display Bold", marginTop: 6 },
+  totalNutritionValue: { color: "#2E7D32" },
   nutritionLabelSmall: { fontSize: 12, fontWeight: "600", color: "#6C757D", fontFamily: "Playfair Display Regular", textTransform: "uppercase" },
   section: { marginBottom: 28 },
   sectionTitle: { fontSize: 20, fontWeight: "600", color: "#000000", marginBottom: 16, fontFamily: "Playfair Display Bold" },

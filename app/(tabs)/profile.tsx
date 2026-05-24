@@ -1,3 +1,4 @@
+// app/(tabs)/profile.tsx
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useFocusEffect, useRouter, useLocalSearchParams } from "expo-router";
@@ -17,10 +18,12 @@ import { favoriteService } from "@/app/services/favoriteService";
 import { rationPlanService } from "@/app/services/rationPlanService";
 import { recipeService } from "@/app/services/recipeService";
 import { auth } from "@/app/firebase/config";
-import { FontAwesome } from "@expo/vector-icons";
+import { FontAwesome, MaterialIcons } from "@expo/vector-icons";
 import { followService } from "@/app/services/followService";
 import { userService } from "@/app/services/userService";
 import { useAuthContext } from "@/app/contexts/AuthContext";
+import { collection, query, where, getDocs, doc, getDoc } from "firebase/firestore";
+import { db } from "@/app/firebase/config";
 
 // --- ТИПЫ ДАННЫХ ---
 type ProfileData = {
@@ -32,7 +35,7 @@ type ProfileData = {
   weight: string;
   goal: string;
   activity: string;
-  nutritionType: string | string[]; // Может быть строкой или массивом
+  nutritionType: string | string[];
   allergies: string;
   dislikes: string;
   isPrivate: boolean;
@@ -111,26 +114,37 @@ const getCategoryName = (mealType: string) => {
   }
 };
 
+const getCategoryIcon = (category: string) => {
+  const normalizedCategory = category?.toLowerCase() || "";
+  switch (normalizedCategory) {
+    case "завтрак":
+      return "sunny-outline";
+    case "обед":
+      return "restaurant-outline";
+    case "ужин":
+      return "moon-outline";
+    case "перекусы":
+      return "cafe-outline";
+    default:
+      return "fast-food-outline";
+  }
+};
+
 const formatActivity = (activity: string): string => {
   if (!activity) return "-";
-  
   const maxLength = 25;
   if (activity.length <= maxLength) return activity;
-  
   const periodIndex = activity.indexOf('.', maxLength - 10);
   if (periodIndex !== -1 && periodIndex < maxLength + 10) {
     return activity.substring(0, periodIndex + 1);
   }
-  
   const commaIndex = activity.indexOf(',', maxLength - 10);
   if (commaIndex !== -1 && commaIndex < maxLength + 10) {
     return activity.substring(0, commaIndex + 1);
   }
-  
   return activity.substring(0, maxLength - 3) + '...';
 };
 
-// Функция для форматирования типа питания (массив -> строка через запятую)
 const formatDietType = (dietType: string | string[] | undefined): string => {
   if (!dietType) return "-";
   if (Array.isArray(dietType)) {
@@ -139,7 +153,6 @@ const formatDietType = (dietType: string | string[] | undefined): string => {
   return dietType;
 };
 
-// Функция для получения полного значения типа питания
 const getFullDietType = (dietType: string | string[] | undefined): string => {
   if (!dietType) return "-";
   if (Array.isArray(dietType)) {
@@ -243,97 +256,106 @@ export default function ProfileScreen() {
 
     setFavoritesLoading(true);
     try {
-      const allFavorites = await favoriteService.getUserFavorites(userId);
-
-      if (!allFavorites || allFavorites.length === 0) {
+      const favoritesQuery = query(
+        collection(db, "user_favorites"),
+        where("userId", "==", userId),
+        where("active", "==", true)
+      );
+      const favoritesSnapshot = await getDocs(favoritesQuery);
+      
+      if (favoritesSnapshot.empty) {
         setFavoriteRecipes([]);
         return;
       }
 
       const recipes: Recipe[] = [];
-      let recipeCounter = 0;
-
-      allFavorites.forEach((fav: any) => {
-        if (fav.favoriteType === "recipe" && fav.item) {
-          const recipeData = fav.item;
-          const title = recipeData.title || recipeData.fields?.title || recipeData.name || "Рецепт без названия";
-          const rawCategory = recipeData.mealType || recipeData.fields?.mealType || "other";
-          const category = getCategoryName(rawCategory);
-
-          let calories = 0;
-          if (recipeData.fields?.calories !== undefined) calories = recipeData.fields.calories;
-          else if (recipeData.calories !== undefined) calories = recipeData.calories;
-          else if (recipeData.fields?.fscts !== undefined) calories = recipeData.fields.fscts;
-
-          let cookingTime = "20 минут";
-          const rawTime = recipeData.fields?.cookingTime || recipeData.cookingTime || recipeData.time;
-
-          if (rawTime) {
-            if (typeof rawTime === "number") {
-              cookingTime = formatMinutes(rawTime);
-            } else {
-              cookingTime = String(rawTime);
-              if (cookingTime && !cookingTime.includes("мин") && !cookingTime.includes("минут")) {
-                const timeMatch = cookingTime.match(/\d+/);
-                if (timeMatch) {
-                  cookingTime = formatMinutes(parseInt(timeMatch[0], 10));
-                } else {
-                  cookingTime = `${cookingTime} минут`;
-                }
+      
+      for (const favDoc of favoritesSnapshot.docs) {
+        const favData = favDoc.data();
+        const recipeId = favData.recipeId;
+        
+        if (!recipeId) continue;
+        
+        try {
+          const recipeRef = doc(db, "recipes", recipeId);
+          const recipeDoc = await getDoc(recipeRef);
+          
+          if (recipeDoc.exists()) {
+            const recipeData = recipeDoc.data();
+            const title = recipeData.title || "Рецепт без названия";
+            const rawCategory = recipeData.mealType || recipeData.categories?.[0] || "other";
+            const category = getCategoryName(rawCategory);
+            
+            let calories = recipeData.nutritionPer100g?.calories || recipeData.caloriesPer100g || recipeData.calories || 0;
+            
+            let cookingTimeValue = 20;
+            const rawTime = recipeData.prepTime || recipeData.cookingTime;
+            if (rawTime) {
+              if (typeof rawTime === "number") {
+                cookingTimeValue = rawTime;
+              } else {
+                const parsed = parseInt(rawTime, 10);
+                cookingTimeValue = isNaN(parsed) ? 20 : parsed;
               }
             }
-          }
-
-          const rating = recipeData.rating || recipeData.fields?.rating || recipeData.ratingCount || 0;
-
-          let difficulty = "Легко";
-          const rawDifficulty = recipeData.difficulty || recipeData.fields?.difficulty || recipeData.complexity || recipeData.difficultyLevel;
-
-          if (rawDifficulty) {
-            const normalizedDifficulty = String(rawDifficulty).trim();
-            if (normalizedDifficulty.toLowerCase().includes("легк") || normalizedDifficulty === "Easy") {
-              difficulty = "Легко";
-            } else if (normalizedDifficulty.toLowerCase().includes("средн") || normalizedDifficulty === "Medium") {
-              difficulty = "Средне";
-            } else if (normalizedDifficulty.toLowerCase().includes("сложн") || normalizedDifficulty === "Hard") {
-              difficulty = "Сложно";
-            } else {
-              difficulty = normalizedDifficulty;
+            const cookingTime = formatMinutes(cookingTimeValue);
+            
+            const rating = recipeData.averageRating || recipeData.rating || 0;
+            
+            let difficulty = "Легко";
+            const rawDifficulty = recipeData.difficulty || recipeData.difficultyLevel;
+            if (rawDifficulty) {
+              const normalizedDifficulty = String(rawDifficulty).trim();
+              if (normalizedDifficulty.toLowerCase().includes("легк")) {
+                difficulty = "Легко";
+              } else if (normalizedDifficulty.toLowerCase().includes("средн")) {
+                difficulty = "Средне";
+              } else if (normalizedDifficulty.toLowerCase().includes("сложн")) {
+                difficulty = "Сложно";
+              } else {
+                difficulty = normalizedDifficulty;
+              }
             }
+            
+            let imageUri = recipeData.imageUrl || recipeData.image;
+            
+            recipes.push({
+              id: favDoc.id,
+              name: title,
+              category: category,
+              calories: calories,
+              cookingTime: cookingTime,
+              image: imageUri ? { uri: imageUri } : require("@/assets/images/dinner-rice.png"),
+              bookmarked: true,
+              rating: rating,
+              difficulty: difficulty,
+              favoriteId: favDoc.id,
+              originalRecipeId: recipeId,
+              item: recipeData
+            });
           }
-
-          let imageUri = null;
-          if (recipeData.fields?.image) imageUri = recipeData.fields.image;
-          else if (recipeData.image) imageUri = recipeData.image;
-          else if (recipeData.imageUrl) imageUri = recipeData.imageUrl;
-          else if (recipeData.fields?.langdir1) imageUri = recipeData.fields.langdir1;
-
-          recipeCounter++;
-          const uniqueId = `recipe-${userId}-${recipeCounter}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-
-          recipes.push({
-            id: uniqueId,
-            name: title,
-            category: category,
-            calories: calories,
-            cookingTime: cookingTime,
-            image: imageUri ? { uri: imageUri } : require("@/assets/images/dinner-rice.png"),
-            bookmarked: true,
-            rating: rating,
-            difficulty: difficulty,
-            favoriteId: fav.id,
-            originalRecipeId: fav.recipeId,
-            item: recipeData
-          });
+        } catch (recipeError) {
+          console.error(`Ошибка загрузки рецепта ${recipeId}:`, recipeError);
         }
-      });
-
+      }
+      
       setFavoriteRecipes(recipes);
     } catch (error) {
       console.error("Ошибка при загрузке избранных рецептов:", error);
       setFavoriteRecipes([]);
     } finally {
       setFavoritesLoading(false);
+    }
+  }, [getCurrentUserId]);
+
+  const loadMyRecipesCount = useCallback(async () => {
+    const userId = getCurrentUserId();
+    try {
+      const userRecipes = await recipeService.getUserRecipes(userId || null);
+      setMyRecipesCount(userRecipes?.length || 0);
+    } catch (error) {
+      console.error("Ошибка при загрузке моих рецептов:", error);
+      setMyRecipesCount(0);
     }
   }, [getCurrentUserId]);
 
@@ -388,17 +410,6 @@ export default function ProfileScreen() {
     }
   }, [getCurrentUserId]);
 
-  const loadMyRecipesCount = useCallback(async () => {
-    const userId = getCurrentUserId();
-    try {
-      const userRecipes = await recipeService.getUserRecipes(userId || null);
-      setMyRecipesCount(userRecipes?.length || 0);
-    } catch (error) {
-      console.error("Ошибка при загрузке моих рецептов:", error);
-      setMyRecipesCount(0);
-    }
-  }, [getCurrentUserId]);
-
   const loadProfileData = useCallback(async () => {
     setLoading(true);
     try {
@@ -436,7 +447,6 @@ export default function ProfileScreen() {
         }
 
         try {
-          // Используем fetchUserProfile (есть в сервисе)
           const firestoreData = await userService.fetchUserProfile(userId);
 
           if (firestoreData) {
@@ -444,7 +454,6 @@ export default function ProfileScreen() {
               profileFromStorage.photoURL = firestoreData.photoURL;
             }
 
-            // Обработка dietType - это массив
             let nutritionTypeValue: string | string[] = profileFromStorage.nutritionType;
             if (firestoreData.dietType) {
               nutritionTypeValue = firestoreData.dietType;
@@ -610,46 +619,72 @@ export default function ProfileScreen() {
     }
     return <Ionicons name="person" size={48} color="#6A9AA9" />;
   };
+  // Добавьте эту функцию перед renderRecipeCard (если еще нет)
+const getCategoryIcon = (category: string) => {
+  const normalizedCategory = category?.toLowerCase() || "";
+  switch (normalizedCategory) {
+    case "завтрак":
+      return "sunny-outline";
+    case "обед":
+      return "restaurant-outline";
+    case "ужин":
+      return "moon-outline";
+    case "перекусы":
+      return "cafe-outline";
+    default:
+      return "fast-food-outline";
+  }
+};
 
-  const renderRecipeCard = (recipe: Recipe) => (
-    <View key={recipe.id} style={styles.recipeColumn}>
-      <TouchableOpacity style={styles.recipeCard} onPress={() => navigateToRecipe(recipe)}>
-        <View style={styles.imageContainer}>
-          <Image source={recipe.image} style={styles.recipeImage} resizeMode="cover" />
-          <View style={styles.recipeBadges}>
-            {recipe.rating && recipe.rating > 0 ? (
-              <View style={styles.ratingBadge}>
-                <FontAwesome name="star" size={10} color="#FFD700" />
-                <Text style={styles.ratingText}>{recipe.rating.toFixed(1)}</Text>
-              </View>
+
+  // Обновленная карточка рецепта в стиле страницы рецептов
+  // В renderRecipeCard замените这部分:
+
+const renderRecipeCard = (recipe: Recipe) => (
+  <View key={recipe.id} style={styles.recipeColumn}>
+    <TouchableOpacity style={styles.recipeCard} onPress={() => navigateToRecipe(recipe)} activeOpacity={0.8}>
+      <View style={styles.imageContainer}>
+        {recipe.image && recipe.image.uri && recipe.image.uri.length > 5 && !recipe.image.uri.includes('dinner-rice.png') ? (
+          <Image source={{ uri: recipe.image.uri }} style={styles.recipeImage} resizeMode="cover" />
+        ) : (
+          <View style={styles.recipeImagePlaceholder}>
+            <Ionicons name={getCategoryIcon(recipe.category)} size={32} color="#6A9AA9" />
+          </View>
+        )}
+        <View style={styles.recipeBadges}>
+          {recipe.rating && recipe.rating > 0 ? (
+            <View style={styles.ratingBadge}>
+              <FontAwesome name="star" size={10} color="#FFD700" />
+              <Text style={styles.ratingText}>{recipe.rating.toFixed(1)}</Text>
+            </View>
+          ) : null}
+          <View style={[styles.difficultyBadge, { backgroundColor: getDifficultyColor(recipe.difficulty) }]}>
+            <Text style={styles.difficultyText}>{recipe.difficulty}</Text>
+          </View>
+        </View>
+        <TouchableOpacity style={styles.bookmarkButton} onPress={() => toggleBookmark(recipe)}>
+          <Ionicons name="bookmark" size={18} color="#6A9AA9" />
+        </TouchableOpacity>
+      </View>
+      <View style={styles.recipeContent}>
+        <View style={styles.recipeInfo}>
+          <Text style={styles.recipeName} numberOfLines={2}>{recipe.name}</Text>
+          <Text style={styles.recipeCategory}>{recipe.category}</Text>
+          <View style={styles.recipeDetails}>
+            {recipe.calories && recipe.calories > 0 ? (
+              <Text style={styles.recipeCalories}>{recipe.calories} ккал</Text>
             ) : null}
-            <View style={[styles.difficultyBadge, { backgroundColor: getDifficultyColor(recipe.difficulty) }]}>
-              <Text style={styles.difficultyText}>{recipe.difficulty}</Text>
-            </View>
+            <MaterialIcons name="access-time" size={12} color="#6A9AA9" style={styles.timeIcon} />
+            <Text style={styles.recipeTime}>{recipe.cookingTime}</Text>
           </View>
-          <TouchableOpacity style={styles.bookmarkButton} onPress={() => toggleBookmark(recipe)}>
-            <Ionicons name="bookmark" size={18} color="#6A9AA9" />
-          </TouchableOpacity>
         </View>
-        <View style={styles.recipeContent}>
-          <View style={styles.recipeInfo}>
-            <Text style={styles.recipeName} numberOfLines={2}>{recipe.name}</Text>
-            <Text style={styles.recipeCategory}>{recipe.category}</Text>
-            <View style={styles.recipeDetails}>
-              {recipe.calories && recipe.calories > 0 ? (
-                <Text style={styles.recipeCalories}>{recipe.calories} ккал</Text>
-              ) : null}
-              <Ionicons name="time-outline" size={12} color="#6A9AA9" style={styles.timeIcon} />
-              <Text style={styles.recipeTime}>{recipe.cookingTime}</Text>
-            </View>
-          </View>
-          <TouchableOpacity style={styles.viewButton} onPress={() => navigateToRecipe(recipe)}>
-            <Text style={styles.viewButtonText}>Посмотреть</Text>
-          </TouchableOpacity>
-        </View>
-      </TouchableOpacity>
-    </View>
-  );
+        <TouchableOpacity style={styles.viewButton} onPress={() => navigateToRecipe(recipe)}>
+          <Text style={styles.viewButtonText}>Посмотреть</Text>
+        </TouchableOpacity>
+      </View>
+    </TouchableOpacity>
+  </View>
+);
 
   const renderPlanCard = (plan: Plan) => (
     <TouchableOpacity key={plan.id} style={styles.planCard} onPress={() => handlePlanPress(plan)}>
@@ -683,7 +718,6 @@ export default function ProfileScreen() {
     </TouchableOpacity>
   );
 
-  // Компонент для отображения типа питания с возможностью показа полного списка
   const renderDietType = (item: any) => {
     const dietTypeArray = Array.isArray(profileData.nutritionType) 
       ? profileData.nutritionType 
@@ -911,8 +945,9 @@ const styles = StyleSheet.create({
   recipesGrid: { flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between" },
   recipeColumn: { width: CARD_WIDTH, marginBottom: 16 },
   recipeCard: { backgroundColor: "#C2DAE2", borderRadius: 16, overflow: "hidden", shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 3.84, elevation: 5, height: 280 },
-  imageContainer: { position: "relative" },
-  recipeImage: { width: "100%", height: 120 },
+  imageContainer: { position: "relative", height: 120, backgroundColor: "#F8F8F8", justifyContent: "center", alignItems: "center" },
+  recipeImage: { width: "100%", height: "100%" },
+  recipeImagePlaceholder: { width: "100%", height: "100%", backgroundColor: "#E5F0F5", justifyContent: "center", alignItems: "center" },
   recipeBadges: { position: "absolute", top: 8, left: 8, flexDirection: "column", gap: 4 },
   ratingBadge: { flexDirection: "row", alignItems: "center", backgroundColor: "rgba(255, 255, 255, 0.9)", paddingHorizontal: 6, paddingVertical: 3, borderRadius: 10 },
   ratingText: { fontSize: 10, fontWeight: "bold", color: "#000000", fontFamily: "Playfair Display Regular", marginLeft: 2 },
