@@ -5,7 +5,7 @@ import { ScrollView, StyleSheet, Text, TouchableOpacity, View, TextInput, Modal,
 import { rationPlanService, RationPlan } from "@/app/services/rationPlanService";
 import DateTimePicker, { DateTimePickerEvent } from "@react-native-community/datetimepicker";
 import { auth } from "@/app/firebase/config";
-import { getFirestore, doc, setDoc, collection, query, where, getDocs, deleteDoc, Timestamp } from "firebase/firestore";
+import { getFirestore, doc, setDoc, collection, query, where, getDocs, deleteDoc, updateDoc, Timestamp } from "firebase/firestore";
 import { getApps, getApp, initializeApp } from "firebase/app";
 
 declare const __firebase_config: string | undefined;
@@ -290,78 +290,96 @@ export default function SavedPlansScreen() {
     ]);
   };
 
-  const activatePlanDirectly = async (plan: any, date: Date) => {
-    if (!firestoreDb) { Alert.alert("Ошибка","База данных не инициализирована"); return false; }
-    const currentUser = auth.currentUser;
-    if (!currentUser) { Alert.alert("Ошибка", "Пользователь не авторизован"); return false; }
-    try {
-      const dateStr = date.toISOString().split('T')[0];
-      const todayStr = new Date().toISOString().split('T')[0];
-      
-      const mealsFromPlan = plan.meals || [];
-      
-      const formattedMeals = mealsFromPlan.map((meal: any) => ({
-        id: meal.id || `meal-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-        category: meal.category || "Обед", 
-        name: meal.name || meal.title || "Рецепт",
-        calories: meal.calories || 0, 
-        proteins: meal.proteins || 0, 
-        fats: meal.fats || 0, 
-        carbohydrates: meal.carbohydrates || 0,
-        weight: meal.weight || "250г", 
-        marked: false, 
-        cookingTime: meal.cookingTime || 20,
-        difficultyLevel: meal.difficultyLevel || "Легко", 
-        rating: meal.rating || 0,
-        recipeId: meal.recipeId || meal.id || '', 
-        isCustom: meal.isCustom || false, 
-        canBeRemoved: true,
-        imageUrl: meal.imageUrl || null, 
-        addedAt: new Date().toISOString()
-      }));
-      
-      // 1. Удаляем старые записи из ration_plan_days за выбранную дату
-      const daysQuery = query(
-        collection(firestoreDb, 'ration_plan_days'), 
-        where('userId', '==', currentUser.uid), 
-        where('date', '==', dateStr)
-      );
-      const daysSnap = await getDocs(daysQuery);
-      for (const docSnap of daysSnap.docs) {
-        await deleteDoc(doc(firestoreDb, 'ration_plan_days', docSnap.id));
-      }
-      
-      // 2. Создаем новую чистую запись в ration_plan_days
-      const newPlanId = `${currentUser.uid}_${dateStr}_${Date.now()}`;
-      await setDoc(doc(firestoreDb, 'ration_plan_days', newPlanId), {
-        userId: currentUser.uid, 
-        date: dateStr, 
-        meals: formattedMeals, 
-        planName: plan.name,
-        planId: plan.originalPlan?.id, // Передаем ID шаблона для нашей умной подсветки!
-        createdAt: Timestamp.now(), 
-        updatedAt: Timestamp.now(), 
-        isActive: true
-      });
-      
-      // 3. Обновляем статус ТОЛЬКО этого конкретного плана в ration_plans
-      let newStatus = dateStr === todayStr ? 'active' : (dateStr > todayStr ? 'active' : 'completed');
-      if (plan.originalPlan?.id) {
-        await rationPlanService.updateRationPlan(currentUser.uid, plan.originalPlan.id, { 
-          status: newStatus, 
-          startDate: dateStr, 
-          isTemplate: false,
-          meals: formattedMeals 
-        });
-      }
-      
-      return true;
-    } catch (error) { 
-      console.error("Error activating plan:", error); 
-      return false; 
-    }
-  };
+  // app/(tabs)/saved-plans.tsx
+// Замените существующую функцию activatePlanDirectly на эту:
 
+const activatePlanDirectly = async (plan: any, date: Date) => {
+  if (!firestoreDb) { Alert.alert("Ошибка","База данных не инициализирована"); return false; }
+  const currentUser = auth.currentUser;
+  if (!currentUser) { Alert.alert("Ошибка", "Пользователь не авторизован"); return false; }
+  try {
+    const dateStr = date.toISOString().split('T')[0];
+    const todayStr = new Date().toISOString().split('T')[0];
+    
+    const mealsFromPlan = plan.meals || [];
+    
+    const formattedMeals = mealsFromPlan.map((meal: any) => ({
+      id: meal.id || `meal-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      category: meal.category || "Обед", 
+      name: meal.name || meal.title || "Рецепт",
+      calories: meal.calories || 0, 
+      proteins: meal.proteins || 0, 
+      fats: meal.fats || 0, 
+      carbohydrates: meal.carbohydrates || 0,
+      weight: meal.weight || "250г", 
+      marked: false, 
+      cookingTime: meal.cookingTime || 20,
+      difficultyLevel: meal.difficultyLevel || "Легко", 
+      rating: meal.rating || 0,
+      recipeId: meal.recipeId || meal.id || '', 
+      isCustom: meal.isCustom || false, 
+      canBeRemoved: true,
+      imageUrl: meal.imageUrl || null, 
+      addedAt: new Date().toISOString()
+    }));
+    
+    // 1. Удаляем старые записи из ration_plan_days за выбранную дату
+    const daysQuery = query(
+      collection(firestoreDb, 'ration_plan_days'), 
+      where('userId', '==', currentUser.uid), 
+      where('date', '==', dateStr)
+    );
+    const daysSnap = await getDocs(daysQuery);
+    for (const docSnap of daysSnap.docs) {
+      await deleteDoc(doc(firestoreDb, 'ration_plan_days', docSnap.id));
+    }
+    
+    // 2. Создаем новую чистую запись в ration_plan_days
+    const newPlanId = `${currentUser.uid}_${dateStr}_${Date.now()}`;
+    await setDoc(doc(firestoreDb, 'ration_plan_days', newPlanId), {
+      userId: currentUser.uid, 
+      date: dateStr, 
+      meals: formattedMeals, 
+      planName: plan.name,
+      planId: plan.originalPlan?.id,
+      createdAt: Timestamp.now(), 
+      updatedAt: Timestamp.now(), 
+      isActive: true
+    });
+    
+    // 3. Определяем правильный статус для плана в ration_plans
+    let newStatus = 'template';
+    let startDateToSave = null;
+    
+    if (dateStr === todayStr) {
+      newStatus = 'active';
+      startDateToSave = dateStr;
+    } else if (dateStr > todayStr) {
+      newStatus = 'active';  // Для будущих дат оставляем active, но с startDate
+      startDateToSave = dateStr;
+    } else {
+      newStatus = 'completed';
+      startDateToSave = dateStr;
+    }
+    
+    // 4. Обновляем статус плана в ration_plans
+    if (plan.originalPlan?.id) {
+      const planRef = doc(firestoreDb, 'ration_plans', plan.originalPlan.id);
+      await updateDoc(planRef, {
+        status: newStatus,
+        startDate: startDateToSave,
+        isTemplate: false,
+        meals: formattedMeals,
+        updatedAt: new Date().toISOString()
+      });
+    }
+    
+    return true;
+  } catch (error) { 
+    console.error("Error activating plan:", error); 
+    return false; 
+  }
+};
   const handleUsePlan = (plan: any) => {
     if (plan.isArchived) {
       Alert.alert("Архивный план", "Этот план в архиве. Восстановите его перед использованием.", [
