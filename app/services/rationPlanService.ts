@@ -349,7 +349,6 @@ class RationPlanService {
   async updateRationPlan(userId: string, planId: string, planData: any): Promise<boolean> {
     try {
       const planRef = doc(db, 'ration_plans', planId);
-      
       const planSnap = await getDoc(planRef);
       if (!planSnap.exists()) throw new Error('План не найден');
       if (planSnap.data().userId !== userId) throw new Error('Нет прав доступа');
@@ -368,75 +367,69 @@ class RationPlanService {
         updatedAt: new Date().toISOString(),
       };
       
-      if (planData.title !== undefined && planData.title !== null) {
-        updateData.title = planData.title;
-      }
-      if (planData.description !== undefined && planData.description !== null) {
-        updateData.description = planData.description;
-      }
-      if (planData.status !== undefined && planData.status !== null) {
-        updateData.status = planData.status;
-      }
+      if (planData.title) updateData.title = planData.title;
+      if (planData.description) updateData.description = planData.description;
+      if (planData.status) updateData.status = planData.status;
       
+      // 1. Обновляем ОРИГИНАЛ в коллекции ration_plans
       await updateDoc(planRef, updateData);
-      console.log('✅ План обновлен:', planId);
+      console.log('✅ Оригинальный шаблон обновлен в ration_plans:', planId);
       
-      // Проверяем, активен ли этот план сегодня и обновляем связанные документы
       const today = new Date().toISOString().split('T')[0];
+      const finalTitle = planData.title || planSnap.data().title || "План питания";
       
-      // Проверяем, активен ли план на сегодня
-      const activePlansQuery = query(
-        collection(db, 'ration_plans'),
-        where('userId', '==', userId),
-        where('status', '==', 'active'),
-        where('startDate', '==', today)
-      );
-      const activePlansSnap = await getDocs(activePlansQuery);
-      const isActiveToday = activePlansSnap.docs.some(doc => doc.id === planId);
+      const statsObj = {
+        totalCalories,
+        totalProteins,
+        totalFats,
+        totalCarbs,
+        totalCookingTime: meals.reduce((sum: number, m: any) => sum + (m.cookingTime || 0), 0)
+      };
+
+      // 2. 🌟 ПРЯМАЯ ЗАПИСЬ ВО ВСЕ ВОЗМОЖНЫЕ ДОКУМЕНТЫ ДНЯ (Без фильтра по planId)
+      // Проверяем первый возможный ID (чистый день, который ставит главная при генерации)
+      const cleanDayId = `${userId}_${today}`;
+      // Проверяем второй возможный ID (день с суффиксом плана, который ставится при активации шаблона)
+      const suffixedDayId = `${userId}_${today}_${planId}`;
+
+      const dayIdsToUpdate = [cleanDayId, suffixedDayId];
+
+      for (const dayId of dayIdsToUpdate) {
+        const dayDocRef = doc(db, 'ration_plan_days', dayId);
+        const dayDocSnap = await getDoc(dayDocRef);
+
+        // Если документ дня существует в базе — мы ПРИНУДИТЕЛЬНО перезаписываем в него новые meals
+        if (dayDocSnap.exists()) {
+          await updateDoc(dayDocRef, {
+            meals: meals,
+            stats: statsObj,
+            planName: finalTitle,
+            planId: planId, // Выставляем нормальный ID, связывая их обратно!
+            updatedAt: new Date().toISOString()
+          });
+          console.log(`🎯 [УСПЕХ] Изменения перенесены в ration_plan_days -> документ: ${dayId}`);
+        }
+      }
+
+      // 3. Дублируем в подколлекцию пользователя для совместимости с Home
+      const dailyPlanRef = doc(db, 'users', userId, 'daily_plans', today);
+      const dailyPlanSnap = await getDoc(dailyPlanRef);
       
-      if (isActiveToday) {
-        // Обновляем daily_plans
-        const dailyPlanRef = doc(db, 'users', userId, 'daily_plans', today);
-        await setDoc(dailyPlanRef, {
+      if (dailyPlanSnap.exists()) {
+        await updateDoc(dailyPlanRef, {
           meals: meals,
-          stats: {
-            totalCalories,
-            totalProteins,
-            totalFats,
-            totalCarbs,
-            totalCookingTime: meals.reduce((sum: number, m: any) => sum + (m.cookingTime || 0), 0)
-          },
-          updatedAt: new Date().toISOString(),
+          stats: statsObj,
+          planTitle: finalTitle,
           planId: planId,
-          planTitle: planData.title || planSnap.data().title
-        });
-        console.log("✅ Daily plan обновлен");
-        
-        // Обновляем ration_plan_days
-        const planDayId = `${userId}_${today}_${planId}`;
-        const planDayRef = doc(db, 'ration_plan_days', planDayId);
-        await setDoc(planDayRef, {
-          userId: userId,
-          planId: planId,
-          date: today,
-          meals: meals,
-          stats: {
-            totalCalories,
-            totalProteins,
-            totalFats,
-            totalCarbs,
-            totalCookingTime: meals.reduce((sum: number, m: any) => sum + (m.cookingTime || 0), 0)
-          },
-          isActive: true,
           updatedAt: new Date().toISOString()
         });
-        console.log("✅ Ration plan days обновлен");
+        console.log("🎯 [УСПЕХ] Изменения перенесены в подколлекцию users/.../daily_plans");
       }
       
       return true;
       
     } catch (error) {
-      console.error('Ошибка обновления:', error);
+      console.error('❌ Ошибка синхронизации между коллекциями:', error);
       return false;
     }
   }

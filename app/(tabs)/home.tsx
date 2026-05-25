@@ -1,4 +1,4 @@
-// app/(tabs)/home.tsx - ПОЛНЫЙ КОД
+// app/(tabs)/home.tsx
 
 import { Feather, FontAwesome, Ionicons, MaterialIcons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -127,6 +127,57 @@ export default function Home() {
     setShowWeightModal(false);
     setEditingMeal(null);
     Alert.alert("Успех", `Вес блюда изменен на ${weightNum} г, КБЖУ пересчитаны`);
+  };
+
+  // ✅ НОВАЯ ФУНКЦИЯ ПЕРЕКЛЮЧЕНИЯ ЗАКЛАДКИ (из recipes.tsx)
+  const toggleBookmark = async (mealId: string) => {
+    const meal = meals.find(m => m.id === mealId);
+    if (!meal || !currentUser) {
+      Alert.alert("Вход required", "Войдите чтобы сохранять рецепты");
+      return;
+    }
+    
+    if (isUpdatingBookmark === mealId) return;
+    
+    const isCurrentlyBookmarked = meal.bookmarked;
+    
+    // Оптимистичное обновление UI
+    setMeals(prev =>
+      prev.map(m =>
+        m.id === mealId ? { ...m, bookmarked: !isCurrentlyBookmarked } : m
+      )
+    );
+    
+    setIsUpdatingBookmark(mealId);
+
+    try {
+      const favoriteId = `${currentUser.uid}_${meal.recipeId || meal.id}`;
+      const favoriteRef = doc(firestoreDb!, "user_favorites", favoriteId);
+
+      if (isCurrentlyBookmarked) {
+        await deleteDoc(favoriteRef);
+        console.log("🗑️ Рецепт удален из избранного");
+      } else {
+        await setDoc(favoriteRef, {
+          userId: currentUser.uid,
+          recipeId: meal.recipeId || meal.id,
+          createdAt: new Date(),
+          active: true,
+        });
+        console.log("⭐ Рецепт добавлен в избранное");
+      }
+    } catch (error) {
+      console.error("Ошибка обновления закладки:", error);
+      // Откатываем изменения при ошибке
+      setMeals(prev =>
+        prev.map(m =>
+          m.id === mealId ? { ...m, bookmarked: isCurrentlyBookmarked } : m
+        )
+      );
+      Alert.alert("Ошибка", "Не удалось сохранить рецепт");
+    } finally {
+      setIsUpdatingBookmark(null);
+    }
   };
 
   const handleAddRecipeWithWeight = (recipeData: any) => { setPendingRecipe(recipeData); setSelectedWeight("250"); setShowAddWeightModal(true); };
@@ -342,57 +393,80 @@ export default function Home() {
   const handleStayHere = () => setShowAfterSaveModal(false);
 
   const handleGenerateNewRation = useCallback(async () => {
-    if (!currentUser || !firestoreDb || isGeneratingPlan) return;
-    try {
-      setIsGeneratingPlan(true);
-      setShowGeneratingModal(true);
-      setShowRationSelectModal(false);
+  if (!currentUser || !firestoreDb || isGeneratingPlan) return;
+  try {
+    setIsGeneratingPlan(true);
+    setShowGeneratingModal(true);
+    setShowRationSelectModal(false);
+    
+    const newPlan = await dailyRationService.createNewPlanWithUserSettings(currentUser.uid);
+    if (newPlan?.meals?.length) {
+      let mealsWithFavorites = await loadFavoritesStatus(currentUser.uid, newPlan.meals.map(convertToUIMeal));
+      mealsWithFavorites = mealsWithFavorites.map(meal => ({ 
+        ...meal, 
+        id: `${meal.id}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}` 
+      }));
       
-      const newPlan = await dailyRationService.createNewPlanWithUserSettings(currentUser.uid);
-      if (newPlan?.meals?.length) {
-        let mealsWithFavorites = await loadFavoritesStatus(currentUser.uid, newPlan.meals.map(convertToUIMeal));
-        mealsWithFavorites = mealsWithFavorites.map(meal => ({ ...meal, id: `${meal.id}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}` }));
-        const newKBRU = mealsWithFavorites.reduce((acc, m) => ({ proteins: acc.proteins + (m.proteins || 0), fats: acc.fats + (m.fats || 0), carbohydrates: acc.carbohydrates + (m.carbohydrates || 0) }), { proteins: 0, fats: 0, carbohydrates: 0 });
-        const qTemplates = query(collection(firestoreDb, 'ration_plans'), where('userId', '==', currentUser.uid));
-        const templatesSnap = await getDocs(qTemplates);
-        const existingTitles = templatesSnap.docs.map((d: any) => d.data().title || d.data().planName || "");
-        let finalGenName = "Сгенерированный рацион", counter = 1;
-        while (existingTitles.includes(finalGenName)) { finalGenName = `Сгенерированный рацион (${counter})`; counter++; }
-        setMeals(mealsWithFavorites);
-        setRecommendedKBRU(newKBRU);
-        setActivePlanName(finalGenName);
-        setActivePlanSourceId(null);
-        setHasChanges(true);
-        setIsTemplateSaved(false);
-        setUserData(prev => ({ ...prev, consumedCalories: mealsWithFavorites.filter(m => m.marked).reduce((sum, m) => sum + (m.calories || 0), 0) }));
-        const todayStr = new Date().toISOString().split('T')[0];
-        const currentDayId = activePlanId || `${currentUser.uid}_${todayStr}`;
-        const cleanedMeals = mealsWithFavorites.map((m: any) => ({ id: m.id, recipeId: m.recipeId || m.id || '', category: m.category || "Обед", name: m.name || m.title || "Рецепт", calories: m.calories || 0, proteins: m.proteins || 0, fats: m.fats || 0, carbohydrates: m.carbohydrates || 0, weight: m.weight || "250г", cookingTime: m.cookingTime || 20, difficultyLevel: m.difficultyLevel || "Легко", imageUrl: m.imageUrl || null, isCustom: m.isCustom || false, marked: false }));
-        await updateDoc(doc(firestoreDb, 'ration_plan_days', currentDayId), { meals: cleanedMeals, planName: finalGenName, planId: null, updatedAt: new Date().toISOString() });
-        setActivePlanId(currentDayId);
-        Alert.alert("Успех", `Сгенерирован рацион "${finalGenName}"!`);
-      } else {
-        Alert.alert("Ошибка", "Не удалось сгенерировать рацион. Попробуйте позже.");
+      const qTemplates = query(collection(firestoreDb, 'ration_plans'), where('userId', '==', currentUser.uid));
+      const templatesSnap = await getDocs(qTemplates);
+      const existingTitles = templatesSnap.docs.map((d: any) => d.data().title || d.data().planName || "");
+      
+      let finalGenName = "Сгенерированный рацион", counter = 1;
+      while (existingTitles.includes(finalGenName)) { 
+        finalGenName = `Сгенерированный рацион (${counter})`; 
+        counter++; 
       }
-    } catch (error) { console.error("Ошибка генерации рациона:", error); Alert.alert("Ошибка", "Не удалось сгенерировать рацион"); }
-    finally { 
-      setIsGeneratingPlan(false);
-      setShowGeneratingModal(false);
+      
+      setMeals(mealsWithFavorites);
+      setActivePlanName(null); 
+      setActivePlanSourceId(null);
+      setHasChanges(false);
+      setIsTemplateSaved(false);
+      
+      setUserData(prev => ({ 
+        ...prev, 
+        consumedCalories: mealsWithFavorites.filter(m => m.marked).reduce((sum, m) => sum + (m.calories || 0), 0) 
+      }));
+      
+      const todayStr = new Date().toISOString().split('T')[0];
+      const currentDayId = activePlanId || `${currentUser.uid}_${todayStr}`;
+      const cleanedMeals = mealsWithFavorites.map((m: any) => ({ 
+        id: m.id, 
+        recipeId: m.recipeId || m.id || '', 
+        category: m.category || "Обед", 
+        name: m.name || m.title || "Рецепт", 
+        calories: m.calories || 0, 
+        proteins: m.proteins || 0, 
+        fats: m.fats || 0, 
+        carbohydrates: m.carbohydrates || 0, 
+        weight: m.weight || "250г", 
+        cookingTime: m.cookingTime || 20, 
+        difficultyLevel: m.difficultyLevel || "Легко", 
+        imageUrl: m.imageUrl || null, 
+        isCustom: m.isCustom || false, 
+        marked: false 
+      }));
+      
+      await updateDoc(doc(firestoreDb, 'ration_plan_days', currentDayId), { 
+        meals: cleanedMeals, 
+        planName: finalGenName, 
+        planId: null, 
+        updatedAt: new Date().toISOString() 
+      });
+      
+      setActivePlanId(currentDayId);
+      Alert.alert("Успех", `Сгенерирован рацион "${finalGenName}"!`);
+    } else {
+      Alert.alert("Ошибка", "Не удалось сгенерировать рацион. Попробуйте позже.");
     }
-  }, [currentUser, firestoreDb, isGeneratingPlan, activePlanId, convertToUIMeal]);
-
-  const handleToggleBookmark = useCallback(async (mealId: string) => {
-    const meal = meals.find(m => m.id === mealId);
-    if (!meal || !currentUser || isUpdatingBookmark) return;
-    setIsUpdatingBookmark(mealId);
-    try {
-      const updatedMeals = meals.map(m => m.id === mealId ? { ...m, bookmarked: !m.bookmarked } : m);
-      setMeals(updatedMeals);
-      if (meal.bookmarked) await favoriteService.removeFromFavorites(meal.recipeId, "recipe", currentUser.uid);
-      else await favoriteService.addToFavorites(meal.recipeId, "recipe", currentUser.uid);
-    } catch (error) { console.error("Ошибка избранного:", error); }
-    finally { setIsUpdatingBookmark(null); }
-  }, [meals, currentUser, isUpdatingBookmark]);
+  } catch (error) { 
+    console.error("Ошибка генерации рациона:", error); 
+    Alert.alert("Ошибка", "Не удалось сгенерировать рацион"); 
+  } finally { 
+    setIsGeneratingPlan(false);
+    setShowGeneratingModal(false);
+  }
+}, [currentUser, firestoreDb, isGeneratingPlan, activePlanId, convertToUIMeal]);
 
   const navigateToMealPage = (mealIndex: number) => {
     const meal = meals[mealIndex];
@@ -411,7 +485,6 @@ export default function Home() {
   
   useEffect(() => { if (params.selectedRecipe && currentUser && firestoreDb && isInitialLoadDone && !isAddingRecipeRef.current) { try { const recipeData = JSON.parse(params.selectedRecipe as string); router.setParams({ selectedRecipe: undefined }); handleAddRecipeWithWeight(recipeData); } catch (e) { console.error("❌ Ошибка парсинга selectedRecipe:", e); } } }, [params.selectedRecipe, currentUser, firestoreDb, isInitialLoadDone]);
   
-  // Обработка замены блюда
   useEffect(() => {
     if (!currentUser || !firestoreDb || !isInitialLoadDone) return;
     
@@ -484,11 +557,26 @@ export default function Home() {
     return "#9BDF11";
   };
   const getButtonState = () => {
-    if (isSaving) return { text: "Сохранение...", style: styles.saveRationButton, disabled: true, iconColor: "#FFFFFF", icon: "cloud-upload-outline" };
-    if (isTemplateSaved && !hasChanges) return { text: "Рацион сохранен", style: [styles.saveRationButton, styles.saveButtonDisabled], disabled: true, iconColor: "#999999", icon: "checkmark-circle-outline" };
-    if (isTemplateSaved && hasChanges) return { text: "Обновить рацион", style: styles.saveRationButtonUpdate || styles.saveRationButton, disabled: false, iconColor: "#FFFFFF", icon: "refresh-outline" };
+  if (isSaving) {
+    return { text: "Сохранение...", style: styles.saveRationButton, disabled: true, iconColor: "#FFFFFF", icon: "cloud-upload-outline" };
+  }
+  
+  const isRealSavedPlan = activePlanName && activePlanName !== "Новый рацион (не сохранено)"; 
+
+  if (!isRealSavedPlan) {
     return { text: "Сохранить как шаблон", style: styles.saveRationButton, disabled: false, iconColor: "#FFFFFF", icon: "save-outline" };
-  };
+  }
+
+  if (isTemplateSaved && !hasChanges) {
+    return { text: "Рацион сохранен", style: [styles.saveRationButton, styles.saveButtonDisabled], disabled: true, iconColor: "#999999", icon: "checkmark-circle-outline" };
+  }
+  
+  if (hasChanges) {
+    return { text: "Обновить рацион", style: styles.saveRationButtonUpdate || styles.saveRationButton, disabled: false, iconColor: "#FFFFFF", icon: "refresh-outline" };
+  }
+  
+  return { text: "Сохранить как шаблон", style: styles.saveRationButton, disabled: false, iconColor: "#FFFFFF", icon: "save-outline" };
+};
   const currentButton = getButtonState();
   const displayPlanName = activePlanName || "Новый рацион (не сохранено)";
 
@@ -505,20 +593,25 @@ export default function Home() {
             <Text style={styles.caloriesTitle}>Цель на день: {dailyTarget} ккал</Text>
             <View style={styles.planCaloriesContainer}><Text style={styles.planCaloriesLabel}>Калорийность рациона:</Text><Text style={[styles.planCaloriesValue, isPlanOverLimit && styles.planCaloriesOverLimit]}>{totalPlanCalories} / {dailyTarget} ккал</Text></View>
             <View style={styles.remainingCaloriesContainer}>
-              <Text style={styles.remainingCaloriesLabel}>
-                {consumedCalories >= dailyTarget ? "Выполнено:" : (consumedCalories > dailyTarget ? "Превышение:" : "Осталось:")}
-              </Text>
-              <Text style={[
-                styles.remainingCaloriesValue, 
-                consumedCalories > dailyTarget && styles.remainingCaloriesOverLimit
-              ]}>
-                {consumedCalories > dailyTarget 
-                  ? `${consumedCalories - dailyTarget} ккал` 
-                  : consumedCalories >= dailyTarget 
-                    ? "Цель достигнута!"
-                    : `${remaining} ккал`}
-              </Text>
-            </View>
+  <Text style={styles.remainingCaloriesLabel}>
+    {consumedCalories > dailyTarget 
+      ? "Превышено:" 
+      : consumedCalories === dailyTarget 
+        ? "Выполнено:" 
+        : "Осталось:"}
+  </Text>
+  
+  <Text style={[
+    styles.remainingCaloriesValue, 
+    consumedCalories > dailyTarget && styles.remainingCaloriesOverLimit
+  ]}>
+    {consumedCalories > dailyTarget 
+      ? `${consumedCalories - dailyTarget} ккал` 
+      : consumedCalories === dailyTarget 
+        ? "Цель достигнута!"
+        : `${remaining} ккал`}
+  </Text>
+</View>
             <View style={styles.progressBar}><View style={[styles.progressFill, { width: `${progress}%`, backgroundColor: getProgressColor() }]} /></View>
             <View style={styles.kbruContainer}>
               <View style={styles.kbruHeaderRow}><Text style={[styles.kbruHeader, { flex: 1, textAlign: "left" }]}>Макронутриенты</Text><TouchableOpacity onPress={() => setShowInfoModal(true)} style={styles.infoButton}><Ionicons name="information-circle-outline" size={22} color="#6A9AA9" /></TouchableOpacity></View>
@@ -543,7 +636,7 @@ export default function Home() {
                     <View style={styles.imageContainer}>
                       {meal.image?.uri ? <Image source={meal.image} style={styles.recipeImage} /> : <View style={styles.recipeImagePlaceholder}><Ionicons name={getCategoryIcon(meal.category) as any} size={32} color="#6A9AA9" /></View>}
                       <DifficultyBadge difficulty={meal.difficultyLevel} />
-                      <TouchableOpacity style={styles.bookmarkButton} onPress={() => handleToggleBookmark(meal.id)} disabled={isUpdatingBookmark === meal.id}><Ionicons name={meal.bookmarked ? "bookmark" : "bookmark-outline"} size={18} color={meal.bookmarked ? "#FFD700" : "#6A9AA9"} /></TouchableOpacity>
+                      <TouchableOpacity style={styles.bookmarkButton} onPress={() => toggleBookmark(meal.id)} disabled={isUpdatingBookmark === meal.id}><Ionicons name={meal.bookmarked ? "bookmark" : "bookmark-outline"} size={18} color={meal.bookmarked ? "#FFD700" : "#6A9AA9"} /></TouchableOpacity>
                       <TouchableOpacity style={styles.editWeightButton} onPress={(e) => { e.stopPropagation(); handleEditWeight(meal); }}><Ionicons name="scale-outline" size={16} color="#FFF" /></TouchableOpacity>
                       {meal.isCustom && <TouchableOpacity style={styles.deleteButton} onPress={(e) => { e.stopPropagation(); removeMeal(meal.id); }}><Ionicons name="trash-outline" size={16} color="#FFF" /></TouchableOpacity>}
                       {meal.rating > 0 && <View style={styles.ratingBadge}><FontAwesome name="star" size={10} color="#FFD700" /><Text style={styles.ratingText}>{meal.rating.toFixed(1)}</Text></View>}
@@ -564,7 +657,7 @@ export default function Home() {
         </ScrollView>
       </View>
 
-      {/* Модальные окна */}
+      {/* Модальные окна (без изменений) */}
       <Modal visible={showSaveChoiceModal} transparent animationType="fade" onRequestClose={() => setShowSaveChoiceModal(false)}><View style={styles.saveChoiceOverlay}><View style={styles.saveChoiceContainer}><Ionicons name="save-outline" size={36} color="#6A9AA9" style={{ marginBottom: 12 }} /><Text style={styles.saveChoiceTitle}>Сохранение изменений</Text><Text style={styles.saveChoiceText}>Вы изменили блюдо в текущем рационе. Как вы хотите сохранить изменения?</Text><TouchableOpacity style={styles.saveChoiceUpdateButton} onPress={handleConfirmUpdate}><Text style={styles.saveChoiceUpdateButtonText}>Обновить текущий рацион</Text></TouchableOpacity><TouchableOpacity style={styles.saveChoiceNewButton} onPress={handleConfirmSaveAsNew}><Text style={styles.saveChoiceNewButtonText}>Сохранить как новый шаблон</Text></TouchableOpacity><TouchableOpacity onPress={() => setShowSaveChoiceModal(false)} style={{ paddingVertical: 8 }}><Text style={styles.saveChoiceCancelText}>Отмена</Text></TouchableOpacity></View></View></Modal>
       <Modal visible={showNameModal} transparent animationType="fade" onRequestClose={() => setShowNameModal(false)}><View style={styles.modalOverlay}><View style={styles.successModalContent}><Text style={styles.successTitle}>Сохранить как шаблон</Text><Text style={styles.successDescription}>Введите название для этого рациона:</Text><TextInput style={styles.nameInput} value={templateTitle} onChangeText={setTemplateTitle} placeholder="Название рациона" placeholderTextColor="#999" autoFocus /><View style={styles.successModalButtons}><TouchableOpacity style={[styles.modalButton, styles.modalButtonSecondary]} onPress={() => setShowNameModal(false)}><Text style={styles.modalButtonSecondaryText}>Отмена</Text></TouchableOpacity><TouchableOpacity style={[styles.modalButton, styles.modalButtonPrimary]} onPress={handleSaveWithName}><Text style={styles.modalButtonPrimaryText}>Сохранить</Text></TouchableOpacity></View></View></View></Modal>
       <Modal visible={showAfterSaveModal} transparent animationType="fade" onRequestClose={() => setShowAfterSaveModal(false)}><View style={styles.saveChoiceOverlay}><View style={styles.saveChoiceContainer}><Ionicons name="checkmark-circle" size={48} color="#4CAF50" style={{ marginBottom: 12 }} /><Text style={styles.saveChoiceTitle}>Рацион сохранен!</Text><Text style={styles.saveChoiceText}>Ваш рацион успешно сохранен.</Text><TouchableOpacity style={styles.saveChoiceUpdateButton} onPress={handleGoToPlans}><Text style={styles.saveChoiceUpdateButtonText}>Перейти к сохраненным планам</Text></TouchableOpacity><TouchableOpacity style={styles.saveChoiceNewButton} onPress={handleStayHere}><Text style={styles.saveChoiceNewButtonText}>Остаться здесь</Text></TouchableOpacity></View></View></Modal>
@@ -575,7 +668,6 @@ export default function Home() {
       <Modal visible={showAddWeightModal} transparent animationType="fade" onRequestClose={() => setShowAddWeightModal(false)}><View style={styles.modalOverlay}><View style={styles.weightModalContainer}><View style={styles.weightModalHeader}><Text style={styles.weightModalTitle}>Выберите вес порции</Text><TouchableOpacity onPress={() => setShowAddWeightModal(false)}><Ionicons name="close" size={24} color="#666" /></TouchableOpacity></View><View style={styles.weightModalContent}><Text style={styles.weightModalText}>{pendingRecipe?.title || "Блюдо"}</Text><Text style={styles.weightModalSubtext}>Калорийность: {Number(pendingRecipe?.calories) || 300} ккал на 100г</Text><View style={styles.weightInputContainer}><TextInput style={styles.weightInput} value={selectedWeight} onChangeText={setSelectedWeight} keyboardType="numeric" placeholder="Вес в граммах" placeholderTextColor="#999" /><Text style={styles.weightUnit}>гр</Text></View><Text style={styles.weightHint}>КБЖУ будут автоматически пересчитаны под выбранный вес</Text><View style={styles.weightModalButtons}><TouchableOpacity style={[styles.weightModalButton, styles.weightModalButtonCancel]} onPress={() => setShowAddWeightModal(false)}><Text style={styles.weightModalButtonCancelText}>Отмена</Text></TouchableOpacity><TouchableOpacity style={[styles.weightModalButton, styles.weightModalButtonSave]} onPress={handleAddRecipeWithSelectedWeight}><Text style={styles.weightModalButtonSaveText}>Добавить</Text></TouchableOpacity></View></View></View></View></Modal>
       <Modal visible={showInfoModal} transparent animationType="fade" onRequestClose={() => setShowInfoModal(false)}><View style={styles.infoModalOverlay}><View style={styles.infoModalContainer}><View style={styles.infoModalHeader}><Text style={styles.infoModalTitle}>О расчете КБЖУ</Text><TouchableOpacity onPress={() => setShowInfoModal(false)}><Ionicons name="close" size={24} color="#666" /></TouchableOpacity></View><ScrollView style={styles.infoModalContent} showsVerticalScrollIndicator={true}><Text style={styles.infoModalText}>{getPrecisionMessage()}</Text><TouchableOpacity style={styles.infoModalButton} onPress={() => setShowInfoModal(false)}><Text style={styles.infoModalButtonText}>Понятно</Text></TouchableOpacity></ScrollView></View></View></Modal>
       
-      {/* Модальное окно генерации */}
       <Modal visible={showGeneratingModal} transparent animationType="fade" onRequestClose={() => {}}>
         <View style={styles.modalOverlay}>
           <View style={styles.generatingModalContainer}>
