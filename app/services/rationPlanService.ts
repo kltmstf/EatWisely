@@ -1,3 +1,5 @@
+// app/services/rationPlanService.ts - ПОЛНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ
+
 import { 
   doc, 
   setDoc,
@@ -18,7 +20,9 @@ export interface Meal {
   id: string;
   recipeId: string;
   name: string;
+  title?: string;
   category: string;
+  mealType?: string;
   calories: number;
   proteins: number;
   fats: number;
@@ -55,8 +59,8 @@ export interface RationPlan {
   title: string;
   description: string;
   type: 'daily' | 'weekly';
-  meals?: Meal[]; // Поддержка новой плоской структуры
-  days: DayPlan[];
+  meals?: Meal[];
+  days?: DayPlan[];
   isTemplate: boolean;
   usedDates: string[];
   status: 'active' | 'completed' | 'archived' | 'draft' | 'template';
@@ -85,7 +89,8 @@ class RationPlanService {
       const snapshot = await getDocs(q);
       if (snapshot.empty) return null;
       const data = snapshot.docs[0].data();
-      return { id: snapshot.docs[0].id, ...data } as RationPlan;
+      const meals = data.meals || [];
+      return { id: snapshot.docs[0].id, ...data, meals } as RationPlan;
     } catch (error) {
       console.error('Ошибка получения активного плана:', error);
       return null;
@@ -124,8 +129,8 @@ class RationPlanService {
         });
       }
       
-      // ИСПРАВЛЕНО: Ищем meals сначала в корне, затем в днях
-      const meals = planData.meals || planData.days?.[0]?.meals || [];
+      // Берем meals из корня плана
+      const meals = planData.meals || [];
       const mealsCount = meals.length;
       const totalCalories = meals.reduce((sum: number, m: any) => sum + (m.calories || 0), 0);
       const totalProteins = meals.reduce((sum: number, m: any) => sum + (m.proteins || 0), 0);
@@ -143,6 +148,27 @@ class RationPlanService {
           totalCarbs,
           totalCookingTime: meals.reduce((sum: number, m: any) => sum + (m.cookingTime || 0), 0)
         },
+        planId: planId,
+        planTitle: planData.title || "План питания",
+        updatedAt: new Date().toISOString()
+      });
+      
+      // Обновляем ration_plan_days
+      const planDayId = `${userId}_${dateStr}_${planId}`;
+      const planDayRef = doc(db, 'ration_plan_days', planDayId);
+      await setDoc(planDayRef, {
+        userId: userId,
+        planId: planId,
+        date: dateStr,
+        meals: meals,
+        stats: {
+          totalCalories,
+          totalProteins,
+          totalFats,
+          totalCarbs,
+          totalCookingTime: meals.reduce((sum: number, m: any) => sum + (m.cookingTime || 0), 0)
+        },
+        isActive: true,
         updatedAt: new Date().toISOString()
       });
       
@@ -183,6 +209,19 @@ class RationPlanService {
           updatedAt: new Date().toISOString()
         });
       }
+      
+      // Также деактивируем в ration_plan_days
+      const planDayId = `${userId}_${today}_`;
+      const planDaysQuery = query(
+        collection(db, 'ration_plan_days'),
+        where('userId', '==', userId),
+        where('date', '==', today)
+      );
+      const planDaysSnap = await getDocs(planDaysQuery);
+      for (const doc of planDaysSnap.docs) {
+        await updateDoc(doc.ref, { isActive: false });
+      }
+      
       console.log(`✅ Деактивировано ${snapshot.size} планов на сегодня`);
     } catch (error) {
       console.error('Ошибка деактивации:', error);
@@ -211,7 +250,11 @@ class RationPlanService {
         orderBy('createdAt', 'desc')
       );
       const snapshot = await getDocs(q);
-      return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as RationPlan));
+      return snapshot.docs.map(doc => {
+        const data = doc.data();
+        const meals = data.meals || [];
+        return { id: doc.id, ...data, meals } as RationPlan;
+      });
     } catch (error) {
       console.error('Ошибка получения шаблонов:', error);
       return [];
@@ -228,11 +271,12 @@ class RationPlanService {
       const snapshot = await getDocs(q);
       const plans = snapshot.docs.map(doc => {
         const data = doc.data();
-        // ИСПРАВЛЕНО: Безопасный подсчет количества блюд из любой структуры
-        const mealsCount = data.meals?.length || data.days?.[0]?.meals?.length || data.mealsCount || 0;
+        const meals = data.meals || [];
+        const mealsCount = meals.length || data.mealsCount || 0;
         return { 
           id: doc.id, 
           ...data,
+          meals: meals,
           mealsCount: mealsCount
         } as RationPlan;
       });
@@ -252,29 +296,12 @@ class RationPlanService {
         const data = planSnap.data();
         if (userId && data.userId !== userId) return null;
 
-        // ✨ ХЕЙЛ-МЕРИ ДЛЯ АРХИВНЫХ ПЛАНОВ:
-        // Гарантируем, что meals и days ВСЕГДА существуют в объекте, 
-        // даже если план старый или плоский.
-        const meals = data.meals || data.days?.[0]?.meals || [];
-        const totalCalories = data.totalCalories || meals.reduce((sum: number, m: any) => sum + (m.calories || 0), 0);
+        const meals = data.meals || [];
         
-        const daysData = data.days || [{
-          day: 1,
-          meals: meals,
-          stats: {
-            totalCalories,
-            totalProteins: meals.reduce((sum: number, m: any) => sum + (m.proteins || 0), 0),
-            totalFats: meals.reduce((sum: number, m: any) => sum + (m.fats || 0), 0),
-            totalCarbs: meals.reduce((sum: number, m: any) => sum + (m.carbohydrates || 0), 0),
-            totalCookingTime: meals.reduce((sum: number, m: any) => sum + (m.cookingTime || 0), 0)
-          }
-        }];
-
         return { 
           id: planSnap.id, 
           ...data,
-          meals: meals,    // Теперь экран просмотра через .meals увидит блюда
-          days: daysData   // И экран просмотра через .days[0] тоже их увидит!
+          meals: meals
         } as RationPlan;
       }
       return null;
@@ -288,37 +315,22 @@ class RationPlanService {
     try {
       const now = new Date().toISOString();
       
-      // ИСПРАВЛЕНО: Извлекаем блюда как из корневого массива, так и из старого "days"
-      const meals = planData.meals || planData.days?.[0]?.meals || [];
+      const meals = planData.meals || [];
       const mealsCount = meals.length;
       const totalCalories = meals.reduce((sum: number, m: any) => sum + (m.calories || 0), 0);
-      
-      // ИСПРАВЛЕНО: Если days не передан, собираем его автоматически, чтобы не ломать типы
-      const daysData = planData.days || [{
-        day: 1,
-        meals: meals,
-        stats: {
-          totalCalories,
-          totalProteins: meals.reduce((sum: number, m: any) => sum + (m.proteins || 0), 0),
-          totalFats: meals.reduce((sum: number, m: any) => sum + (m.fats || 0), 0),
-          totalCarbs: meals.reduce((sum: number, m: any) => sum + (m.carbohydrates || 0), 0),
-          totalCookingTime: meals.reduce((sum: number, m: any) => sum + (m.cookingTime || 0), 0)
-        }
-      }];
 
       const newPlan = {
         userId,
         title: planData.title || 'Новый шаблон',
         description: planData.description || '',
         type: 'daily',
-        meals: meals, // Сохраняем в корень (новый вариант)
-        days: daysData, // Сохраняем обратную совместимость (старый вариант)
+        meals: meals,
         isTemplate: true,
         usedDates: [],
         status: 'template',
         category: planData.category || 'Шаблон',
         totalCalories: totalCalories,
-        totalDuration: '1日',
+        totalDuration: '1 день',
         mealsCount: mealsCount,
         createdAt: now,
         updatedAt: now,
@@ -334,84 +346,93 @@ class RationPlanService {
     }
   }
   
-  async saveDailyRationAsTemplate(userId: string, dailyPlanData: any): Promise<string> {
-    try {
-      const today = new Date().toISOString().split('T')[0];
-      const meals = dailyPlanData.meals || [];
-      const mealsCount = meals.length;
-      const totalCalories = meals.reduce((sum: number, m: any) => sum + (m.calories || 0), 0);
-      
-      const templateData: Partial<RationPlan> = {
-        userId: userId,
-        title: dailyPlanData.title || `Рацион на ${today}`,
-        description: dailyPlanData.description || `Дневной рацион от ${new Date().toLocaleDateString('ru-RU')}`,
-        type: 'daily',
-        meals: meals, // В корень
-        days: [{
-          day: 1,
-          meals: meals,
-          stats: dailyPlanData.stats || {
-            totalCalories: totalCalories,
-            totalProteins: meals.reduce((sum: number, m: any) => sum + (m.proteins || 0), 0),
-            totalFats: meals.reduce((sum: number, m: any) => sum + (m.fats || 0), 0),
-            totalCarbs: meals.reduce((sum: number, m: any) => sum + (m.carbohydrates || 0), 0),
-            totalCookingTime: meals.reduce((sum: number, m: any) => sum + (m.cookingTime || 0), 0)
-          }
-        }],
-        isTemplate: true,
-        usedDates: [],
-        status: 'template',
-        category: dailyPlanData.category || 'Дневной рацион',
-        totalCalories: totalCalories,
-        totalDuration: '1 день',
-        mealsCount: mealsCount,
-        planDate: today
-      };
-      
-      return await this.createRationPlan(userId, templateData);
-      
-    } catch (error) {
-      console.error('❌ Ошибка сохранения шаблона:', error);
-      throw error;
-    }
-  }
-  
   async updateRationPlan(userId: string, planId: string, planData: any): Promise<boolean> {
     try {
       const planRef = doc(db, 'ration_plans', planId);
       
-      // ИСПРАВЛЕНО: Безопасное чтение meals из корня или из days
-      const meals = planData.meals || planData.days?.[0]?.meals || [];
+      const planSnap = await getDoc(planRef);
+      if (!planSnap.exists()) throw new Error('План не найден');
+      if (planSnap.data().userId !== userId) throw new Error('Нет прав доступа');
+      
+      const meals = planData.meals || [];
       const mealsCount = meals.length;
       const totalCalories = meals.reduce((sum: number, m: any) => sum + (m.calories || 0), 0);
-      
-      // Пересобираем days автоматически, если пришла чисто плоская структура
-      const daysData = planData.days || [{
-        day: 1,
-        meals: meals,
-        stats: {
-          totalCalories,
-          totalProteins: meals.reduce((sum: number, m: any) => sum + (m.proteins || 0), 0),
-          totalFats: meals.reduce((sum: number, m: any) => sum + (m.fats || 0), 0),
-          totalCarbs: meals.reduce((sum: number, m: any) => sum + (m.carbohydrates || 0), 0),
-          totalCookingTime: meals.reduce((sum: number, m: any) => sum + (m.cookingTime || 0), 0)
-        }
-      }];
+      const totalProteins = meals.reduce((sum: number, m: any) => sum + (m.proteins || 0), 0);
+      const totalFats = meals.reduce((sum: number, m: any) => sum + (m.fats || 0), 0);
+      const totalCarbs = meals.reduce((sum: number, m: any) => sum + (m.carbohydrates || 0), 0);
 
-      const updateData = {
-        ...planData,
+      const updateData: any = {
         meals: meals,
-        days: daysData,
         mealsCount: mealsCount,
         totalCalories: totalCalories,
-        updatedAt: new Date().toISOString()
+        updatedAt: new Date().toISOString(),
       };
-      delete updateData.id;
-      delete updateData.userId;
-      delete updateData.createdAt;
+      
+      if (planData.title !== undefined && planData.title !== null) {
+        updateData.title = planData.title;
+      }
+      if (planData.description !== undefined && planData.description !== null) {
+        updateData.description = planData.description;
+      }
+      if (planData.status !== undefined && planData.status !== null) {
+        updateData.status = planData.status;
+      }
       
       await updateDoc(planRef, updateData);
       console.log('✅ План обновлен:', planId);
+      
+      // Проверяем, активен ли этот план сегодня и обновляем связанные документы
+      const today = new Date().toISOString().split('T')[0];
+      
+      // Проверяем, активен ли план на сегодня
+      const activePlansQuery = query(
+        collection(db, 'ration_plans'),
+        where('userId', '==', userId),
+        where('status', '==', 'active'),
+        where('startDate', '==', today)
+      );
+      const activePlansSnap = await getDocs(activePlansQuery);
+      const isActiveToday = activePlansSnap.docs.some(doc => doc.id === planId);
+      
+      if (isActiveToday) {
+        // Обновляем daily_plans
+        const dailyPlanRef = doc(db, 'users', userId, 'daily_plans', today);
+        await setDoc(dailyPlanRef, {
+          meals: meals,
+          stats: {
+            totalCalories,
+            totalProteins,
+            totalFats,
+            totalCarbs,
+            totalCookingTime: meals.reduce((sum: number, m: any) => sum + (m.cookingTime || 0), 0)
+          },
+          updatedAt: new Date().toISOString(),
+          planId: planId,
+          planTitle: planData.title || planSnap.data().title
+        });
+        console.log("✅ Daily plan обновлен");
+        
+        // Обновляем ration_plan_days
+        const planDayId = `${userId}_${today}_${planId}`;
+        const planDayRef = doc(db, 'ration_plan_days', planDayId);
+        await setDoc(planDayRef, {
+          userId: userId,
+          planId: planId,
+          date: today,
+          meals: meals,
+          stats: {
+            totalCalories,
+            totalProteins,
+            totalFats,
+            totalCarbs,
+            totalCookingTime: meals.reduce((sum: number, m: any) => sum + (m.cookingTime || 0), 0)
+          },
+          isActive: true,
+          updatedAt: new Date().toISOString()
+        });
+        console.log("✅ Ration plan days обновлен");
+      }
+      
       return true;
       
     } catch (error) {

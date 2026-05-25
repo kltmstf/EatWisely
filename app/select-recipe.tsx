@@ -1,4 +1,4 @@
-// app/select-recipe.tsx - С УЛУЧШЕННОЙ ФИЛЬТРАЦИЕЙ
+// app/select-recipe.tsx - ИСПРАВЛЕННАЯ ВЕРСИЯ (ПЕРЕДАЧА ДАННЫХ ЧЕРЕЗ router.back)
 
 import { useRouter, useLocalSearchParams } from "expo-router";
 import React, { useState, useEffect, useRef, useCallback } from "react";
@@ -27,11 +27,7 @@ import {
   doc,
   updateDoc,
   setDoc,
-  limit,
-  startAfter,
   orderBy,
-  QueryDocumentSnapshot,
-  DocumentData,
 } from "firebase/firestore";
 import { getApps, initializeApp } from "firebase/app";
 import {
@@ -46,7 +42,6 @@ declare const __firebase_config: string | undefined;
 
 const { width } = Dimensions.get("window");
 const CARD_WIDTH = (width - 48) / 2;
-const RECIPES_PER_PAGE = 10;
 
 interface Recipe {
   id: string;
@@ -136,7 +131,6 @@ export default function SelectRecipeScreen() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [hasMore, setHasMore] = useState(true);
   const [totalCount, setTotalCount] = useState(0);
   
   const [showWeightModal, setShowWeightModal] = useState(false);
@@ -150,15 +144,18 @@ export default function SelectRecipeScreen() {
   const scrollViewRef = useRef<ScrollView>(null);
   const isInitialLoadDone = useRef(false);
   const isComponentMounted = useRef(true);
-  const currentPageRef = useRef<number>(0);
-  const filteredRecipesRef = useRef<Recipe[]>([]);
   const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
-  const isReplacement = params.isReplacement === "true";
+  // Определяем режим работы
+  const mode = params.mode as string || "single";
+  const returnTo = params.returnTo as string || "home";
+  const existingMeals = params.existingMeals ? JSON.parse(params.existingMeals as string) : [];
+  const isReplacement = mode === "replacement";
   const mealIndex = params.mealIndex;
   const currentMealId = params.currentMealId;
-  const currentMealCategory = params.currentMealCategory;
-  const isCustomReplacement = params.isCustomReplacement === "true";
+
+  // Создаем Set существующих ID рецептов
+  const existingRecipeIds = new Set(existingMeals.map((m: any) => m.id));
 
   useEffect(() => {
     const initializeFirebase = async () => {
@@ -172,21 +169,19 @@ export default function SelectRecipeScreen() {
       }
     };
     initializeFirebase();
+    
     return () => { isComponentMounted.current = false; };
   }, []);
 
-  // Функция фильтрации рецептов
   const filterRecipes = useCallback((recipesToFilter: Recipe[]) => {
     let filtered = recipesToFilter;
     
-    // Фильтр по категории
     if (selectedCategory !== "Все") {
       filtered = filtered.filter(recipe => 
         getCategoryName(recipe.mealType) === selectedCategory
       );
     }
     
-    // Фильтр по поисковому запросу
     if (searchQuery.trim()) {
       const queryLower = searchQuery.toLowerCase().trim();
       filtered = filtered.filter(recipe =>
@@ -198,35 +193,12 @@ export default function SelectRecipeScreen() {
     return filtered;
   }, [selectedCategory, searchQuery]);
 
-  // Функция обновления отображаемых рецептов с пагинацией
-  const updateDisplayedRecipes = useCallback((filtered: Recipe[], loadMore: boolean = false) => {
-    if (loadMore) {
-      const startIndex = (currentPageRef.current + 1) * RECIPES_PER_PAGE;
-      const endIndex = Math.min(startIndex + RECIPES_PER_PAGE, filtered.length);
-      const newRecipes = filtered.slice(startIndex, endIndex);
-      
-      if (newRecipes.length > 0) {
-        setDisplayedRecipes(prev => [...prev, ...newRecipes]);
-        currentPageRef.current++;
-      }
-      
-      if (endIndex >= filtered.length) {
-        setHasMore(false);
-      } else {
-        setHasMore(true);
-      }
-    } else {
-      const paginated = filtered.slice(0, RECIPES_PER_PAGE);
-      setDisplayedRecipes(paginated);
-      currentPageRef.current = 0;
-      setHasMore(paginated.length < filtered.length);
-    }
-    
+  const updateDisplayedRecipes = useCallback((filtered: Recipe[]) => {
+    const paginated = filtered.slice(0, 30);
+    setDisplayedRecipes(paginated);
     setTotalCount(filtered.length);
-    filteredRecipesRef.current = filtered;
   }, []);
 
-  // Загрузка всех рецептов из Firebase
   const loadAllRecipes = useCallback(async () => {
     if (!db || !isComponentMounted.current) return;
 
@@ -282,7 +254,7 @@ export default function SelectRecipeScreen() {
 
       setAllRecipes(loadedRecipes);
       const filtered = filterRecipes(loadedRecipes);
-      updateDisplayedRecipes(filtered, false);
+      updateDisplayedRecipes(filtered);
       isInitialLoadDone.current = true;
     } catch (error) { 
       console.error("Ошибка загрузки:", error); 
@@ -291,14 +263,13 @@ export default function SelectRecipeScreen() {
     }
   }, [db, userId, filterRecipes, updateDisplayedRecipes]);
 
-  // Debounced загрузка при изменении фильтров
   useEffect(() => {
     if (!isInitialLoadDone.current || loading) return;
     
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => {
       const filtered = filterRecipes(allRecipes);
-      updateDisplayedRecipes(filtered, false);
+      updateDisplayedRecipes(filtered);
       scrollViewRef.current?.scrollTo({ y: 0, animated: true });
     }, 300);
     
@@ -321,18 +292,6 @@ export default function SelectRecipeScreen() {
     setRefreshing(false);
   }, [db, loadAllRecipes, refreshing]);
 
-  const handleScroll = useCallback((event: any) => {
-    const { layoutMeasurement, contentOffset, contentSize } = event.nativeEvent;
-    const isCloseToBottom = layoutMeasurement.height + contentOffset.y >= contentSize.height - 100;
-    
-    if (isCloseToBottom && !loadingMore && hasMore && !loading && !refreshing && isInitialLoadDone.current) {
-      setLoadingMore(true);
-      const filtered = filterRecipes(allRecipes);
-      updateDisplayedRecipes(filtered, true);
-      setLoadingMore(false);
-    }
-  }, [loadingMore, hasMore, loading, refreshing, filterRecipes, updateDisplayedRecipes, allRecipes]);
-
   const toggleBookmark = async (recipeId: string) => {
     if (!db || !userId || isUpdating) return;
     setIsUpdating(true);
@@ -341,7 +300,6 @@ export default function SelectRecipeScreen() {
       if (!recipe) return;
       const isCurrentlyBookmarked = recipe.bookmarked;
       
-      // Обновляем состояние в allRecipes и displayedRecipes
       setAllRecipes(prev => prev.map(r => r.id === recipeId ? { ...r, bookmarked: !isCurrentlyBookmarked } : r));
       setDisplayedRecipes(prev => prev.map(r => r.id === recipeId ? { ...r, bookmarked: !isCurrentlyBookmarked } : r));
       
@@ -365,7 +323,7 @@ export default function SelectRecipeScreen() {
     setSearchQuery("");
     setSelectedCategory("Все");
     const filtered = filterRecipes(allRecipes);
-    updateDisplayedRecipes(filtered, false);
+    updateDisplayedRecipes(filtered);
     scrollViewRef.current?.scrollTo({ y: 0, animated: true });
   };
 
@@ -392,14 +350,19 @@ export default function SelectRecipeScreen() {
     });
   };
 
-  const openWeightModal = (recipe: Recipe) => {
+  const handleAddRecipe = (recipe: Recipe) => {
+    if (existingRecipeIds.has(recipe.id) && !isReplacement) {
+      Alert.alert("Внимание", "Этот рецепт уже добавлен в план");
+      return;
+    }
+    
     const recipeData = {
       id: recipe.id,
       title: recipe.title,
-      calories: recipe.calories || 300,
-      proteins: recipe.proteins || 20,
-      fats: recipe.fats || 10,
-      carbohydrates: recipe.carbohydrates || 30,
+      calories: recipe.calories || 0,
+      proteins: recipe.proteins || 0,
+      fats: recipe.fats || 0,
+      carbohydrates: recipe.carbohydrates || 0,
       cookingTime: recipe.cookingTime || 20,
       difficultyLevel: recipe.difficultyLevel || "Легко",
       imageUrl: recipe.imageUrl,
@@ -407,7 +370,7 @@ export default function SelectRecipeScreen() {
       category: getCategoryName(recipe.mealType),
       rating: recipe.rating || 0,
       isCustom: false,
-      caloriesPer100g: recipe.calories || 300,
+      caloriesPer100g: recipe.calories || 0,
       totalWeight: recipe.totalWeight || 250
     };
     setPendingRecipeForWeight(recipeData);
@@ -422,34 +385,47 @@ export default function SelectRecipeScreen() {
       Alert.alert("Ошибка", "Введите вес от 50 до 1000 грамм");
       return;
     }
+    
     const caloriesPer100g = pendingRecipeForWeight.caloriesPer100g || pendingRecipeForWeight.calories || 0;
     const proteinsPer100g = pendingRecipeForWeight.proteins || 0;
     const fatsPer100g = pendingRecipeForWeight.fats || 0;
     const carbsPer100g = pendingRecipeForWeight.carbohydrates || 0;
+    
     const calculatedCalories = Math.round((caloriesPer100g * weightNum) / 100);
     const calculatedProteins = Math.round((proteinsPer100g * weightNum) / 100);
     const calculatedFats = Math.round((fatsPer100g * weightNum) / 100);
     const calculatedCarbs = Math.round((carbsPer100g * weightNum) / 100);
+    
     const recipeWithWeight = {
-      ...pendingRecipeForWeight,
+      id: pendingRecipeForWeight.id,
+      title: pendingRecipeForWeight.title,
+      category: pendingRecipeForWeight.category,
       calories: calculatedCalories,
       proteins: calculatedProteins,
       fats: calculatedFats,
       carbohydrates: calculatedCarbs,
       weight: `${weightNum}г`,
-      totalWeight: weightNum
+      cookingTime: pendingRecipeForWeight.cookingTime,
+      difficultyLevel: pendingRecipeForWeight.difficultyLevel,
+      imageUrl: pendingRecipeForWeight.imageUrl,
     };
+    
     setShowWeightModal(false);
-    if (isReplacement) {
-      router.push({
-        pathname: "/home",
-        params: {
+    
+    // Возвращаемся на предыдущую страницу с параметрами
+    router.back();
+    
+    // Небольшая задержка перед отправкой параметров
+    setTimeout(() => {
+      if (isReplacement) {
+        router.setParams({
           replaceMeal: JSON.stringify({
             index: parseInt(mealIndex as string),
             meal: {
               id: currentMealId || `meal-${Date.now()}`,
               category: recipeWithWeight.category,
               name: recipeWithWeight.title,
+              title: recipeWithWeight.title,
               calories: recipeWithWeight.calories,
               proteins: recipeWithWeight.proteins,
               fats: recipeWithWeight.fats,
@@ -459,7 +435,6 @@ export default function SelectRecipeScreen() {
               bookmarked: false,
               cookingTime: recipeWithWeight.cookingTime,
               difficultyLevel: recipeWithWeight.difficultyLevel,
-              rating: recipeWithWeight.rating,
               recipeId: recipeWithWeight.id,
               isCustom: false,
               canBeRemoved: true,
@@ -468,17 +443,14 @@ export default function SelectRecipeScreen() {
             }
           }),
           refreshHome: Date.now().toString()
-        }
-      });
-    } else {
-      router.push({
-        pathname: "/home",
-        params: {
+        });
+      } else {
+        router.setParams({
           selectedRecipe: JSON.stringify(recipeWithWeight),
           refreshHome: Date.now().toString()
-        }
-      });
-    }
+        });
+      }
+    }, 50);
   };
 
   if (loading && !refreshing && displayedRecipes.length === 0) {
@@ -498,9 +470,11 @@ export default function SelectRecipeScreen() {
           <Ionicons name="arrow-back" size={24} color="#1a1a1a" />
         </TouchableOpacity>
         <View style={styles.headerTextContainer}>
-          <Text style={styles.greetingText}>{isReplacement ? "Заменить рецепт" : "Выберите рецепт"}</Text>
+          <Text style={styles.greetingText}>
+            {isReplacement ? "Заменить рецепт" : "Добавить рецепт"}
+          </Text>
           <Text style={styles.dietText}>
-            {isReplacement ? "Выберите новый рецепт для замены" : "Нажмите на рецепт для просмотра или на кнопку для добавления"}
+            {isReplacement ? "Выберите новый рецепт для замены" : "Нажмите на кнопку Добавить, чтобы добавить рецепт в план"}
           </Text>
         </View>
         <View style={{ width: 40 }} />
@@ -512,8 +486,6 @@ export default function SelectRecipeScreen() {
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.scrollContent}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={["#6A9AA9"]} tintColor="#6A9AA9" />}
-        onScroll={handleScroll}
-        scrollEventThrottle={400}
       >
         <View style={styles.searchSection}>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.categoriesContainer}>
@@ -567,11 +539,12 @@ export default function SelectRecipeScreen() {
               const safeDifficulty = String(recipe.difficultyLevel || "Легко");
               const safeRating = (recipe.rating && recipe.rating > 0) ? recipe.rating.toFixed(1) : null;
               const safeId = String(recipe.id);
+              const isAlreadyAdded = existingRecipeIds.has(recipe.id);
               
               return (
                 <View key={safeId} style={styles.recipeColumn}>
                   <TouchableOpacity 
-                    style={styles.recipeCard} 
+                    style={[styles.recipeCard, isAlreadyAdded && styles.recipeCardDisabled]}
                     onPress={() => handleRecipePress(recipe)} 
                     activeOpacity={0.7}
                   >
@@ -604,6 +577,11 @@ export default function SelectRecipeScreen() {
                       >
                         <Ionicons name={recipe.bookmarked ? "bookmark" : "bookmark-outline"} size={18} color="#6A9AA9" />
                       </TouchableOpacity>
+                      {isAlreadyAdded && (
+                        <View style={styles.alreadyAddedBadge}>
+                          <Text style={styles.alreadyAddedText}>В плане</Text>
+                        </View>
+                      )}
                     </View>
                     <View style={styles.recipeContent}>
                       <View style={styles.recipeInfo}>
@@ -618,13 +596,16 @@ export default function SelectRecipeScreen() {
                         </View>
                       </View>
                       <TouchableOpacity 
-                        style={styles.selectButton} 
+                        style={[styles.selectButton, isAlreadyAdded && styles.selectButtonDisabled]}
                         onPress={(e) => { 
                           e.stopPropagation(); 
-                          openWeightModal(recipe); 
+                          handleAddRecipe(recipe);
                         }}
+                        disabled={isAlreadyAdded}
                       >
-                        <Text style={styles.selectButtonText}>{isReplacement ? "Заменить" : "Добавить"}</Text>
+                        <Text style={[styles.selectButtonText, isAlreadyAdded && styles.selectButtonTextDisabled]}>
+                          {isAlreadyAdded ? "Уже в плане" : (isReplacement ? "Заменить" : "Добавить")}
+                        </Text>
                       </TouchableOpacity>
                     </View>
                   </TouchableOpacity>
@@ -659,6 +640,7 @@ export default function SelectRecipeScreen() {
             <View style={styles.weightModalContent}>
               <Text style={styles.weightModalText}>{pendingRecipeForWeight?.title || ""}</Text>
               <Text style={styles.weightModalSubtext}>Калорийность: {pendingRecipeForWeight?.caloriesPer100g || 0} ккал на 100г</Text>
+              
               <View style={styles.weightInputContainer}>
                 <TextInput 
                   style={styles.weightInput} 
@@ -671,6 +653,7 @@ export default function SelectRecipeScreen() {
                 <Text style={styles.weightUnit}>гр</Text>
               </View>
               <Text style={styles.weightHint}>КБЖУ будут автоматически пересчитаны под выбранный вес</Text>
+              
               <View style={styles.weightModalButtons}>
                 <TouchableOpacity 
                   style={[styles.weightModalButton, styles.weightModalButtonCancel]} 
@@ -702,7 +685,7 @@ const styles = StyleSheet.create({
   emptyState: { alignItems: "center", padding: 40, marginTop: 40 },
   emptyStateText: { fontSize: 18, color: "#6C757D", fontFamily: "Playfair Display Regular", marginBottom: 8, marginTop: 16 },
   emptyStateSubtext: { fontSize: 14, color: "#6C757D", fontFamily: "Playfair Display Regular", textAlign: "center", marginBottom: 24 },
-  header: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", paddingHorizontal: 20, paddingTop: 50, paddingBottom: 15, backgroundColor: "#FFFFFF", borderBottomWidth: 2, borderBottomColor: "#6A9AA9" },
+  header: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingHorizontal: 20, paddingTop: 50, paddingBottom: 15, backgroundColor: "#FFFFFF", borderBottomWidth: 2, borderBottomColor: "#6A9AA9" },
   backButton: { padding: 8, marginRight: 10 },
   headerTextContainer: { flex: 1, marginRight: 15 },
   greetingText: { fontSize: 24, color: "#1a1a1a", marginBottom: 4, fontFamily: "Playfair Display Bold" },
@@ -722,18 +705,21 @@ const styles = StyleSheet.create({
   recipesSection: { backgroundColor: "#FFFFFF", padding: 15, paddingBottom: 20 },
   recipesHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12 },
   recipesTitle: { fontSize: 16, color: "#000000ff", fontWeight: "500", fontFamily: "Playfair Display Regular" },
-  resetButton: { padding: 8 },
   recipesGrid: { flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between" },
   recipeColumn: { width: CARD_WIDTH, marginBottom: 16 },
-  recipeCard: { backgroundColor: "#C2DAE2", borderRadius: 16, overflow: "hidden", shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 3.84, elevation: 5, minHeight: 280 },
+  recipeCard: { backgroundColor: "#C2DAE2", borderRadius: 16, overflow: "hidden", shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 3.84, elevation: 5, minHeight: 280, position: "relative" },
+  recipeCardDisabled: { opacity: 0.6 },
   imageContainer: { position: "relative", height: 120, backgroundColor: "#F8F8F8", justifyContent: "center", alignItems: "center" },
   recipeImage: { width: "100%", height: "100%" },
+  recipeImagePlaceholder: { width: "100%", height: "100%", backgroundColor: "#E5F0F5", justifyContent: "center", alignItems: "center" },
   recipeBadges: { position: "absolute", top: 8, left: 8, flexDirection: "column", gap: 4 },
   ratingBadge: { flexDirection: "row", alignItems: "center", backgroundColor: "rgba(255,255,255,0.9)", paddingHorizontal: 6, paddingVertical: 3, borderRadius: 10 },
   ratingText: { fontSize: 10, fontWeight: "bold", color: "#000000", fontFamily: "Playfair Display Regular", marginLeft: 2 },
   difficultyBadge: { paddingHorizontal: 6, paddingVertical: 3, borderRadius: 10 },
   difficultyText: { fontSize: 9, fontWeight: "bold", color: "#FFFFFF", fontFamily: "Playfair Display Regular" },
   bookmarkButton: { position: "absolute", top: 8, right: 8, width: 32, height: 32, borderRadius: 16, backgroundColor: "rgba(255,255,255,0.9)", alignItems: "center", justifyContent: "center", shadowColor: "#000", shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.2, shadowRadius: 1.41, elevation: 2 },
+  alreadyAddedBadge: { position: "absolute", bottom: 8, left: 8, backgroundColor: "#4CAF50", paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12 },
+  alreadyAddedText: { fontSize: 10, color: "#FFF", fontFamily: "Playfair Display Bold" },
   recipeContent: { padding: 12, flex: 1, justifyContent: "space-between" },
   recipeInfo: { flex: 1, marginBottom: 8 },
   recipeName: { fontSize: 14, fontWeight: "600", color: "#212529", marginBottom: 4, fontFamily: "Playfair Display Regular", lineHeight: 18, minHeight: 36 },
@@ -743,10 +729,11 @@ const styles = StyleSheet.create({
   timeIcon: { marginRight: 4 },
   recipeTime: { fontSize: 12, color: "#6C757D", fontFamily: "Playfair Display Regular" },
   selectButton: { backgroundColor: "#9BDF11", paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, alignItems: "center", justifyContent: "center", minHeight: 36, marginTop: 8 },
+  selectButtonDisabled: { backgroundColor: "#C2DAE2" },
   selectButtonText: { color: "#000000ff", fontSize: 12, fontWeight: "normal", fontFamily: "Playfair Display Regular" },
+  selectButtonTextDisabled: { color: "#999" },
   footerLoader: { flexDirection: "row", justifyContent: "center", alignItems: "center", paddingVertical: 20, gap: 10 },
   footerLoaderText: { fontSize: 14, color: "#6A9AA9", fontFamily: "Playfair Display Regular" },
-  recipeImagePlaceholder: { width: "100%", height: "100%", backgroundColor: "#E5F0F5", justifyContent: "center", alignItems: "center" },
   modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "center", alignItems: "center", padding: 20 },
   weightModalContainer: { backgroundColor: "#FFF", borderRadius: 20, width: "85%", overflow: "hidden" },
   weightModalHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 16, borderBottomWidth: 1, borderBottomColor: "#E0E0E0" },
