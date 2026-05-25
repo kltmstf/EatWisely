@@ -14,11 +14,12 @@ import {
   Keyboard,
   Platform,
   ActivityIndicator,
-  Image, // НОВЫЙ ИМПОРТ
+  Image,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { userService } from "../app/services/userService";
-import * as ImagePicker from 'expo-image-picker'; // НОВЫЙ ИМПОРТ
+import { userService, calculateAgeFromBirthYear } from "../app/services/userService";
+import * as ImagePicker from 'expo-image-picker';
+import DateTimePicker from '@react-native-community/datetimepicker';
 
 // --- ТИПЫ ДАННЫХ ---
 
@@ -27,6 +28,7 @@ export type LocalProfileData = {
   email: string;
   description: string;
   age: string;
+  birthYear: string;
   height: string;
   gender: string;
   weight: string;
@@ -39,8 +41,8 @@ export type LocalProfileData = {
   isPrivate: boolean;
   cookingTimeLimit: string;
   isProfileFilled: boolean;
-  photoURL?: string; // НОВОЕ ПОЛЕ
-  cloudinaryPublicId?: string; // НОВОЕ ПОЛЕ
+  photoURL?: string;
+  cloudinaryPublicId?: string;
 };
 
 // Тип для выбранных опций
@@ -56,7 +58,7 @@ const useAuthInfo = () => {
   const [authData, setAuthData] = useState<{ 
     name: string; 
     email: string;
-    photoURL?: string; // НОВОЕ ПОЛЕ
+    photoURL?: string;
   } | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -68,7 +70,7 @@ const useAuthInfo = () => {
         setAuthData({
           name: user.displayName || user.email?.split('@')[0] || "Пользователь",
           email: user.email || "email_not_found@example.com",
-          photoURL: user.photoURL || undefined, // НОВОЕ ПОЛЕ
+          photoURL: user.photoURL || undefined,
         });
       } else {
         setAuthData({ name: "", email: "" });
@@ -93,7 +95,7 @@ const useAuthInfo = () => {
   return {
     name: authData?.name || "",
     email: authData?.email || "",
-    photoURL: authData?.photoURL || "", // НОВОЕ ПОЛЕ
+    photoURL: authData?.photoURL || "",
     isLoading: isLoading,
   };
 };
@@ -101,6 +103,11 @@ const useAuthInfo = () => {
 export default function ProfileSetup() {
   const router = useRouter();
   const [currentStep, setCurrentStep] = useState(0);
+  const [forceUpdate, setForceUpdate] = useState(false);
+  
+  // Состояния для DatePicker
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [selectedDate, setSelectedDate] = useState(new Date());
 
   // Получаем реальные данные аутентификации пользователя
   const { 
@@ -112,13 +119,13 @@ export default function ProfileSetup() {
 
   // useRef для основных данных
   const profileDataRef = useRef<LocalProfileData>({
-    // ✅ ИНИЦИАЛИЗИРУЕМ ДАННЫМИ ИЗ AUTH
     name: "",
     email: "",
-    photoURL: "", // НОВОЕ ПОЛЕ
+    photoURL: "",
     customNutritionType: "",
     description: "",
     age: "",
+    birthYear: "",
     height: "",
     gender: "Муж",
     weight: "",
@@ -130,17 +137,34 @@ export default function ProfileSetup() {
     isPrivate: false,
     cookingTimeLimit: "60",
     isProfileFilled: false,
-    cloudinaryPublicId: "", // НОВОЕ ПОЛЕ
+    cloudinaryPublicId: "",
   });
 
   // Состояние для отображения фото
   const [profilePhoto, setProfilePhoto] = useState<string | null>(null);
   const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
 
-  // ⭐️ ДОБАВЛЕНИЕ useEffect для синхронизации auth данных
+  // Функция для обновления года рождения и автоматического расчета возраста
+  const updateBirthYear = (birthYear: string) => {
+    profileDataRef.current.birthYear = birthYear;
+    const age = calculateAgeFromBirthYear(birthYear);
+    profileDataRef.current.age = age;
+    setForceUpdate(prev => !prev);
+  };
+
+  // Обработчик выбора даты
+  const onDateChange = (event: any, selectedDate?: Date) => {
+    setShowDatePicker(Platform.OS === 'ios');
+    if (selectedDate) {
+      setSelectedDate(selectedDate);
+      const year = selectedDate.getFullYear().toString();
+      updateBirthYear(year);
+    }
+  };
+
+  // ⭐️ useEffect для синхронизации auth данных
   useEffect(() => {
     if (!isAuthLoading) {
-        // Устанавливаем данные из Auth в Ref, только если они пустые
         if (profileDataRef.current.name === "") {
             profileDataRef.current.name = authName;
         }
@@ -317,7 +341,6 @@ export default function ProfileSetup() {
       const result = await userService.uploadProfilePhoto(imageUri, user.uid);
       
       if (result.success && result.url) {
-        // Обновляем состояние и Ref
         setProfilePhoto(result.url);
         profileDataRef.current.photoURL = result.url;
         profileDataRef.current.cloudinaryPublicId = result.publicId;
@@ -389,11 +412,11 @@ export default function ProfileSetup() {
     Keyboard.dismiss();
 
     if (currentStep === 1) {
-      const { age, height, weight } = profileDataRef.current;
-      if (!age.trim() || !height.trim() || !weight.trim()) {
+      const { birthYear, height, weight } = profileDataRef.current;
+      if (!birthYear.trim() || !height.trim() || !weight.trim()) {
         Alert.alert(
           "Внимание",
-          "Пожалуйста, заполните поля Возраст, Рост и Вес."
+          "Пожалуйста, заполните поля Год рождения, Рост и Вес."
         );
         return;
       }
@@ -434,11 +457,28 @@ export default function ProfileSetup() {
     [currentStep, steps.length]
   );
 
+  // Вспомогательная функция для склонения слова "год"
+  const getAgeWord = (age: number): string => {
+    const lastDigit = age % 10;
+    const lastTwoDigits = age % 100;
+    
+    if (lastTwoDigits >= 11 && lastTwoDigits <= 19) {
+      return "лет";
+    }
+    
+    switch (lastDigit) {
+      case 1: return "год";
+      case 2:
+      case 3:
+      case 4: return "года";
+      default: return "лет";
+    }
+  };
+
   // Мемоизированные компоненты шагов
   const Step1 = useCallback(() => {
     const data = profileDataRef.current;
     
-    // Используем значения из Ref или Auth
     const currentName = data.name || authName;
     const currentEmail = data.email || authEmail;
     const currentPhoto = profilePhoto || data.photoURL || authPhotoURL;
@@ -479,7 +519,6 @@ export default function ProfileSetup() {
           </View>
         )}
         
-        {/* Поля Имя и Email */}
         <View style={styles.inputGroup}>
           <Text style={styles.label}>Имя</Text>
           <TextInput
@@ -519,19 +558,44 @@ export default function ProfileSetup() {
   const Step2 = useCallback(() => {
     const data = profileDataRef.current;
     const { gender } = selectedOptions;
+    
+    const calculatedAge = data.age ? `${data.age} ${getAgeWord(parseInt(data.age, 10))}` : "не указан";
+    
     return (
       <View style={styles.stepContent}>
         <View style={styles.dataGrid}>
+          
+          {/* Год рождения с DatePicker */}
           <View style={styles.inputGroup}>
-            <Text style={styles.label}>Возраст</Text>
-            <TextInput
-              style={styles.input}
-              defaultValue={data.age}
-              onChangeText={(text) => updateProfileData("age", text)}
-              placeholder="лет"
-              placeholderTextColor="#999"
-              keyboardType="numeric"
-            />
+            <Text style={styles.label}>Год рождения</Text>
+            <TouchableOpacity 
+              style={styles.datePickerButton}
+              onPress={() => setShowDatePicker(true)}
+            >
+              <Text style={data.birthYear ? styles.dateText : styles.placeholderDateText}>
+                {data.birthYear ? `${data.birthYear} год` : "Выберите год рождения"}
+              </Text>
+              <Ionicons name="chevron-down" size={20} color="#6A9AA9" />
+            </TouchableOpacity>
+            
+            {showDatePicker && (
+              <DateTimePicker
+                value={selectedDate}
+                mode="date"
+                display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                onChange={onDateChange}
+                maximumDate={new Date()}
+                minimumDate={new Date(1900, 0, 1)}
+              />
+            )}
+          </View>
+
+          {/* Нередактируемое поле возраста */}
+          <View style={styles.inputGroup}>
+            <Text style={styles.label}>Возраст (рассчитывается автоматически)</Text>
+            <View style={styles.ageDisplayContainer}>
+              <Text style={styles.ageDisplayText}>{calculatedAge}</Text>
+            </View>
           </View>
 
           <View style={styles.inputGroup}>
@@ -585,7 +649,7 @@ export default function ProfileSetup() {
         </View>
       </View>
     );
-  }, [updateProfileData, genders, selectedOptions.gender]);
+  }, [updateProfileData, genders, selectedOptions.gender, forceUpdate, showDatePicker, selectedDate, onDateChange]);
 
   const Step3 = useCallback(() => {
     const { goal, activity } = selectedOptions;
@@ -693,7 +757,6 @@ export default function ProfileSetup() {
           </View>
         </View>
 
-        {/* Поле для ввода пользовательского типа питания */}
         {isCustomNutrition && (
           <View style={styles.inputGroup}>
             <Text style={styles.label}>Укажите свой тип питания</Text>
@@ -708,7 +771,6 @@ export default function ProfileSetup() {
           </View>
         )}
 
-        {/* Максимальное время готовки */}
         <View style={styles.inputGroup}>
           <Text style={styles.label}>Максимальное время готовки</Text>
           <View style={styles.cookingTimeOptions}>
@@ -789,10 +851,8 @@ export default function ProfileSetup() {
 
   return (
     <View style={styles.container}>
-      {/* Шапка */}
       <SafeAreaView style={styles.safeAreaHeader}>
         <View style={styles.headerContent}>
-          {/* Кнопка "Назад" */}
           <TouchableOpacity
             style={[styles.backButton, currentStep === 0 && { opacity: 0 }]}
             onPress={handleBack}
@@ -810,7 +870,6 @@ export default function ProfileSetup() {
             </Text>
           </View>
 
-          {/* Заглушка для симметрии */}
           <TouchableOpacity
             style={[styles.backButton, { opacity: 0 }]}
             disabled={true}
@@ -820,7 +879,6 @@ export default function ProfileSetup() {
         </View>
       </SafeAreaView>
 
-      {/* Контент */}
       <ScrollView
         style={styles.scrollView}
         showsVerticalScrollIndicator={false}
@@ -836,7 +894,6 @@ export default function ProfileSetup() {
         </View>
       </ScrollView>
 
-      {/* Кнопка продолжения */}
       <View style={styles.footer}>
         <TouchableOpacity 
           style={styles.nextButton} 
@@ -937,7 +994,6 @@ const styles = StyleSheet.create({
   stepContent: {
     flex: 1,
   },
-  // Обновленные стили для фото профиля
   photoContainer: {
     alignItems: "center",
     marginBottom: 32,
@@ -1020,6 +1076,40 @@ const styles = StyleSheet.create({
   dataGrid: {
     gap: 16,
   },
+  datePickerButton: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    backgroundColor: "white",
+    borderWidth: 2,
+    borderColor: "#6A9AA9",
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  dateText: {
+    fontSize: 16,
+    color: "#000000",
+    fontFamily: "Playfair Display Regular",
+  },
+  placeholderDateText: {
+    fontSize: 16,
+    color: "#999",
+    fontFamily: "Playfair Display Regular",
+  },
+  ageDisplayContainer: {
+    backgroundColor: "#F3F4F6",
+    borderWidth: 2,
+    borderColor: "#D1D5DB",
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  ageDisplayText: {
+    fontSize: 16,
+    color: "#6A9AA9",
+    fontFamily: "Playfair Display Bold",
+  },
   genderContainer: {
     flexDirection: "row",
     gap: 12,
@@ -1096,7 +1186,6 @@ const styles = StyleSheet.create({
     fontFamily: "Playfair Display Regular",
     marginRight: 8,
   },
-
   cookingTimeOptions: {
     flexDirection: "row",
     flexWrap: "wrap",

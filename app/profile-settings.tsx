@@ -14,13 +14,15 @@ import {
   Modal,
   Image,
   ActivityIndicator,
+  Platform,
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useAuthContext } from "@/app/contexts/AuthContext";
 import { Ionicons, MaterialIcons } from "@expo/vector-icons";
-import { userService } from "../app/services/userService";
+import { userService, calculateAgeFromBirthYear } from "../app/services/userService";
 import * as ImagePicker from 'expo-image-picker';
 import type { LocalProfileData } from "../app/services/userService";
+import DateTimePicker from '@react-native-community/datetimepicker';
 
 // 💡 Хелпер-маппинг для корректного отображения времени готовки
 const COOKING_TIME_MAP: { [key: string]: string } = {
@@ -36,13 +38,14 @@ type UserData = {
   email: string;
   description: string;
   age: string;
+  birthYear: string;
   height: string;
   gender: string;
   weight: string;
   goal: string;
   activity: string;
-  nutritionType: string; // Внутри компонента используем строку для формы
-  nutritionTypeArray: string[]; // Храним массив отдельно
+  nutritionType: string;
+  nutritionTypeArray: string[];
   customNutritionType: string;
   allergies: string;
   dislikes: string;
@@ -62,6 +65,7 @@ export default function ProfileSettings() {
     email: user?.email || "",
     description: "",
     age: "",
+    birthYear: "",
     height: "",
     gender: "Муж",
     weight: "",
@@ -83,6 +87,10 @@ export default function ProfileSettings() {
   const [confirmText, setConfirmText] = useState("");
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  
+  // Состояния для DatePicker
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [selectedDate, setSelectedDate] = useState(new Date());
 
   const goals = ["Похудение", "Поддержание веса", "Набор веса"];
   const activityLevels = [
@@ -103,6 +111,25 @@ export default function ProfileSettings() {
   useEffect(() => {
     loadProfileData();
   }, []);
+
+  // Функция для обновления года рождения и возраста
+  const updateBirthYear = (year: string) => {
+    setUserData(prev => ({
+      ...prev,
+      birthYear: year,
+      age: calculateAgeFromBirthYear(year)
+    }));
+  };
+
+  // Обработчик выбора даты
+  const onDateChange = (event: any, selectedDate?: Date) => {
+    setShowDatePicker(Platform.OS === 'ios');
+    if (selectedDate) {
+      setSelectedDate(selectedDate);
+      const year = selectedDate.getFullYear().toString();
+      updateBirthYear(year);
+    }
+  };
 
   // Функция для преобразования массива тегов в строку для отображения в форме
   const formatNutritionTypeForDisplay = (nutritionTypeArray: string[]): string => {
@@ -172,11 +199,23 @@ export default function ProfileSettings() {
           finalCookingTime = COOKING_TIME_MAP[finalCookingTime];
         }
 
+        // Получаем birthYear из age (если нет сохраненного года)
+        let birthYear = parsedData.birthYear || "";
+        if (!birthYear && parsedData.age) {
+          const currentYear = new Date().getFullYear();
+          const ageNum = parseInt(parsedData.age, 10);
+          if (!isNaN(ageNum)) {
+            birthYear = (currentYear - ageNum).toString();
+          }
+        }
+
         const userDataWithDefaults: UserData = {
           ...userData,
           ...parsedData,
           name: parsedData.name || user?.displayName || "",
           email: parsedData.email || user?.email || "",
+          birthYear: birthYear,
+          age: parsedData.age || "",
           nutritionType: displayNutritionType,
           nutritionTypeArray: nutritionTypeArray,
           customNutritionType: customNutritionType,
@@ -688,19 +727,45 @@ export default function ProfileSettings() {
           </View>
 
           <View style={styles.dataGrid}>
+            {/* НОВОЕ: Год рождения с DatePicker */}
             <View style={styles.dataItem}>
               <View style={styles.dataLabelContainer}>
                 <Ionicons name="calendar-outline" size={16} color="#6A9AA9" />
-                <Text style={styles.dataLabel}>Возраст</Text>
+                <Text style={styles.dataLabel}>Дата рождения</Text>
               </View>
-              <TextInput
-                style={styles.dataInput}
-                value={userData.age}
-                onChangeText={(text) => setUserData({ ...userData, age: text })}
-                placeholder="лет"
-                placeholderTextColor="#999"
-                keyboardType="numeric"
-              />
+              <TouchableOpacity 
+                style={styles.datePickerButton}
+                onPress={() => setShowDatePicker(true)}
+              >
+                <Text style={userData.birthYear ? styles.dateText : styles.placeholderDateText}>
+                  {userData.birthYear ? `${userData.birthYear} год` : "Выберите год рождения"}
+                </Text>
+                <Ionicons name="chevron-down" size={20} color="#6A9AA9" />
+              </TouchableOpacity>
+              
+              {showDatePicker && (
+                <DateTimePicker
+                  value={selectedDate}
+                  mode="date"
+                  display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                  onChange={onDateChange}
+                  maximumDate={new Date()}
+                  minimumDate={new Date(1900, 0, 1)}
+                />
+              )}
+            </View>
+
+            {/* НЕРЕДАКТИРУЕМОЕ поле Возраст */}
+            <View style={styles.dataItem}>
+              <View style={styles.dataLabelContainer}>
+                <Ionicons name="analytics-outline" size={16} color="#6A9AA9" />
+                <Text style={styles.dataLabel}>Возраст (рассчитывается автоматически)</Text>
+              </View>
+              <View style={styles.ageDisplayContainer}>
+                <Text style={styles.ageDisplayText}>
+                  {userData.age ? `${userData.age} ${getAgeWord(parseInt(userData.age, 10))}` : "не указан"}
+                </Text>
+              </View>
             </View>
 
             <View style={styles.dataItem}>
@@ -1114,6 +1179,24 @@ export default function ProfileSettings() {
   );
 }
 
+// Вспомогательная функция для склонения слова "год"
+function getAgeWord(age: number): string {
+  const lastDigit = age % 10;
+  const lastTwoDigits = age % 100;
+  
+  if (lastTwoDigits >= 11 && lastTwoDigits <= 19) {
+    return "лет";
+  }
+  
+  switch (lastDigit) {
+    case 1: return "год";
+    case 2:
+    case 3:
+    case 4: return "года";
+    default: return "лет";
+  }
+}
+
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -1300,6 +1383,37 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: "#1E293B",
     fontFamily: "Playfair Display Regular",
+    paddingVertical: 4,
+  },
+  // Стили для DatePicker
+  datePickerButton: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "#E2E8F0",
+  },
+  dateText: {
+    fontSize: 16,
+    color: "#1E293B",
+    fontFamily: "Playfair Display Regular",
+  },
+  placeholderDateText: {
+    fontSize: 16,
+    color: "#999",
+    fontFamily: "Playfair Display Regular",
+  },
+  // Стили для нередактируемого возраста
+  ageDisplayContainer: {
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "#E2E8F0",
+  },
+  ageDisplayText: {
+    fontSize: 18,
+    color: "#6A9AA9",
+    fontFamily: "Playfair Display Bold",
   },
   genderContainer: {
     flexDirection: "row",

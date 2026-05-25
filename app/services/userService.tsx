@@ -19,6 +19,27 @@ import {
   UploadResult 
 } from "./cloudinaryService";
 
+// --- ДОБАВЛЕНА ФУНКЦИЯ РАСЧЕТА ВОЗРАСТА ---
+/**
+ * Автоматически вычисляет возраст на основе года рождения
+ * @param birthYear - год рождения (например, "1990")
+ * @returns возраст в годах или пустую строку, если год не указан
+ */
+export const calculateAgeFromBirthYear = (birthYear: string): string => {
+  if (!birthYear || birthYear.trim() === "") return "";
+  
+  const year = parseInt(birthYear, 10);
+  if (isNaN(year) || year < 1900 || year > new Date().getFullYear()) {
+    return "";
+  }
+  
+  const currentYear = new Date().getFullYear();
+  let age = currentYear - year;
+  
+  return age.toString();
+};
+// --- КОНЕЦ ДОБАВЛЕННОЙ ФУНКЦИИ ---
+
 // --- ТИПЫ ДАННЫХ ---
 
 export interface UserProfile {
@@ -230,9 +251,9 @@ class UserService {
       case "Низкий (0-1 тренировка в неделю)": 
         return 1.2;
       case "Умеренный (2-3 тренировки в неделю)": 
-        return 1.55;
+        return 1.375; // Исправлено: стандартный коэффициент для 2-3 тренировок вместо завышенного 1.55
       case "Интенсивный (3 и более тренировки в неделю)": 
-        return 1.725;
+        return 1.55;  // Исправлено: 1.55 вместо 1.725
       default: 
         return 1.2;
     }
@@ -261,23 +282,25 @@ class UserService {
     const tdee = bmr * this.getActivityMultiplier(profileData.activity);
     
     // Корректировка под цель
-    let targetCalories = profileData.goal === "Похудение" 
-      ? tdee - 500 
-      : profileData.goal === "Набор веса" 
-        ? tdee + 300 
-        : tdee;
+    let targetCalories = tdee;
+    if (profileData.goal === "Похудение") {
+      targetCalories = tdee - 500;
+    } else if (profileData.goal === "Набор веса") {
+      targetCalories = tdee * 1.15; // Безопасный и сбалансированный профицит 15% для набора
+    }
     
     // Минимальные значения калорий
     targetCalories = Math.max(profileData.gender === "Жен" ? 1200 : 1500, targetCalories);
+    const finalCalories = Math.round(targetCalories);
 
-    // Расчет макросов
-    const proteinPerKg = this.getActivityMultiplier(profileData.activity) > 1.5 ? 2.0 : 1.5;
-    const targetProteinGrams = Math.round(weight * proteinPerKg);
-    const targetFatGrams = Math.round((targetCalories * 0.25) / 9);
-    const targetCarbGrams = Math.max(0, Math.round((targetCalories - targetProteinGrams * 4 - targetFatGrams * 9) / 4));
+    // Расчет макросов по золотому стандарту сплита (30% Белки / 30% Жиры / 40% Углеводы)
+    // Это уберет искусственный дефицит жиров/белков и приземлит углеводы, чтобы генератор ожил
+    const targetProteinGrams = Math.round((finalCalories * 0.30) / 4);
+    const targetFatGrams = Math.round((finalCalories * 0.30) / 9);
+    const targetCarbGrams = Math.round((finalCalories * 0.40) / 4);
 
     return { 
-      targetCalories: Math.round(targetCalories), 
+      targetCalories: finalCalories, 
       targetProteinGrams, 
       targetFatGrams, 
       targetCarbGrams 
