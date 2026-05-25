@@ -1,6 +1,7 @@
-// app/(tabs)/profile/my-recipes.tsx
+// app/(tabs)/profile/my-recipes.tsx - ПОЛНАЯ ВЕРСИЯ С ПОДДЕРЖКОЙ ДРУГОГО ПОЛЬЗОВАТЕЛЯ
+
 import { Ionicons, Feather, MaterialIcons } from "@expo/vector-icons";
-import { Stack, useRouter } from "expo-router";
+import { Stack, useRouter, useLocalSearchParams } from "expo-router";
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   ScrollView,
@@ -18,6 +19,8 @@ import {
   StatusBar,
 } from "react-native";
 import { recipeService } from "@/app/services/recipeService";
+import { userService } from "@/app/services/userService";
+import { auth } from "@/app/firebase/config";
 
 // Типы данных
 type Recipe = {
@@ -94,6 +97,10 @@ const formatCookingTime = (time: any): string => {
 
 export default function MyRecipesScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams();
+  const targetUserId = params.userId as string;
+  const [targetUserName, setTargetUserName] = useState<string>("");
+  
   const [recipes, setRecipes] = useState<Recipe[]>([]);
   const [filteredRecipes, setFilteredRecipes] = useState<Recipe[]>([]);
   const [displayedRecipes, setDisplayedRecipes] = useState<Recipe[]>([]);
@@ -109,19 +116,40 @@ export default function MyRecipesScreen() {
   const [hasMore, setHasMore] = useState(true);
   const scrollViewRef = useRef<ScrollView>(null);
 
+  const currentUserId = auth.currentUser?.uid;
+  const isOwnProfile = !targetUserId || targetUserId === currentUserId;
+
+  // Загрузка имени пользователя
+  const loadUserName = useCallback(async () => {
+    if (!targetUserId || isOwnProfile) {
+      setTargetUserName("");
+      return;
+    }
+    
+    try {
+      const userProfile = await userService.fetchUserProfile(targetUserId);
+      setTargetUserName(userProfile?.name || "пользователя");
+    } catch (error) {
+      console.error("Ошибка загрузки имени пользователя:", error);
+      setTargetUserName("пользователя");
+    }
+  }, [targetUserId, isOwnProfile]);
+
   // Загрузка рецептов пользователя
-  const loadUserRecipes = useCallback(async (loadMore = false) => {
-    if (loadMore && loadingMore) return;
-    if (!loadMore && loading && recipes.length > 0) return;
+  const loadUserRecipes = useCallback(async () => {
+    if (loading && recipes.length > 0) return;
 
     try {
-      if (loadMore) {
-        setLoadingMore(true);
-      } else {
-        setLoading(true);
-      }
+      setLoading(true);
 
-      const userRecipes = await recipeService.getUserRecipes();
+      // Загружаем рецепты для указанного пользователя
+      const userId = targetUserId || currentUserId;
+      if (!userId) {
+        setRecipes([]);
+        return;
+      }
+      
+      const userRecipes = await recipeService.getUserRecipes(userId);
       
       const formattedRecipes: Recipe[] = userRecipes.map((recipe: any) => ({
         id: recipe.id,
@@ -154,11 +182,8 @@ export default function MyRecipesScreen() {
       });
 
       setRecipes(formattedRecipes);
-      
-      if (!loadMore) {
-        setPage(0);
-        setHasMore(true);
-      }
+      setPage(0);
+      setHasMore(true);
     } catch (error) {
       console.error("Ошибка загрузки рецептов:", error);
       Alert.alert("Ошибка", "Не удалось загрузить рецепты");
@@ -167,12 +192,31 @@ export default function MyRecipesScreen() {
       setLoadingMore(false);
       setRefreshing(false);
     }
-  }, [loading, loadingMore, recipes.length]);
+  }, [targetUserId, currentUserId, loading, recipes.length]);
 
-  // Инициальная загрузка
+  // Вспомогательная функция для получения timestamp
+  const getTimestamp = (dateInput: any): number => {
+    if (!dateInput) return 0;
+    
+    if (typeof dateInput === 'string') {
+      return new Date(dateInput).getTime();
+    } else if (dateInput?.seconds) {
+      return dateInput.seconds * 1000;
+    } else if (typeof dateInput === 'number') {
+      return dateInput;
+    }
+    
+    return 0;
+  };
+
+  // Инициализация
   useEffect(() => {
-    loadUserRecipes();
-  }, []);
+    const init = async () => {
+      await loadUserName();
+      await loadUserRecipes();
+    };
+    init();
+  }, [targetUserId]);
 
   // Фильтрация рецептов
   useEffect(() => {
@@ -231,24 +275,9 @@ export default function MyRecipesScreen() {
       layoutMeasurement.height + contentOffset.y >= 
       contentSize.height - paddingToBottom;
 
-    if (isCloseToBottom && hasMore && !loadingMore) {
+    if (isCloseToBottom && hasMore && !loadingMore && !loading) {
       loadMoreRecipes();
     }
-  };
-
-  // Вспомогательная функция для получения timestamp
-  const getTimestamp = (dateInput: any): number => {
-    if (!dateInput) return 0;
-    
-    if (typeof dateInput === 'string') {
-      return new Date(dateInput).getTime();
-    } else if (dateInput?.seconds) {
-      return dateInput.seconds * 1000;
-    } else if (typeof dateInput === 'number') {
-      return dateInput;
-    }
-    
-    return 0;
   };
 
   // Форматирование даты
@@ -278,7 +307,7 @@ export default function MyRecipesScreen() {
     loadUserRecipes();
   }, [loadUserRecipes]);
 
-  // Обработчик удаления рецепта
+  // Обработчик удаления рецепта (только для своих рецептов)
   const handleDeleteRecipe = async () => {
     if (!recipeToDelete) return;
 
@@ -294,7 +323,7 @@ export default function MyRecipesScreen() {
     }
   };
 
-  // Переход к редактированию рецепта
+  // Переход к редактированию рецепта (только для своих рецептов)
   const navigateToEditRecipe = (recipe: Recipe) => {
     const editData = {
       recipeId: recipe.id,
@@ -339,6 +368,7 @@ export default function MyRecipesScreen() {
       pathname: "/meal",
       params: { 
         mealId: recipe.id,
+        recipeId: recipe.id,
         mealName: recipe.title,
         category: getCategoryName(recipe.mealType),
       }
@@ -378,7 +408,7 @@ export default function MyRecipesScreen() {
     return recipe.imageUrl || recipe.image || recipe.langdir1 || null;
   };
 
-  // Сброс фильтров и поиска
+  // Сброс фильтров и скролл наверх
   const resetFiltersAndScroll = () => {
     setSearchQuery("");
     setSelectedCategory("Все");
@@ -405,6 +435,7 @@ export default function MyRecipesScreen() {
     const categoryName = getCategoryName(recipe.mealType);
     const cookingTime = formatCookingTime(recipe.cookingTime);
     const difficulty = recipe.difficultyLevel || recipe.difficulty || "Легко";
+    const isOwnRecipe = recipe.userId === currentUserId;
 
     return (
       <View key={recipe.id} style={styles.recipeColumn}>
@@ -446,27 +477,29 @@ export default function MyRecipesScreen() {
               )}
             </View>
             
-            {/* Кнопки действий */}
-            <View style={styles.recipeActionButtons}>
-              <TouchableOpacity
-                style={styles.actionButton}
-                onPress={(e) => {
-                  e.stopPropagation();
-                  navigateToEditRecipe(recipe);
-                }}
-              >
-                <Feather name="edit-2" size={14} color="#FFFFFF" />
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.actionButton, { backgroundColor: "#FF6B6B" }]}
-                onPress={(e) => {
-                  e.stopPropagation();
-                  openDeleteModal(recipe);
-                }}
-              >
-                <Feather name="trash-2" size={14} color="#FFFFFF" />
-              </TouchableOpacity>
-            </View>
+            {/* Кнопки действий (только для своих рецептов) */}
+            {isOwnRecipe && (
+              <View style={styles.recipeActionButtons}>
+                <TouchableOpacity
+                  style={styles.actionButton}
+                  onPress={(e) => {
+                    e.stopPropagation();
+                    navigateToEditRecipe(recipe);
+                  }}
+                >
+                  <Feather name="edit-2" size={14} color="#FFFFFF" />
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.actionButton, { backgroundColor: "#FF6B6B" }]}
+                  onPress={(e) => {
+                    e.stopPropagation();
+                    openDeleteModal(recipe);
+                  }}
+                >
+                  <Feather name="trash-2" size={14} color="#FFFFFF" />
+                </TouchableOpacity>
+              </View>
+            )}
           </View>
 
           <View style={styles.recipeContent}>
@@ -517,6 +550,10 @@ export default function MyRecipesScreen() {
     );
   };
 
+  const pageTitle = isOwnProfile 
+    ? "Мои рецепты" 
+    : `Рецепты ${targetUserName}`;
+
   return (
     <View style={styles.container}>
       <StatusBar barStyle="dark-content" />
@@ -534,13 +571,16 @@ export default function MyRecipesScreen() {
         >
           <Ionicons name="arrow-back" size={24} color="#1a1a1a" />
         </TouchableOpacity>
-        <Text style={styles.simpleHeaderText}>Мои рецепты</Text>
-        <TouchableOpacity
-          style={styles.addRecipeButton}
-          onPress={navigateToCreateRecipe}
-        >
-          <Ionicons name="add-outline" size={24} color="#1a1a1a" />
-        </TouchableOpacity>
+        <Text style={styles.simpleHeaderText}>{pageTitle}</Text>
+        {isOwnProfile && (
+          <TouchableOpacity
+            style={styles.addRecipeButton}
+            onPress={navigateToCreateRecipe}
+          >
+            <Ionicons name="add-outline" size={24} color="#1a1a1a" />
+          </TouchableOpacity>
+        )}
+        {!isOwnProfile && <View style={styles.addRecipeButton} />}
       </View>
 
       <ScrollView
@@ -559,7 +599,7 @@ export default function MyRecipesScreen() {
         onScroll={handleScroll}
         scrollEventThrottle={400}
       >
-        {/* Поиск и фильтры в стиле recipes.tsx */}
+        {/* Поиск и фильтры */}
         <View style={styles.searchSection}>
           <ScrollView
             horizontal
@@ -643,20 +683,26 @@ export default function MyRecipesScreen() {
               <Text style={styles.emptyStateText}>
                 {searchQuery || selectedCategory !== "Все" 
                   ? "Рецепты не найдены" 
-                  : "У вас пока нет рецептов"}
+                  : isOwnProfile 
+                    ? "У вас пока нет рецептов" 
+                    : `У ${targetUserName} пока нет рецептов`}
               </Text>
               <Text style={styles.emptyStateSubtext}>
                 {searchQuery || selectedCategory !== "Все"
                   ? "Попробуйте изменить параметры поиска"
-                  : "Создайте свой первый рецепт!"}
+                  : isOwnProfile 
+                    ? "Создайте свой первый рецепт!" 
+                    : ""}
               </Text>
-              <TouchableOpacity
-                style={styles.emptyStateButton}
-                onPress={navigateToCreateRecipe}
-              >
-                <Ionicons name="add-circle" size={20} color="#000000" />
-                <Text style={styles.emptyStateButtonText}>Создать рецепт</Text>
-              </TouchableOpacity>
+              {isOwnProfile && (
+                <TouchableOpacity
+                  style={styles.emptyStateButton}
+                  onPress={navigateToCreateRecipe}
+                >
+                  <Ionicons name="add-circle" size={20} color="#000000" />
+                  <Text style={styles.emptyStateButtonText}>Создать рецепт</Text>
+                </TouchableOpacity>
+              )}
             </View>
           ) : (
             <>
@@ -671,16 +717,18 @@ export default function MyRecipesScreen() {
         </View>
       </ScrollView>
 
-      {/* Кнопка создания рецепта */}
-      <TouchableOpacity
-        style={styles.fab}
-        onPress={navigateToCreateRecipe}
-        activeOpacity={0.8}
-      >
-        <View style={styles.fabContent}>
-          <Ionicons name="add" size={28} color="#FFFFFF" />
-        </View>
-      </TouchableOpacity>
+      {/* Кнопка создания рецепта (только для своих рецептов) */}
+      {isOwnProfile && (
+        <TouchableOpacity
+          style={styles.fab}
+          onPress={navigateToCreateRecipe}
+          activeOpacity={0.8}
+        >
+          <View style={styles.fabContent}>
+            <Ionicons name="add" size={28} color="#FFFFFF" />
+          </View>
+        </TouchableOpacity>
+      )}
 
       {/* Кнопка для скролла наверх */}
       {displayedRecipes.length > 4 && (
@@ -692,7 +740,7 @@ export default function MyRecipesScreen() {
         </TouchableOpacity>
       )}
 
-      {/* Модальное окно удаления */}
+      {/* Модальное окно удаления (только для своих рецептов) */}
       <Modal
         animationType="fade"
         transparent={true}
@@ -780,9 +828,11 @@ const styles = StyleSheet.create({
   },
   addRecipeButton: {
     padding: 8,
+    width: 40,
+    alignItems: "flex-end",
   },
   
-  // Стили поиска и фильтров как на recipes.tsx
+  // Стили поиска и фильтров
   searchSection: {
     backgroundColor: "#FFFFFF",
     padding: 15,
@@ -871,7 +921,6 @@ const styles = StyleSheet.create({
     padding: 8,
   },
   
-  // Остальные стили остаются без изменений
   recipesGrid: {
     flexDirection: "row",
     flexWrap: "wrap",

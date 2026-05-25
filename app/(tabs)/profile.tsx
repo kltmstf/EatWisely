@@ -1,4 +1,5 @@
-// app/(tabs)/profile.tsx
+// app/(tabs)/profile.tsx - ИСПРАВЛЕННАЯ ВЕРСИЯ
+
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useFocusEffect, useRouter, useLocalSearchParams } from "expo-router";
@@ -67,7 +68,6 @@ type Plan = {
   name: string;
   description: string;
   totalCalories: number;
-  duration: string;
   mealsCount: number;
   image: any;
   savedDate: string;
@@ -192,6 +192,7 @@ export default function ProfileScreen() {
   const [favoriteRecipes, setFavoriteRecipes] = useState<Recipe[]>([]);
   const [savedPlans, setSavedPlans] = useState<Plan[]>([]);
   const [myRecipesCount, setMyRecipesCount] = useState<number>(0);
+  const [publicRecipesCount, setPublicRecipesCount] = useState<number>(0);
   const [favoritesLoading, setFavoritesLoading] = useState(false);
   const [plansLoading, setPlansLoading] = useState(false);
   const [profileCompleted, setProfileCompleted] = useState(false);
@@ -239,10 +240,18 @@ export default function ProfileScreen() {
     }
 
     try {
-      const userRecipes = await recipeService.getUserRecipes(userId);
-      setPostsCount(userRecipes?.length || 0);
+      // Публикации - это посты из коллекции community_posts
+      const communityQuery = query(
+        collection(db, "community_posts"),
+        where("userId", "==", userId)
+      );
+      const communitySnapshot = await getDocs(communityQuery);
+      const posts = communitySnapshot.docs.length;
+      
+      setPostsCount(posts);
+      console.log(`📊 Публикаций в сообществе: ${posts}`);
     } catch (error) {
-      console.error("Ошибка загрузки количества постов:", error);
+      console.error("Ошибка загрузки количества публикаций:", error);
       setPostsCount(0);
     }
   }, [getCurrentUserId]);
@@ -392,7 +401,6 @@ export default function ProfileScreen() {
           name: plan.title || plan.name || "План без названия",
           description: plan.description || "Описание отсутствует",
           totalCalories: plan.totalCalories || 0,
-          duration: plan.totalDuration || "0 дней",
           mealsCount: plan.mealsCount || 0,
           image: null,
           savedDate: new Date(createdAt).toLocaleDateString("ru-RU"),
@@ -561,8 +569,25 @@ export default function ProfileScreen() {
     router.push("/profile-settings");
   };
 
-  const handleNavigation = useCallback((path: string) => {
-    router.push(path as any);
+  // Обновленные функции навигации для перехода к публикациям и рецептам
+  const navigateToMyPosts = () => {
+    router.push("/posts");
+  };
+
+  const navigateToMyRecipes = () => {
+    router.push("/user-recipes");
+  };
+
+  const navigateToFollowers = () => {
+    router.push("/followers");
+  };
+
+  const navigateToFollowing = () => {
+    router.push("/following");
+  };
+
+  const handleNavigation = useCallback((path: string, params?: any) => {
+    router.push(params ? { pathname: path as any, params } : path as any);
   }, [router]);
 
   const navigateToRecipe = (recipe: Recipe) => {
@@ -619,72 +644,52 @@ export default function ProfileScreen() {
     }
     return <Ionicons name="person" size={48} color="#6A9AA9" />;
   };
-  // Добавьте эту функцию перед renderRecipeCard (если еще нет)
-const getCategoryIcon = (category: string) => {
-  const normalizedCategory = category?.toLowerCase() || "";
-  switch (normalizedCategory) {
-    case "завтрак":
-      return "sunny-outline";
-    case "обед":
-      return "restaurant-outline";
-    case "ужин":
-      return "moon-outline";
-    case "перекусы":
-      return "cafe-outline";
-    default:
-      return "fast-food-outline";
-  }
-};
 
-
-  // Обновленная карточка рецепта в стиле страницы рецептов
-  // В renderRecipeCard замените这部分:
-
-const renderRecipeCard = (recipe: Recipe) => (
-  <View key={recipe.id} style={styles.recipeColumn}>
-    <TouchableOpacity style={styles.recipeCard} onPress={() => navigateToRecipe(recipe)} activeOpacity={0.8}>
-      <View style={styles.imageContainer}>
-        {recipe.image && recipe.image.uri && recipe.image.uri.length > 5 && !recipe.image.uri.includes('dinner-rice.png') ? (
-          <Image source={{ uri: recipe.image.uri }} style={styles.recipeImage} resizeMode="cover" />
-        ) : (
-          <View style={styles.recipeImagePlaceholder}>
-            <Ionicons name={getCategoryIcon(recipe.category)} size={32} color="#6A9AA9" />
-          </View>
-        )}
-        <View style={styles.recipeBadges}>
-          {recipe.rating && recipe.rating > 0 ? (
-            <View style={styles.ratingBadge}>
-              <FontAwesome name="star" size={10} color="#FFD700" />
-              <Text style={styles.ratingText}>{recipe.rating.toFixed(1)}</Text>
+  const renderRecipeCard = (recipe: Recipe) => (
+    <View key={recipe.id} style={styles.recipeColumn}>
+      <TouchableOpacity style={styles.recipeCard} onPress={() => navigateToRecipe(recipe)} activeOpacity={0.8}>
+        <View style={styles.imageContainer}>
+          {recipe.image && recipe.image.uri && recipe.image.uri.length > 5 && !recipe.image.uri.includes('dinner-rice.png') ? (
+            <Image source={{ uri: recipe.image.uri }} style={styles.recipeImage} resizeMode="cover" />
+          ) : (
+            <View style={styles.recipeImagePlaceholder}>
+              <Ionicons name={getCategoryIcon(recipe.category)} size={32} color="#6A9AA9" />
             </View>
-          ) : null}
-          <View style={[styles.difficultyBadge, { backgroundColor: getDifficultyColor(recipe.difficulty) }]}>
-            <Text style={styles.difficultyText}>{recipe.difficulty}</Text>
-          </View>
-        </View>
-        <TouchableOpacity style={styles.bookmarkButton} onPress={() => toggleBookmark(recipe)}>
-          <Ionicons name="bookmark" size={18} color="#6A9AA9" />
-        </TouchableOpacity>
-      </View>
-      <View style={styles.recipeContent}>
-        <View style={styles.recipeInfo}>
-          <Text style={styles.recipeName} numberOfLines={2}>{recipe.name}</Text>
-          <Text style={styles.recipeCategory}>{recipe.category}</Text>
-          <View style={styles.recipeDetails}>
-            {recipe.calories && recipe.calories > 0 ? (
-              <Text style={styles.recipeCalories}>{recipe.calories} ккал</Text>
+          )}
+          <View style={styles.recipeBadges}>
+            {recipe.rating && recipe.rating > 0 ? (
+              <View style={styles.ratingBadge}>
+                <FontAwesome name="star" size={10} color="#FFD700" />
+                <Text style={styles.ratingText}>{recipe.rating.toFixed(1)}</Text>
+              </View>
             ) : null}
-            <MaterialIcons name="access-time" size={12} color="#6A9AA9" style={styles.timeIcon} />
-            <Text style={styles.recipeTime}>{recipe.cookingTime}</Text>
+            <View style={[styles.difficultyBadge, { backgroundColor: getDifficultyColor(recipe.difficulty) }]}>
+              <Text style={styles.difficultyText}>{recipe.difficulty}</Text>
+            </View>
           </View>
+          <TouchableOpacity style={styles.bookmarkButton} onPress={() => toggleBookmark(recipe)}>
+            <Ionicons name="bookmark" size={18} color="#6A9AA9" />
+          </TouchableOpacity>
         </View>
-        <TouchableOpacity style={styles.viewButton} onPress={() => navigateToRecipe(recipe)}>
-          <Text style={styles.viewButtonText}>Посмотреть</Text>
-        </TouchableOpacity>
-      </View>
-    </TouchableOpacity>
-  </View>
-);
+        <View style={styles.recipeContent}>
+          <View style={styles.recipeInfo}>
+            <Text style={styles.recipeName} numberOfLines={2}>{recipe.name}</Text>
+            <Text style={styles.recipeCategory}>{recipe.category}</Text>
+            <View style={styles.recipeDetails}>
+              {recipe.calories && recipe.calories > 0 ? (
+                <Text style={styles.recipeCalories}>{recipe.calories} ккал</Text>
+              ) : null}
+              <MaterialIcons name="access-time" size={12} color="#6A9AA9" style={styles.timeIcon} />
+              <Text style={styles.recipeTime}>{recipe.cookingTime}</Text>
+            </View>
+          </View>
+          <TouchableOpacity style={styles.viewButton} onPress={() => navigateToRecipe(recipe)}>
+            <Text style={styles.viewButtonText}>Посмотреть</Text>
+          </TouchableOpacity>
+        </View>
+      </TouchableOpacity>
+    </View>
+  );
 
   const renderPlanCard = (plan: Plan) => (
     <TouchableOpacity key={plan.id} style={styles.planCard} onPress={() => handlePlanPress(plan)}>
@@ -692,20 +697,16 @@ const renderRecipeCard = (recipe: Recipe) => (
         <Ionicons name="calendar-outline" size={32} color="#6A9AA9" />
       </View>
       <View style={styles.planContent}>
-        <Text style={styles.planName}>{plan.name}</Text>
+        <Text style={styles.planName} numberOfLines={1}>{plan.name}</Text>
         <Text style={styles.planDescription} numberOfLines={2}>{plan.description}</Text>
         <View style={styles.planDetails}>
           <View style={styles.planDetail}>
             <Ionicons name="flame-outline" size={14} color="#FF6B6B" />
-            <Text style={styles.planDetailText}>{plan.totalCalories} ккал/день</Text>
-          </View>
-          <View style={styles.planDetail}>
-            <Ionicons name="time-outline" size={14} color="#6A9AA9" />
-            <Text style={styles.planDetailText}>{plan.duration}</Text>
+            <Text style={styles.planDetailText}>{plan.totalCalories} ккал</Text>
           </View>
           <View style={styles.planDetail}>
             <Ionicons name="restaurant-outline" size={14} color="#9BDF11" />
-            <Text style={styles.planDetailText}>{plan.mealsCount} приёмов</Text>
+            <Text style={styles.planDetailText}>{plan.mealsCount} блюд</Text>
           </View>
         </View>
         <View style={styles.planFooter}>
@@ -809,10 +810,10 @@ const renderRecipeCard = (recipe: Recipe) => (
       <View style={styles.section}>
         <Text style={styles.sectionTitleProfile}>Сообщество</Text>
         <View style={styles.communityMenu}>
-          {renderMenuItem("restaurant-outline", `Опубликованные рецепты (${myRecipesCount})`, () => handleNavigation("/user-recipes"))}
-          {renderMenuItem("person-add-outline", `Подписки (${followStats.followingCount})`, () => handleNavigation("/following"))}
-          {renderMenuItem("people-outline", `Подписчики (${followStats.followersCount})`, () => handleNavigation("/followers"))}
-          {renderMenuItem("grid-outline", `Публикации (${postsCount})`, () => handleNavigation("/posts"))}
+          {renderMenuItem("restaurant-outline", `Мои рецепты (${myRecipesCount})`, navigateToMyRecipes)}
+          {renderMenuItem("earth-outline", `Публикации (${postsCount})`, navigateToMyPosts)}
+          {renderMenuItem("person-add-outline", `Подписки (${followStats.followingCount})`, navigateToFollowing)}
+          {renderMenuItem("people-outline", `Подписчики (${followStats.followersCount})`, navigateToFollowers)}
         </View>
       </View>
 
@@ -965,17 +966,17 @@ const styles = StyleSheet.create({
   viewButton: { backgroundColor: "#9BDF11", paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, alignItems: "center", justifyContent: "center", minHeight: 36, marginTop: 8 },
   viewButtonText: { color: "#000000ff", fontSize: 12, fontWeight: "normal", fontFamily: "Playfair Display Regular" },
   plansList: { gap: 16 },
-  planCard: { backgroundColor: "#C2DAE2", borderRadius: 16, overflow: "hidden", flexDirection: "row", shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 3.84, elevation: 5, height: 140 },
-  planIconContainer: { width: 80, height: "100%", backgroundColor: "#C2DAE2", justifyContent: "center", alignItems: "center" },
+  planCard: { backgroundColor: "#C2DAE2", borderRadius: 16, overflow: "hidden", flexDirection: "row", shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 3.84, elevation: 5, minHeight: 140 },
+  planIconContainer: { width: 70, backgroundColor: "#C2DAE2", justifyContent: "center", alignItems: "center", padding: 12 },
   planContent: { flex: 1, padding: 12, justifyContent: "space-between" },
-  planName: { fontSize: 16, fontWeight: "600", color: "#212529", fontFamily: "Playfair Display Regular", marginBottom: 4 },
-  planDescription: { fontSize: 12, color: "#6A9AA9", fontFamily: "Playfair Display Regular", marginBottom: 8, lineHeight: 14 },
-  planDetails: { flexDirection: "row", justifyContent: "space-between", marginBottom: 8 },
-  planDetail: { flexDirection: "row", alignItems: "center", gap: 4 },
-  planDetailText: { fontSize: 10, color: "#000000", fontFamily: "Playfair Display Regular" },
+  planName: { fontSize: 16, fontWeight: "600", color: "#212529", fontFamily: "Playfair Display Bold", marginBottom: 4 },
+  planDescription: { fontSize: 13, color: "#6A9AA9", fontFamily: "Playfair Display Regular", marginBottom: 8, lineHeight: 16 },
+  planDetails: { flexDirection: "row", alignItems: "center", gap: 20, marginBottom: 8 },
+  planDetail: { flexDirection: "row", alignItems: "center", gap: 6 },
+  planDetailText: { fontSize: 13, color: "#000000", fontFamily: "Playfair Display Regular", fontWeight: "500" },
   planFooter: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-  planDate: { fontSize: 10, color: "#6C757D", fontFamily: "Playfair Display Regular" },
-  viewPlanButton: { backgroundColor: "#9BDF11", paddingHorizontal: 12, paddingVertical: 6, borderRadius: 15 },
+  planDate: { fontSize: 11, color: "#6C757D", fontFamily: "Playfair Display Regular" },
+  viewPlanButton: { backgroundColor: "#9BDF11", paddingHorizontal: 14, paddingVertical: 7, borderRadius: 15 },
   viewPlanButtonText: { color: "#000000", fontSize: 12, fontWeight: "600", fontFamily: "Playfair Display Regular" },
   createPlanButton: { backgroundColor: "#6A9AA9", paddingHorizontal: 20, paddingVertical: 12, borderRadius: 25, marginTop: 16 },
   createPlanButtonText: { color: "#FFFFFF", fontSize: 14, fontWeight: "600", fontFamily: "Playfair Display Regular" },

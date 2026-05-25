@@ -259,7 +259,7 @@ export default function Recipes() {
     } 
   });
   
-  const navigateToCreateRecipe = () => router.push("/debug");
+  const navigateToCreateRecipe = () => router.push("/create-recipe");
   const navigateToProfile = () => userId && router.push("/profile");
 
   const resetFilters = () => {

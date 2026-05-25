@@ -1,4 +1,5 @@
-// app/user/[id].tsx
+// app/user/[id].tsx - ИСПРАВЛЕННАЯ ВЕРСИЯ С ПЕРЕХОДАМИ
+
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import React, { useCallback, useEffect, useState } from "react";
@@ -16,6 +17,9 @@ import {
 import { auth } from "@/app/firebase/config";
 import { userService, UserProfile } from "@/app/services/userService";
 import { followService } from "@/app/services/followService";
+import { recipeService } from "@/app/services/recipeService";
+import { collection, query, where, getDocs } from "firebase/firestore";
+import { db } from "@/app/firebase/config";
 
 export default function UserProfileScreen() {
   const router = useRouter();
@@ -29,6 +33,9 @@ export default function UserProfileScreen() {
     followersCount: 0,
     followingCount: 0,
   });
+  const [recipesCount, setRecipesCount] = useState(0);
+  const [postsCount, setPostsCount] = useState(0);
+  const [countsLoading, setCountsLoading] = useState(false);
 
   // Проверяем, это ли профиль текущего пользователя
   const isCurrentUser = id === auth.currentUser?.uid;
@@ -56,8 +63,11 @@ export default function UserProfileScreen() {
 
       setProfile(userData);
 
-      // Загружаем статистику
+      // Загружаем статистику подписок
       await loadFollowStats(id);
+      
+      // Загружаем количество рецептов и публикаций
+      await loadUserCounts(id);
 
     } catch (error) {
       console.error("Ошибка загрузки профиля:", error);
@@ -67,6 +77,33 @@ export default function UserProfileScreen() {
       setRefreshing(false);
     }
   }, [id, router]);
+
+  // Загрузка количества рецептов и публикаций пользователя
+  const loadUserCounts = useCallback(async (userId: string) => {
+    try {
+      setCountsLoading(true);
+      
+      // Загружаем количество рецептов
+      const userRecipes = await recipeService.getUserRecipes(userId);
+      setRecipesCount(userRecipes?.length || 0);
+      
+      // Загружаем количество публикаций в сообществе
+      const postsQuery = query(
+        collection(db, "community_posts"),
+        where("userId", "==", userId)
+      );
+      const postsSnapshot = await getDocs(postsQuery);
+      setPostsCount(postsSnapshot.size);
+      
+      console.log(`📊 Пользователь ${userId}: рецептов=${userRecipes?.length || 0}, публикаций=${postsSnapshot.size}`);
+    } catch (error) {
+      console.error("Ошибка загрузки количества:", error);
+      setRecipesCount(0);
+      setPostsCount(0);
+    } finally {
+      setCountsLoading(false);
+    }
+  }, []);
 
   // Загрузка статистики подписок
   const loadFollowStats = useCallback(async (userId: string) => {
@@ -107,7 +144,7 @@ export default function UserProfileScreen() {
       if (isFollowing) {
         await followService.unfollowUser(profile.id);
         setIsFollowing(false);
-        setIsFriend(false); // При отписке перестаем быть друзьями
+        setIsFriend(false);
         setFollowStats(prev => ({
           ...prev,
           followersCount: Math.max(0, prev.followersCount - 1),
@@ -117,7 +154,6 @@ export default function UserProfileScreen() {
         await followService.followUser(profile.id);
         setIsFollowing(true);
         
-        // После подписки проверяем статус дружбы
         await checkFriendshipStatus();
         
         setFollowStats(prev => ({
@@ -145,11 +181,9 @@ export default function UserProfileScreen() {
       
       if (!currentUserId) return;
 
-      // Используем метод checkMutualFollow из сервиса
       const mutualFollow = await followService.checkMutualFollow(currentUserId, id);
       setIsFriend(mutualFollow);
       
-      // Также проверяем просто подписку
       const following = await followService.isFollowing(id);
       setIsFollowing(following);
     } catch (error) {
@@ -161,10 +195,10 @@ export default function UserProfileScreen() {
 
   // Определяем, можно ли просматривать приватный профиль
   const canViewPrivateProfile = () => {
-    if (!profile?.isProfilePrivate) return true; // Публичный профиль всегда доступен
-    if (isCurrentUser) return true; // Свой профиль всегда доступен
-    if (isFriend) return true; // Друзья могут просматривать приватный профиль
-    return false; // Нельзя просматривать приватный профиль
+    if (!profile?.isProfilePrivate) return true;
+    if (isCurrentUser) return true;
+    if (isFriend) return true;
+    return false;
   };
 
   // Pull-to-refresh
@@ -178,6 +212,46 @@ export default function UserProfileScreen() {
     loadProfile();
     checkFriendshipStatus();
   }, [loadProfile, checkFriendshipStatus]);
+
+  // Переход к рецептам пользователя
+  const navigateToUserRecipes = () => {
+    if (!canViewPrivateProfile()) {
+      Alert.alert("Доступ ограничен", "Профиль приватный. Чтобы увидеть рецепты, подпишитесь на пользователя.");
+      return;
+    }
+    router.push({
+      pathname: "/user-recipes",
+      params: { userId: id }
+    });
+  };
+
+  // Переход к публикациям пользователя
+  const navigateToUserPosts = () => {
+    if (!canViewPrivateProfile()) {
+      Alert.alert("Доступ ограничен", "Профиль приватный. Чтобы увидеть публикации, подпишитесь на пользователя.");
+      return;
+    }
+    router.push({
+      pathname: "/posts",
+      params: { userId: id }
+    });
+  };
+
+  // Переход к подписчикам
+  const navigateToFollowers = () => {
+    router.push({
+      pathname: "/followers",
+      params: { userId: id }
+    });
+  };
+
+  // Переход к подпискам
+  const navigateToFollowing = () => {
+    router.push({
+      pathname: "/following",
+      params: { userId: id }
+    });
+  };
 
   // Рендер элемента меню сообщества
   const renderMenuItem = useCallback((
@@ -228,9 +302,6 @@ export default function UserProfileScreen() {
   
   // Определяем, нужно ли показывать сообщение о приватности
   const showPrivacyMessage = !canView && profile.isProfilePrivate;
-  
-  // Определяем, нужно ли показывать сообщение о дружбе или публичном профиле
-  const showAccessMessage = canView && (profile.isProfilePrivate || !profile.isProfilePrivate) && !isCurrentUser;
 
   return (
     <View style={styles.container}>
@@ -366,20 +437,14 @@ export default function UserProfileScreen() {
               <View style={styles.statsRow}>
                 <TouchableOpacity 
                   style={styles.statItem}
-                  onPress={() => router.push({ 
-                    pathname: "/followers", 
-                    params: { userId: id } 
-                  })}
+                  onPress={navigateToFollowers}
                 >
                   <Text style={styles.statNumber}>{followStats.followersCount}</Text>
                   <Text style={styles.statLabel}>Подписчики</Text>
                 </TouchableOpacity>
                 <TouchableOpacity 
                   style={styles.statItem}
-                  onPress={() => router.push({ 
-                    pathname: "/following", 
-                    params: { userId: id } 
-                  })}
+                  onPress={navigateToFollowing}
                 >
                   <Text style={styles.statNumber}>{followStats.followingCount}</Text>
                   <Text style={styles.statLabel}>Подписки</Text>
@@ -388,22 +453,16 @@ export default function UserProfileScreen() {
               
               {renderMenuItem(
                 "restaurant-outline",
-                "Опубликованные рецепты",
-                0, // TODO: Реализовать получение количества рецептов
-                canView ? () => {
-                  // TODO: Переход на страницу рецептов пользователя
-                  Alert.alert("Информация", "Страница рецептов пользователя в разработке");
-                } : undefined
+                "Рецепты",
+                recipesCount,
+                navigateToUserRecipes
               )}
               
               {renderMenuItem(
                 "grid-outline",
                 "Публикации",
-                0, // TODO: Реализовать получение количества публикаций
-                canView ? () => {
-                  // TODO: Переход на страницу публикаций пользователя
-                  Alert.alert("Информация", "Страница публикаций пользователя в разработке");
-                } : undefined
+                postsCount,
+                navigateToUserPosts
               )}
             </View>
           )}

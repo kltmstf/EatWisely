@@ -1,6 +1,7 @@
-// app/followers.tsx
+// app/followers.tsx - С ПОДДЕРЖКОЙ ДРУГОГО ПОЛЬЗОВАТЕЛЯ
+
 import { Ionicons, Feather } from "@expo/vector-icons";
-import { useFocusEffect, useRouter } from "expo-router";
+import { useFocusEffect, useRouter, useLocalSearchParams } from "expo-router";
 import React, { useCallback, useState } from "react";
 import {
   ActivityIndicator,
@@ -16,6 +17,7 @@ import {
 } from "react-native";
 import { auth } from "@/app/firebase/config";
 import { followService } from "@/app/services/followService";
+import { userService } from "@/app/services/userService";
 
 // Типы данных
 interface UserProfile {
@@ -35,44 +37,37 @@ interface FollowerData {
   createdAt: any;
   user?: UserProfile;
   isFollowing?: boolean;
-  isFriend?: boolean; // Новое поле: является ли другом
+  isFriend?: boolean;
 }
 
 export default function FollowersScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams();
   const [followers, setFollowers] = useState<FollowerData[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [refreshing, setRefreshing] = useState(false);
+  const [targetUserId, setTargetUserId] = useState<string | null>(null);
+  const [targetUserName, setTargetUserName] = useState<string>("");
 
   // Функция для получения текущего userId
   const getCurrentUserId = useCallback((): string | null => {
     return auth.currentUser?.uid || null;
   }, []);
 
-  // Загрузка списка подписчиков
-  const loadFollowers = useCallback(async () => {
-    const userId = getCurrentUserId();
-    if (!userId) {
-      Alert.alert("Ошибка", "Вы не авторизованы");
-      return;
-    }
-
+  // Загрузка списка подписчиков для указанного пользователя
+  const loadFollowers = useCallback(async (userId: string) => {
     try {
       setLoading(true);
       console.log("Загрузка списка подписчиков для пользователя:", userId);
 
-      // Получаем данные из сервиса
       const followersList = await followService.getFollowers(userId);
-      console.log("Raw данные из сервиса:", followersList);
       
-      // Преобразуем данные, защищаясь от ошибок
       const typedFollowers: FollowerData[] = [];
       
       if (Array.isArray(followersList)) {
         for (const item of followersList) {
           try {
-            // Используем any для обхода проверки типов
             const anyItem = item as any;
             
             const followerData: FollowerData = {
@@ -82,7 +77,6 @@ export default function FollowersScreen() {
               createdAt: anyItem.createdAt || new Date(),
             };
             
-            // Проверяем наличие user данных
             if (anyItem.user) {
               followerData.user = {
                 id: anyItem.user.id || anyItem.followerId || '',
@@ -94,7 +88,6 @@ export default function FollowersScreen() {
                 followingCount: anyItem.user.followingCount || 0
               };
             } else {
-              // Если user не загружен, используем базовую информацию
               followerData.user = {
                 id: anyItem.followerId || '',
                 name: 'Пользователь',
@@ -110,19 +103,13 @@ export default function FollowersScreen() {
         }
       }
 
-      console.log("Обработанные подписчики:", typedFollowers.length, typedFollowers);
-      
-      // Проверяем, подписан ли я на каждого подписчика
+      // Проверяем, подписан ли текущий пользователь на каждого подписчика
+      const currentUserId = getCurrentUserId();
       const enrichedFollowers = await Promise.all(
         typedFollowers.map(async (follower) => {
           try {
-            // Проверяем, подписан ли я на этого пользователя
-            const isFollowing = await followService.isFollowing(follower.followerId);
-            
-            // Временно: считаем друзьями, если мы подписаны на подписчика
-            // (так как он уже подписан на нас - он в списке подписчиков)
+            const isFollowing = currentUserId ? await followService.isFollowing(follower.followerId) : false;
             const isFriend = isFollowing;
-            
             return { ...follower, isFollowing, isFriend };
           } catch (error) {
             console.error("Ошибка проверки подписки:", error);
@@ -142,16 +129,47 @@ export default function FollowersScreen() {
     }
   }, [getCurrentUserId]);
 
+  // Загрузка информации о пользователе
+  const loadUserInfo = useCallback(async (userId: string) => {
+    try {
+      const userProfile = await userService.fetchUserProfile(userId);
+      setTargetUserName(userProfile?.name || "Пользователь");
+    } catch (error) {
+      console.error("Ошибка загрузки информации о пользователе:", error);
+      setTargetUserName("Пользователь");
+    }
+  }, []);
+
+  // Инициализация
+  const initialize = useCallback(async () => {
+    const userId = params.userId as string;
+    if (userId) {
+      setTargetUserId(userId);
+      await Promise.all([
+        loadFollowers(userId),
+        loadUserInfo(userId)
+      ]);
+    } else {
+      const currentUserId = getCurrentUserId();
+      if (currentUserId) {
+        setTargetUserId(currentUserId);
+        await loadFollowers(currentUserId);
+      } else {
+        Alert.alert("Ошибка", "Пользователь не авторизован");
+        router.back();
+      }
+    }
+  }, [params.userId, getCurrentUserId, loadFollowers, loadUserInfo]);
+
   // Подписаться на пользователя
   const handleFollow = async (userId: string, userName: string) => {
     try {
       await followService.followUser(userId);
       
-      // Обновляем статус в списке
       setFollowers(prev =>
         prev.map(follower =>
           follower.followerId === userId
-            ? { ...follower, isFollowing: true, isFriend: true } // При подписке автоматически становимся друзьями
+            ? { ...follower, isFollowing: true, isFriend: true }
             : follower
         )
       );
@@ -163,7 +181,7 @@ export default function FollowersScreen() {
     }
   };
 
-  // Отписаться от пользователя (используется для кнопки "Друзья")
+  // Отписаться от пользователя
   const handleUnfollow = async (userId: string, userName: string) => {
     Alert.alert(
       "Отписаться",
@@ -177,7 +195,6 @@ export default function FollowersScreen() {
             try {
               await followService.unfollowUser(userId);
               
-              // Обновляем статус в списке
               setFollowers(prev =>
                 prev.map(follower =>
                   follower.followerId === userId
@@ -197,16 +214,18 @@ export default function FollowersScreen() {
     );
   };
 
-  // Обработка нажатия на кнопку (для друзей и подписок)
+  // Обработка нажатия на кнопку
   const handleFollowButtonPress = (follower: FollowerData) => {
     const user = follower.user;
     if (!user) return;
+    const currentUserId = getCurrentUserId();
+    
+    // Не показываем кнопку для текущего пользователя
+    if (user.id === currentUserId) return;
 
     if (follower.isFriend) {
-      // Если это друг - предлагаем отписаться
       handleUnfollow(user.id, user.name);
     } else if (follower.isFollowing) {
-      // Если уже подписан - предлагаем отписаться
       Alert.alert(
         "Отписаться",
         `Вы уверены, что хотите отписаться от ${user.name}?`,
@@ -218,8 +237,6 @@ export default function FollowersScreen() {
             onPress: async () => {
               try {
                 await followService.unfollowUser(user.id);
-                
-                // Обновляем статус в списке
                 setFollowers(prev =>
                   prev.map(f =>
                     f.followerId === user.id
@@ -227,7 +244,6 @@ export default function FollowersScreen() {
                       : f
                   )
                 );
-                
                 Alert.alert("Успешно", `Вы отписались от ${user.name}`);
               } catch (error: any) {
                 console.error("Ошибка отписки:", error);
@@ -238,34 +254,35 @@ export default function FollowersScreen() {
         ]
       );
     } else {
-      // Если не подписан - подписаться
       handleFollow(user.id, user.name);
     }
   };
 
   // Переход к профилю пользователя
   const navigateToProfile = (userId: string) => {
-  if (userId === getCurrentUserId()) {
-    router.push("/(tabs)/profile");
-  } else {
-    // Используем правильный синтаксис для динамических маршрутов
-    router.push({
-      pathname: "/user/[id]",
-      params: { id: userId }
-    });
-  }
-};
+    const currentUserId = getCurrentUserId();
+    if (userId === currentUserId) {
+      router.push("/(tabs)/profile");
+    } else {
+      router.push({
+        pathname: "/user/[id]",
+        params: { id: userId }
+      });
+    }
+  };
 
   // Pull-to-refresh
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    await loadFollowers();
-  }, [loadFollowers]);
+    if (targetUserId) {
+      await loadFollowers(targetUserId);
+    }
+  }, [targetUserId, loadFollowers]);
 
   useFocusEffect(
     useCallback(() => {
-      loadFollowers();
-    }, [loadFollowers])
+      initialize();
+    }, [initialize])
   );
 
   // Фильтрация по поиску
@@ -286,9 +303,9 @@ export default function FollowersScreen() {
     const user = follower.user;
     if (!user) return null;
 
-    const isCurrentUser = follower.followerId === getCurrentUserId();
+    const currentUserId = getCurrentUserId();
+    const isCurrentUser = user.id === currentUserId;
 
-    // Определяем текст и стиль кнопки
     let buttonText = "Подписаться";
     let buttonStyle = styles.notFollowingButton;
     let buttonTextStyle = styles.notFollowingButtonText;
@@ -362,21 +379,11 @@ export default function FollowersScreen() {
         
         {!isCurrentUser && (
           <TouchableOpacity
-            style={[
-              styles.followButton,
-              buttonStyle
-            ]}
+            style={[styles.followButton, buttonStyle]}
             onPress={() => handleFollowButtonPress(follower)}
           >
-            <Ionicons 
-              name={iconName} 
-              size={16} 
-              color={iconColor} 
-            />
-            <Text style={[
-              styles.followButtonText,
-              buttonTextStyle
-            ]}>
+            <Ionicons name={iconName} size={16} color={iconColor} />
+            <Text style={[styles.followButtonText, buttonTextStyle]}>
               {buttonText}
             </Text>
           </TouchableOpacity>
@@ -385,29 +392,23 @@ export default function FollowersScreen() {
     );
   };
 
+  const headerTitle = targetUserId && targetUserId !== getCurrentUserId() 
+    ? `Подписчики ${targetUserName}` 
+    : "Подписчики";
+
   return (
     <View style={styles.container}>
-      {/* Шапка */}
       <View style={styles.header}>
-        <TouchableOpacity 
-          style={styles.backButton}
-          onPress={() => router.back()}
-        >
+        <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
           <Ionicons name="arrow-back" size={24} color="#000" />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Подписчики</Text>
+        <Text style={styles.headerTitle}>{headerTitle}</Text>
         <View style={styles.headerRight} />
       </View>
 
-      {/* Поиск */}
       <View style={styles.searchContainer}>
         <View style={styles.searchInputContainer}>
-          <Feather
-            name="search"
-            size={16}
-            color="#666"
-            style={styles.searchIcon}
-          />
+          <Feather name="search" size={16} color="#666" style={styles.searchIcon} />
           <TextInput
             style={styles.searchInput}
             placeholder="Поиск по подписчикам..."
@@ -423,7 +424,6 @@ export default function FollowersScreen() {
         </View>
       </View>
 
-      {/* Список */}
       <ScrollView
         style={styles.content}
         showsVerticalScrollIndicator={false}
@@ -456,16 +456,8 @@ export default function FollowersScreen() {
                 <Ionicons name="people-outline" size={64} color="#C2DAE2" />
                 <Text style={styles.emptyTitle}>Нет подписчиков</Text>
                 <Text style={styles.emptyText}>
-                  У вас пока нет подписчиков
+                  У {targetUserId && targetUserId !== getCurrentUserId() ? targetUserName : "вас"} пока нет подписчиков
                 </Text>
-                <TouchableOpacity
-                  style={styles.exploreButton}
-                  onPress={() => router.push("/community")}
-                >
-                  <Text style={styles.exploreButtonText}>
-                    Найти пользователей
-                  </Text>
-                </TouchableOpacity>
               </>
             )}
           </View>
@@ -485,10 +477,8 @@ export default function FollowersScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#FFFFFF",
-  },
+  // ... существующие стили без изменений
+  container: { flex: 1, backgroundColor: "#FFFFFF" },
   header: {
     flexDirection: "row",
     alignItems: "center",
@@ -500,25 +490,10 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: "#E5E7EB",
   },
-  backButton: {
-    padding: 4,
-  },
-  headerTitle: {
-    fontSize: 20,
-    fontWeight: "600",
-    color: "#212529",
-    fontFamily: "Playfair Display Bold",
-  },
-  headerRight: {
-    width: 32,
-  },
-  searchContainer: {
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    backgroundColor: "#fff",
-    borderBottomWidth: 1,
-    borderBottomColor: "#E5E7EB",
-  },
+  backButton: { padding: 4 },
+  headerTitle: { fontSize: 20, fontWeight: "600", color: "#212529", fontFamily: "Playfair Display Bold" },
+  headerRight: { width: 32 },
+  searchContainer: { paddingHorizontal: 16, paddingVertical: 12, backgroundColor: "#fff", borderBottomWidth: 1, borderBottomColor: "#E5E7EB" },
   searchInputContainer: {
     flexDirection: "row",
     alignItems: "center",
@@ -529,76 +504,16 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#E5E7EB",
   },
-  searchIcon: {
-    marginRight: 8,
-  },
-  searchInput: {
-    flex: 1,
-    fontSize: 16,
-    color: "#212529",
-    fontFamily: "Playfair Display Regular",
-    paddingVertical: 2,
-  },
-  content: {
-    flex: 1,
-  },
-  loaderContainer: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    paddingTop: 80,
-  },
-  loaderText: {
-    marginTop: 12,
-    fontSize: 16,
-    color: "#6C757D",
-    fontFamily: "Playfair Display Regular",
-  },
-  emptyState: {
-    alignItems: "center",
-    justifyContent: "center",
-    paddingTop: 80,
-    paddingHorizontal: 24,
-  },
-  emptyTitle: {
-    fontSize: 20,
-    color: "#212529",
-    fontFamily: "Playfair Display Bold",
-    marginTop: 16,
-    marginBottom: 8,
-    textAlign: "center",
-  },
-  emptyText: {
-    fontSize: 16,
-    color: "#6C757D",
-    fontFamily: "Playfair Display Regular",
-    textAlign: "center",
-    lineHeight: 22,
-    marginBottom: 24,
-  },
-  exploreButton: {
-    backgroundColor: "#6A9AA9",
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    borderRadius: 25,
-  },
-  exploreButtonText: {
-    color: "#FFFFFF",
-    fontSize: 16,
-    fontWeight: "600",
-    fontFamily: "Playfair Display Regular",
-  },
-  sectionTitle: {
-    fontSize: 16,
-    color: "#6C757D",
-    fontFamily: "Playfair Display Regular",
-    marginHorizontal: 16,
-    marginVertical: 12,
-  },
-  usersList: {
-    paddingHorizontal: 16,
-    paddingBottom: 24,
-  },
+  searchIcon: { marginRight: 8 },
+  searchInput: { flex: 1, fontSize: 16, color: "#212529", fontFamily: "Playfair Display Regular", paddingVertical: 2 },
+  content: { flex: 1 },
+  loaderContainer: { flex: 1, justifyContent: "center", alignItems: "center", paddingTop: 80 },
+  loaderText: { marginTop: 12, fontSize: 16, color: "#6C757D", fontFamily: "Playfair Display Regular" },
+  emptyState: { alignItems: "center", justifyContent: "center", paddingTop: 80, paddingHorizontal: 24 },
+  emptyTitle: { fontSize: 20, color: "#212529", fontFamily: "Playfair Display Bold", marginTop: 16, marginBottom: 8, textAlign: "center" },
+  emptyText: { fontSize: 16, color: "#6C757D", fontFamily: "Playfair Display Regular", textAlign: "center", lineHeight: 22, marginBottom: 24 },
+  sectionTitle: { fontSize: 16, color: "#6C757D", fontFamily: "Playfair Display Regular", marginHorizontal: 16, marginVertical: 12 },
+  usersList: { paddingHorizontal: 16, paddingBottom: 24 },
   userCard: {
     backgroundColor: "#fff",
     borderRadius: 12,
@@ -615,115 +530,24 @@ const styles = StyleSheet.create({
     shadowRadius: 2,
     elevation: 2,
   },
-  userInfo: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-  },
-  avatarContainer: {
-    marginRight: 12,
-  },
-  avatar: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
-    borderWidth: 2,
-    borderColor: "#9BDF11",
-  },
-  avatarPlaceholder: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
-    backgroundColor: "#E5F0F5",
-    justifyContent: "center",
-    alignItems: "center",
-    borderWidth: 2,
-    borderColor: "#9BDF11",
-  },
-  userDetails: {
-    flex: 1,
-  },
-  userName: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: "#212529",
-    fontFamily: "Playfair Display Regular",
-    marginBottom: 4,
-  },
-  userDescription: {
-    fontSize: 13,
-    color: "#6C757D",
-    fontFamily: "Playfair Display Regular",
-    marginBottom: 6,
-    lineHeight: 16,
-  },
-  userStats: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-  },
-  statItem: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-  },
-  statText: {
-    fontSize: 12,
-    color: "#666",
-    fontFamily: "Playfair Display Regular",
-  },
-  friendBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#9BDF11",
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 10,
-    gap: 2,
-  },
-  friendBadgeText: {
-    fontSize: 10,
-    color: "#fff",
-    fontWeight: "600",
-    fontFamily: "Playfair Display Regular",
-  },
-  followButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 20,
-    gap: 4,
-    minWidth: 100,
-    justifyContent: "center",
-  },
-  notFollowingButton: {
-    backgroundColor: "#6A9AA9",
-    borderWidth: 1,
-    borderColor: "#6A9AA9",
-  },
-  followingButton: {
-    backgroundColor: "#f8f9fa",
-    borderWidth: 1,
-    borderColor: "#E5E7EB",
-  },
-  friendButton: {
-    backgroundColor: "#9BDF11",
-    borderWidth: 1,
-    borderColor: "#9BDF11",
-  },
-  followButtonText: {
-    fontSize: 12,
-    fontWeight: "600",
-    fontFamily: "Playfair Display Regular",
-  },
-  notFollowingButtonText: {
-    color: "#fff",
-  },
-  followingButtonText: {
-    color: "#666",
-  },
-  friendButtonText: {
-    color: "#fff",
-  },
+  userInfo: { flex: 1, flexDirection: "row", alignItems: "center" },
+  avatarContainer: { marginRight: 12 },
+  avatar: { width: 50, height: 50, borderRadius: 25, borderWidth: 2, borderColor: "#9BDF11" },
+  avatarPlaceholder: { width: 50, height: 50, borderRadius: 25, backgroundColor: "#E5F0F5", justifyContent: "center", alignItems: "center", borderWidth: 2, borderColor: "#9BDF11" },
+  userDetails: { flex: 1 },
+  userName: { fontSize: 16, fontWeight: "600", color: "#212529", fontFamily: "Playfair Display Regular", marginBottom: 4 },
+  userDescription: { fontSize: 13, color: "#6C757D", fontFamily: "Playfair Display Regular", marginBottom: 6, lineHeight: 16 },
+  userStats: { flexDirection: "row", alignItems: "center", gap: 12 },
+  statItem: { flexDirection: "row", alignItems: "center", gap: 4 },
+  statText: { fontSize: 12, color: "#666", fontFamily: "Playfair Display Regular" },
+  friendBadge: { flexDirection: "row", alignItems: "center", backgroundColor: "#9BDF11", paddingHorizontal: 6, paddingVertical: 2, borderRadius: 10, gap: 2 },
+  friendBadgeText: { fontSize: 10, color: "#fff", fontWeight: "600", fontFamily: "Playfair Display Regular" },
+  followButton: { flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, gap: 4, minWidth: 100, justifyContent: "center" },
+  notFollowingButton: { backgroundColor: "#6A9AA9", borderWidth: 1, borderColor: "#6A9AA9" },
+  followingButton: { backgroundColor: "#f8f9fa", borderWidth: 1, borderColor: "#E5E7EB" },
+  friendButton: { backgroundColor: "#9BDF11", borderWidth: 1, borderColor: "#9BDF11" },
+  followButtonText: { fontSize: 12, fontWeight: "600", fontFamily: "Playfair Display Regular" },
+  notFollowingButtonText: { color: "#fff" },
+  followingButtonText: { color: "#666" },
+  friendButtonText: { color: "#fff" },
 });
