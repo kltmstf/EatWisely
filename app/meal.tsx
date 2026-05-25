@@ -11,9 +11,11 @@ import {
   View,
   ActivityIndicator,
   Alert,
+  Modal,
+  TextInput,
 } from "react-native";
 import { Ionicons, Feather, MaterialIcons } from "@expo/vector-icons";
-import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
+import { getFirestore, doc, getDoc, setDoc, updateDoc, collection, query, where, getDocs } from "firebase/firestore";
 import {
   getAuth,
   signInWithCustomToken,
@@ -27,18 +29,19 @@ import recipeService from "../app/services/recipeService";
 import { favoriteService } from "../app/services/favoriteService";
 import { rationPlanService } from "../app/services/rationPlanService";
 
-// --- ТИПЫ ДАННЫХ ---
+declare const __app_id: string | undefined;
+declare const __firebase_config: string | undefined;
+declare const __initial_auth_token: string | undefined;
+
 interface FullRecipeData {
   id: string;
   title: string;
   mealType: string;
   description: string;
-  // КБЖУ на 100г
   caloriesPer100g: number;
   proteinsPer100g: number;
   fatsPer100g: number;
   carbsPer100g: number;
-  // Общее КБЖУ на всё блюдо
   totalCalories: number;
   totalProteins: number;
   totalFats: number;
@@ -54,97 +57,42 @@ interface FullRecipeData {
   imageUrl?: string;
 }
 
-declare const __app_id: string | undefined;
-declare const __firebase_config: string | undefined;
-declare const __initial_auth_token: string | undefined;
-
 const formatMinutes = (minutes: number): string => {
   const absMinutes = Math.abs(minutes);
   const lastDigit = absMinutes % 10;
   const lastTwoDigits = absMinutes % 100;
-
-  if (lastTwoDigits >= 11 && lastTwoDigits <= 14) return `${absMinutes} минут`;
-  if (lastDigit === 1) return `${absMinutes} минута`;
-  if (lastDigit >= 2 && lastDigit <= 4) return `${absMinutes} минуты`;
-  return `${absMinutes} минут`;
+  if (lastTwoDigits >= 11 && lastTwoDigits <= 14) return `${absMinutes} мин`;
+  if (lastDigit === 1) return `${absMinutes} мин`;
+  if (lastDigit >= 2 && lastDigit <= 4) return `${absMinutes} мин`;
+  return `${absMinutes} мин`;
 };
 
 const getCategoryIcon = (category: string | undefined) => {
   const normalizedCategory = String(category || "").trim().toLowerCase();
   switch (normalizedCategory) {
-    case "завтрак":
-    case "breakfast":
-      return { name: "sunny-outline", color: "#FFB74D" };
-    case "обед":
-    case "lunch":
-      return { name: "restaurant-outline", color: "#4CAF50" };
-    case "ужин":
-    case "dinner":
-      return { name: "moon-outline", color: "#5C6BC0" };
-    case "перекусы":
-    case "snack":
-      return { name: "cafe-outline", color: "#FF9800" };
-    default:
-      return { name: "fast-food-outline", color: "#9C27B0" };
+    case "завтрак": case "breakfast": return { name: "sunny-outline", color: "#FFB74D" };
+    case "обед": case "lunch": return { name: "restaurant-outline", color: "#4CAF50" };
+    case "ужин": case "dinner": return { name: "moon-outline", color: "#5C6BC0" };
+    case "перекус": case "snack": return { name: "cafe-outline", color: "#FF9800" };
+    default: return { name: "fast-food-outline", color: "#9C27B0" };
   }
 };
 
 const getDifficultyColor = (difficulty: string | undefined) => {
   if (!difficulty) return "#6A9AA9";
   switch (difficulty.trim()) {
-    case "Легко":
-    case "Легкая":
-      return "#4CAF50";
-    case "Средне":
-    case "Средняя":
-      return "#FF9800";
-    case "Сложно":
-    case "Сложная":
-      return "#F44336";
-    default:
-      return "#6A9AA9";
+    case "Легко": case "Легкая": return "#4CAF50";
+    case "Средне": case "Средняя": return "#FF9800";
+    case "Сложно": case "Сложная": return "#F44336";
+    default: return "#6A9AA9";
   }
 };
 
-const DifficultyBadge = ({ difficulty }: { difficulty: string }) => {
-  const color = getDifficultyColor(difficulty);
-  return (
-    <View style={[styles.difficultyBadge, { backgroundColor: color }]}>
-      <Text style={styles.difficultyText}>{difficulty}</Text>
-    </View>
-  );
-};
-
-const fallbackMealData = (mealName: string, mealType: string): FullRecipeData => {
-  // Генерируем случайный вес для демонстрации
-  const randomWeight = [250, 300, 350, 400, 450][Math.floor(Math.random() * 5)];
-  const totalCalories = Math.floor(Math.random() * 500) + 300;
-  const caloriesPer100g = Math.round((totalCalories / randomWeight) * 100);
-  
-  return {
-    id: "fallback",
-    title: mealName,
-    mealType: mealType,
-    description: "Это стандартный, зарезервированный рецепт, используемый в качестве запасного варианта.",
-    caloriesPer100g: caloriesPer100g,
-    proteinsPer100g: Math.round(caloriesPer100g * 0.04 * 10) / 10,
-    fatsPer100g: Math.round(caloriesPer100g * 0.03 * 10) / 10,
-    carbsPer100g: Math.round(caloriesPer100g * 0.13 * 10) / 10,
-    totalCalories: totalCalories,
-    totalProteins: Math.round(totalCalories * 0.04),
-    totalFats: Math.round(totalCalories * 0.03),
-    totalCarbs: Math.round(totalCalories * 0.13),
-    totalWeight: randomWeight,
-    servings: 1,
-    cookingTime: 10,
-    difficulty: "Легко",
-    averageRating: 4.5,
-    totalRatings: 53,
-    ingredients: ["300 мл. молока", "1 банан", "100 гр. овсянки", "1 ст. ложка меда", "100 гр. ягод"],
-    instructions: ["Разогреть молоко", "Добавить овсянку и мед", "Снять с огня, добавить фрукты"],
-    imageUrl: undefined,
-  };
-};
+const DifficultyBadge = ({ difficulty }: { difficulty: string }) => (
+  <View style={[styles.difficultyBadge, { backgroundColor: getDifficultyColor(difficulty) }]}>
+    <Text style={styles.difficultyText}>{difficulty}</Text>
+  </View>
+);
 
 export default function Meal() {
   const router = useRouter();
@@ -165,7 +113,7 @@ export default function Meal() {
   const proteins = Array.isArray(params.proteins) ? params.proteins[0] : params.proteins || "20";
   const fats = Array.isArray(params.fats) ? params.fats[0] : params.fats || "10";
   const carbohydrates = Array.isArray(params.carbohydrates) ? params.carbohydrates[0] : params.carbohydrates || "30";
-  const weight = Array.isArray(params.weight) ? params.weight[0] : params.weight || "250";
+  const weightParam = Array.isArray(params.weight) ? params.weight[0] : params.weight || "250";
   const cookingTimeParam = Array.isArray(params.cookingTime) ? params.cookingTime[0] : params.cookingTime || "20";
 
   const isFromHome = fromScreen === "home";
@@ -183,14 +131,16 @@ export default function Meal() {
   const [loading, setLoading] = useState(true);
   const [isReplacing, setIsReplacing] = useState(false);
   const [pendingReplaceData, setPendingReplaceData] = useState<any>(null);
+  
+  // Состояния для выбора веса
+  const [showWeightModal, setShowWeightModal] = useState(false);
+  const [selectedRecipeForWeight, setSelectedRecipeForWeight] = useState<any>(null);
+  const [selectedWeight, setSelectedWeight] = useState("250");
 
-  // Инициализация Firebase
   useEffect(() => {
     const initFirebase = async () => {
       try {
-        const firebaseConfig = typeof __firebase_config !== "undefined"
-          ? JSON.parse(__firebase_config as string)
-          : {};
+        const firebaseConfig = typeof __firebase_config !== "undefined" ? JSON.parse(__firebase_config as string) : {};
         const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
         const authInstance = getAuth(app);
         const firestoreInstance = getFirestore(app);
@@ -223,7 +173,6 @@ export default function Meal() {
     initFirebase();
   }, []);
 
-  // Обработка отложенной замены после авторизации
   useEffect(() => {
     if (isAuthReady && pendingReplaceData && currentUser?.uid) {
       console.log("🔄 Processing pending replacement after auth");
@@ -236,17 +185,11 @@ export default function Meal() {
   const formatIngredients = (ingredientsData: any): string[] => {
     if (!ingredientsData) return ["Ингредиенты не указаны"];
     if (typeof ingredientsData === 'string') {
-      try {
-        return formatIngredients(JSON.parse(ingredientsData));
-      } catch {
-        return [ingredientsData];
-      }
+      try { return formatIngredients(JSON.parse(ingredientsData)); } catch { return [ingredientsData]; }
     }
     if (Array.isArray(ingredientsData)) {
       if (ingredientsData.length === 0) return ["Ингредиенты не указаны"];
-      if (typeof ingredientsData[0] === 'string') {
-        return ingredientsData.filter(item => item && item.trim() !== '');
-      }
+      if (typeof ingredientsData[0] === 'string') return ingredientsData.filter(item => item && item.trim() !== '');
       return ingredientsData.map(item => item.text || item.name || JSON.stringify(item)).filter(i => i);
     }
     return ["Ингредиенты не указаны"];
@@ -255,188 +198,128 @@ export default function Meal() {
   const formatSteps = (stepsData: any): string[] => {
     if (!stepsData) return ["Инструкции не указаны"];
     if (typeof stepsData === 'string') {
-      try {
-        return formatSteps(JSON.parse(stepsData));
-      } catch {
-        return [stepsData];
-      }
+      try { return formatSteps(JSON.parse(stepsData)); } catch { return [stepsData]; }
     }
     if (Array.isArray(stepsData)) {
       if (stepsData.length === 0) return ["Инструкции не указаны"];
-      if (typeof stepsData[0] === 'string') {
-        return stepsData.filter(item => item && item.trim() !== '');
-      }
+      if (typeof stepsData[0] === 'string') return stepsData.filter(item => item && item.trim() !== '');
       return stepsData.map(item => item.text || item.description || item.step || JSON.stringify(item)).filter(i => i);
     }
     return ["Инструкции не указаны"];
   };
 
   const loadRecipeDetails = useCallback(async () => {
-  if (hasLoadedRef.current) return;
-  if (!isAuthReady || !db) {
-    setLoading(false);
-    return;
-  }
+    if (hasLoadedRef.current) return;
+    if (!isAuthReady || !db) { setLoading(false); return; }
+    hasLoadedRef.current = true;
+    setLoading(true);
 
-  hasLoadedRef.current = true;
-  setLoading(true);
-
-  try {
-    if (isCustomMeal) {
-      const totalWeight = parseFloat(weight) || 250;
-      const totalCal = Number(calories) || 300;
-      const totalProt = Number(proteins) || 20;
-      const totalFat = Number(fats) || 10;
-      const totalCarb = Number(carbohydrates) || 30;
-      
-      setRecipeDetails({
-        id: mealId,
-        title: mealName,
-        mealType: mealTypeParam || category || "Обед",
-        description: "Этот рецепт был добавлен вами в дневной рацион.",
-        caloriesPer100g: totalWeight > 0 ? Math.round((totalCal / totalWeight) * 100) : 0,
-        proteinsPer100g: totalWeight > 0 ? Math.round((totalProt / totalWeight) * 100 * 10) / 10 : 0,
-        fatsPer100g: totalWeight > 0 ? Math.round((totalFat / totalWeight) * 100 * 10) / 10 : 0,
-        carbsPer100g: totalWeight > 0 ? Math.round((totalCarb / totalWeight) * 100 * 10) / 10 : 0,
-        totalCalories: totalCal,
-        totalProteins: totalProt,
-        totalFats: totalFat,
-        totalCarbs: totalCarb,
-        totalWeight: totalWeight,
-        servings: 1,
-        cookingTime: typeof cookingTimeParam === 'number' ? cookingTimeParam : parseInt(cookingTimeParam, 10) || 20,
-        difficulty: difficultyLevel || "Легко",
-        averageRating: Number(rating) || 0,
-        totalRatings: 0,
-        ingredients: ["Ингредиенты не указаны"],
-        instructions: ["Инструкции не указаны"],
-        imageUrl: imageUrl || undefined,
-      });
-      setLoading(false);
-      return;
-    }
-
-    const actualRecipeId = recipeId || mealId;
-    if (!actualRecipeId || actualRecipeId === "undefined" || actualRecipeId === "null") {
-      setRecipeDetails(fallbackMealData(mealName, mealTypeParam || category || "Обед"));
-      setLoading(false);
-      return;
-    }
-
-    const docRef = doc(db, "recipes", actualRecipeId);
-    const docSnap = await getDoc(docRef);
-
-    if (docSnap.exists()) {
-      const data = docSnap.data();
-      
-      // Получаем время приготовления
-      let cookingTimeValue = 20;
-      if (data.cookingTime) {
-        cookingTimeValue = typeof data.cookingTime === 'number' ? data.cookingTime : parseInt(data.cookingTime, 10) || 20;
-      } else if (data.prepTime) {
-        cookingTimeValue = typeof data.prepTime === 'number' ? data.prepTime : parseInt(data.prepTime, 10) || 20;
-      } else if (cookingTimeParam) {
-        cookingTimeValue = typeof cookingTimeParam === 'number' ? cookingTimeParam : parseInt(cookingTimeParam, 10) || 20;
+    try {
+      if (isCustomMeal) {
+        const totalWeight = parseFloat(weightParam) || 250;
+        const totalCal = Number(calories) || 300;
+        const totalProt = Number(proteins) || 20;
+        const totalFat = Number(fats) || 10;
+        const totalCarb = Number(carbohydrates) || 30;
+        
+        setRecipeDetails({
+          id: mealId, title: mealName, mealType: mealTypeParam || category || "Обед",
+          description: "Этот рецепт был добавлен вами в дневной рацион.",
+          caloriesPer100g: totalWeight > 0 ? Math.round((totalCal / totalWeight) * 100) : 0,
+          proteinsPer100g: totalWeight > 0 ? Math.round((totalProt / totalWeight) * 100 * 10) / 10 : 0,
+          fatsPer100g: totalWeight > 0 ? Math.round((totalFat / totalWeight) * 100 * 10) / 10 : 0,
+          carbsPer100g: totalWeight > 0 ? Math.round((totalCarb / totalWeight) * 100 * 10) / 10 : 0,
+          totalCalories: totalCal, totalProteins: totalProt, totalFats: totalFat, totalCarbs: totalCarb,
+          totalWeight: totalWeight, servings: 1,
+          cookingTime: typeof cookingTimeParam === 'number' ? cookingTimeParam : parseInt(cookingTimeParam, 10) || 20,
+          difficulty: difficultyLevel || "Легко", averageRating: Number(rating) || 0, totalRatings: 0,
+          ingredients: ["Ингредиенты не указаны"], instructions: ["Инструкции не указаны"], imageUrl: imageUrl || undefined,
+        });
+        setLoading(false);
+        return;
       }
-      
-      // Получаем вес блюда (сохраняем исходный вес)
-      const totalWeight = parseFloat(data.totalWeight) || parseFloat(data.weight) || 100;
-      
-      // Получаем КБЖУ на 100г из nutritionPer100g или вычисляем из общих значений
-      let caloriesPer100g = 0;
-      let proteinsPer100g = 0;
-      let fatsPer100g = 0;
-      let carbsPer100g = 0;
-      let totalCalories = 0;
-      let totalProteins = 0;
-      let totalFats = 0;
-      let totalCarbs = 0;
-      
-      if (data.nutritionPer100g && data.nutritionPer100g.calories) {
-        // Используем данные на 100г
-        caloriesPer100g = data.nutritionPer100g.calories || 0;
-        proteinsPer100g = data.nutritionPer100g.protein || 0;
-        fatsPer100g = data.nutritionPer100g.fat || 0;
-        carbsPer100g = data.nutritionPer100g.carbs || 0;
+
+      const actualRecipeId = recipeId || mealId;
+      if (!actualRecipeId || actualRecipeId === "undefined" || actualRecipeId === "null") {
+        setRecipeDetails(fallbackMealData(mealName, mealTypeParam || category || "Обед"));
+        setLoading(false);
+        return;
+      }
+
+      const docRef = doc(db, "recipes", actualRecipeId);
+      const docSnap = await getDoc(docRef);
+
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        let cookingTimeValue = data.cookingTime || data.prepTime || 20;
+        if (typeof cookingTimeValue === 'string') cookingTimeValue = parseInt(cookingTimeValue, 10) || 20;
         
-        // Вычисляем общие значения на основе веса блюда
-        totalCalories = Math.round((caloriesPer100g * totalWeight) / 100);
-        totalProteins = Math.round((proteinsPer100g * totalWeight) / 100 * 10) / 10;
-        totalFats = Math.round((fatsPer100g * totalWeight) / 100 * 10) / 10;
-        totalCarbs = Math.round((carbsPer100g * totalWeight) / 100 * 10) / 10;
-      } else if (data.totalCalories) {
-        // Используем общие значения (на всё блюдо)
-        totalCalories = data.totalCalories || Number(calories) || 0;
-        totalProteins = data.totalProteins || Number(proteins) || 0;
-        totalFats = data.totalFats || Number(fats) || 0;
-        totalCarbs = data.totalCarbohydrates || Number(carbohydrates) || 0;
+        const totalWeight = parseFloat(data.totalWeight) || parseFloat(data.weight) || 100;
         
-        // Вычисляем на 100г
-        caloriesPer100g = totalWeight > 0 ? Math.round((totalCalories / totalWeight) * 100) : 0;
-        proteinsPer100g = totalWeight > 0 ? Math.round((totalProteins / totalWeight) * 100 * 10) / 10 : 0;
-        fatsPer100g = totalWeight > 0 ? Math.round((totalFats / totalWeight) * 100 * 10) / 10 : 0;
-        carbsPer100g = totalWeight > 0 ? Math.round((totalCarbs / totalWeight) * 100 * 10) / 10 : 0;
+        let caloriesPer100g = 0, proteinsPer100g = 0, fatsPer100g = 0, carbsPer100g = 0;
+        let totalCalories = 0, totalProteins = 0, totalFats = 0, totalCarbs = 0;
+        
+        if (data.nutritionPer100g && data.nutritionPer100g.calories) {
+          caloriesPer100g = data.nutritionPer100g.calories || 0;
+          proteinsPer100g = data.nutritionPer100g.protein || 0;
+          fatsPer100g = data.nutritionPer100g.fat || 0;
+          carbsPer100g = data.nutritionPer100g.carbs || 0;
+          totalCalories = Math.round((caloriesPer100g * totalWeight) / 100);
+          totalProteins = Math.round((proteinsPer100g * totalWeight) / 100 * 10) / 10;
+          totalFats = Math.round((fatsPer100g * totalWeight) / 100 * 10) / 10;
+          totalCarbs = Math.round((carbsPer100g * totalWeight) / 100 * 10) / 10;
+        } else if (data.totalCalories) {
+          totalCalories = data.totalCalories || 0;
+          totalProteins = data.totalProteins || 0;
+          totalFats = data.totalFats || 0;
+          totalCarbs = data.totalCarbohydrates || 0;
+          caloriesPer100g = totalWeight > 0 ? Math.round((totalCalories / totalWeight) * 100) : 0;
+          proteinsPer100g = totalWeight > 0 ? Math.round((totalProteins / totalWeight) * 100 * 10) / 10 : 0;
+          fatsPer100g = totalWeight > 0 ? Math.round((totalFats / totalWeight) * 100 * 10) / 10 : 0;
+          carbsPer100g = totalWeight > 0 ? Math.round((totalCarbs / totalWeight) * 100 * 10) / 10 : 0;
+        } else {
+          totalCalories = data.calories || 0;
+          totalProteins = data.proteins || 0;
+          totalFats = data.fats || 0;
+          totalCarbs = data.carbohydrates || 0;
+          caloriesPer100g = totalWeight > 0 ? Math.round((totalCalories / totalWeight) * 100) : 0;
+          proteinsPer100g = totalWeight > 0 ? Math.round((totalProteins / totalWeight) * 100 * 10) / 10 : 0;
+          fatsPer100g = totalWeight > 0 ? Math.round((totalFats / totalWeight) * 100 * 10) / 10 : 0;
+          carbsPer100g = totalWeight > 0 ? Math.round((totalCarbs / totalWeight) * 100 * 10) / 10 : 0;
+        }
+        
+        setRecipeDetails({
+          id: actualRecipeId, title: data.title || mealName,
+          mealType: data.mealType || data.categories?.[0] || mealTypeParam || category || "Обед",
+          description: data.description || "Описание не предоставлено.",
+          caloriesPer100g, proteinsPer100g, fatsPer100g, carbsPer100g,
+          totalCalories, totalProteins, totalFats, totalCarbs,
+          totalWeight: totalWeight, servings: data.servings || 1,
+          cookingTime: cookingTimeValue, difficulty: data.difficultyLevel || data.difficulty || difficultyLevel || "Средне",
+          averageRating: data.averageRating || Number(rating) || 0, totalRatings: data.ratingsCount || 0,
+          ingredients: formatIngredients(data.ingredients || data.ingredientsList),
+          instructions: formatSteps(data.steps || data.instructions),
+          imageUrl: data.imageUrl || imageUrl || undefined,
+        });
       } else {
-        // Используем старые поля (на порцию) - предполагаем, что это на вес блюда
-        totalCalories = data.calories || Number(calories) || 0;
-        totalProteins = data.proteins || Number(proteins) || 0;
-        totalFats = data.fats || Number(fats) || 0;
-        totalCarbs = data.carbohydrates || Number(carbohydrates) || 0;
-        
-        // Вычисляем на 100г
-        caloriesPer100g = totalWeight > 0 ? Math.round((totalCalories / totalWeight) * 100) : 0;
-        proteinsPer100g = totalWeight > 0 ? Math.round((totalProteins / totalWeight) * 100 * 10) / 10 : 0;
-        fatsPer100g = totalWeight > 0 ? Math.round((totalFats / totalWeight) * 100 * 10) / 10 : 0;
-        carbsPer100g = totalWeight > 0 ? Math.round((totalCarbs / totalWeight) * 100 * 10) / 10 : 0;
+        setRecipeDetails(fallbackMealData(mealName, mealTypeParam || category || "Обед"));
       }
-      
-      setRecipeDetails({
-        id: actualRecipeId,
-        title: data.title || mealName,
-        mealType: data.mealType || data.categories?.[0] || mealTypeParam || category || "Обед",
-        description: data.description || "Описание не предоставлено.",
-        caloriesPer100g: caloriesPer100g,
-        proteinsPer100g: proteinsPer100g,
-        fatsPer100g: fatsPer100g,
-        carbsPer100g: carbsPer100g,
-        totalCalories: totalCalories,
-        totalProteins: totalProteins,
-        totalFats: totalFats,
-        totalCarbs: totalCarbs,
-        totalWeight: totalWeight,
-        servings: data.servings || 1,
-        cookingTime: cookingTimeValue,
-        difficulty: data.difficultyLevel || data.difficulty || difficultyLevel || "Средне",
-        averageRating: data.averageRating || Number(rating) || 0,
-        totalRatings: data.ratingsCount || 0,
-        ingredients: formatIngredients(data.ingredients || data.ingredientsList),
-        instructions: formatSteps(data.steps || data.instructions),
-        imageUrl: data.imageUrl || imageUrl || undefined,
-      });
-    } else {
+    } catch (error) {
+      console.error("Error loading recipe:", error);
       setRecipeDetails(fallbackMealData(mealName, mealTypeParam || category || "Обед"));
+    } finally {
+      setLoading(false);
     }
-  } catch (error) {
-    console.error("Error loading recipe:", error);
-    setRecipeDetails(fallbackMealData(mealName, mealTypeParam || category || "Обед"));
-  } finally {
-    setLoading(false);
-  }
-}, [isAuthReady, db, mealId, recipeId, mealName, mealTypeParam, category, isCustomMeal, calories, proteins, fats, carbohydrates, weight, cookingTimeParam, difficultyLevel, rating, imageUrl]);
+  }, [isAuthReady, db, mealId, recipeId, mealName, mealTypeParam, category, isCustomMeal, calories, proteins, fats, carbohydrates, weightParam, cookingTimeParam, difficultyLevel, rating, imageUrl]);
 
   useEffect(() => {
-    if (isAuthReady && db) {
-      loadRecipeDetails();
-    }
+    if (isAuthReady && db) loadRecipeDetails();
   }, [isAuthReady, db, loadRecipeDetails]);
 
   useEffect(() => {
-    return () => {
-      hasLoadedRef.current = false;
-    };
+    return () => { hasLoadedRef.current = false; };
   }, []);
 
-  // Загрузка статуса избранного
   useEffect(() => {
     const loadBookmark = async () => {
       if (!isAuthReady || !userId || !recipeDetails?.id || isCustomMeal) {
@@ -447,11 +330,8 @@ export default function Meal() {
         const actualId = recipeId || mealId || recipeDetails.id;
         const isFav = await favoriteService.isInFavorites(actualId, 'recipe', userId);
         setIsBookmarked(isFav);
-      } catch (error) {
-        console.error("Error loading bookmark:", error);
-      } finally {
-        setIsLoadingBookmark(false);
-      }
+      } catch (error) { console.error("Error loading bookmark:", error); } 
+      finally { setIsLoadingBookmark(false); }
     };
     loadBookmark();
   }, [isAuthReady, userId, recipeDetails?.id, isCustomMeal, recipeId, mealId]);
@@ -478,7 +358,14 @@ export default function Meal() {
     }
   };
 
-  // Функция замены блюда (основная логика)
+  // Функция для открытия выбора веса
+  const openWeightModal = (recipeData: any) => {
+    setSelectedRecipeForWeight(recipeData);
+    setSelectedWeight(recipeData.totalWeight?.toString() || "250");
+    setShowWeightModal(true);
+  };
+
+  // Функция для замены блюда с выбранным весом
   const performReplaceMeal = useCallback(async (newRecipeData: any) => {
     if (!currentUser?.uid) {
       Alert.alert("Ошибка", "Пользователь не авторизован");
@@ -492,32 +379,54 @@ export default function Meal() {
     try {
       setIsReplacing(true);
       const todayStr = new Date().toISOString().split('T')[0];
-      const planRef = doc(db, 'users', currentUser.uid, 'daily_plans', todayStr);
-      const planSnap = await getDoc(planRef);
-
-      if (!planSnap.exists()) {
+      
+      // Получаем текущий план через ration_plan_days
+      const planDayQuery = query(
+        collection(db, 'ration_plan_days'),
+        where('userId', '==', currentUser.uid),
+        where('date', '==', todayStr)
+      );
+      const planDaySnap = await getDocs(planDayQuery);
+      
+      if (planDaySnap.empty) {
         Alert.alert("Ошибка", "План на сегодня не найден");
         return;
       }
-
-      const planData = planSnap.data();
-      const currentMeals = planData.meals || [];
+      
+      const planDayDoc = planDaySnap.docs[0];
+      const planDayData = planDayDoc.data();
+      const currentMeals = planDayData.meals || [];
       const mealIndexNum = parseInt(mealIndex, 10);
-
+      
       if (isNaN(mealIndexNum) || mealIndexNum >= currentMeals.length) {
         Alert.alert("Ошибка", "Прием пищи не найден");
         return;
       }
-
+      
+      // Получаем вес из модального окна или используем дефолтный
+      const weightNum = parseInt(selectedWeight);
+      const finalWeight = !isNaN(weightNum) && weightNum >= 50 && weightNum <= 1000 ? weightNum : 250;
+      
+      // Пересчет КБЖУ на выбранный вес
+      const caloriesPer100g = newRecipeData.caloriesPer100g || (newRecipeData.totalCalories / newRecipeData.totalWeight * 100) || 0;
+      const proteinsPer100g = newRecipeData.proteinsPer100g || (newRecipeData.totalProteins / newRecipeData.totalWeight * 100) || 0;
+      const fatsPer100g = newRecipeData.fatsPer100g || (newRecipeData.totalFats / newRecipeData.totalWeight * 100) || 0;
+      const carbsPer100g = newRecipeData.carbsPer100g || (newRecipeData.totalCarbs / newRecipeData.totalWeight * 100) || 0;
+      
+      const calculatedCalories = Math.round((caloriesPer100g * finalWeight) / 100);
+      const calculatedProteins = Math.round((proteinsPer100g * finalWeight) / 100);
+      const calculatedFats = Math.round((fatsPer100g * finalWeight) / 100);
+      const calculatedCarbs = Math.round((carbsPer100g * finalWeight) / 100);
+      
       const newMeal = {
         id: `meal-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-        category: newRecipeData.category || newRecipeData.mealType || category,
+        category: newRecipeData.mealType || newRecipeData.category || category,
         name: newRecipeData.title,
-        calories: newRecipeData.totalCalories || newRecipeData.calories || 0,
-        proteins: newRecipeData.totalProteins || newRecipeData.proteins || 0,
-        fats: newRecipeData.totalFats || newRecipeData.fats || 0,
-        carbohydrates: newRecipeData.totalCarbs || newRecipeData.carbohydrates || 0,
-        weight: newRecipeData.totalWeight || newRecipeData.weight || "250",
+        calories: calculatedCalories,
+        proteins: calculatedProteins,
+        fats: calculatedFats,
+        carbohydrates: calculatedCarbs,
+        weight: `${finalWeight} гр`,
         marked: false,
         cookingTime: typeof newRecipeData.cookingTime === 'number' ? newRecipeData.cookingTime : 20,
         difficultyLevel: newRecipeData.difficulty || "Легко",
@@ -528,42 +437,52 @@ export default function Meal() {
         imageUrl: newRecipeData.imageUrl || null,
         addedAt: new Date().toISOString()
       };
-
+      
       const updatedMeals = [...currentMeals];
       updatedMeals[mealIndexNum] = newMeal;
-
-      await setDoc(planRef, { meals: updatedMeals, updatedAt: new Date().toISOString() }, { merge: true });
-
-      // Обновляем активный план
-      try {
-        const activePlan = await rationPlanService.getActivePlanForToday(currentUser.uid);
-        if (activePlan && activePlan.id) {
-          const activePlanRef = doc(db, 'ration_plans', activePlan.id);
-          await setDoc(activePlanRef, {
-            'days.0.meals': updatedMeals,
-            'days.0.stats': {
-              totalCalories: updatedMeals.reduce((s, m) => s + (m.calories || 0), 0),
-              totalProteins: updatedMeals.reduce((s, m) => s + (m.proteins || 0), 0),
-              totalFats: updatedMeals.reduce((s, m) => s + (m.fats || 0), 0),
-              totalCarbs: updatedMeals.reduce((s, m) => s + (m.carbohydrates || 0), 0),
-              totalCookingTime: updatedMeals.reduce((s, m) => s + (m.cookingTime || 0), 0)
-            },
-            updatedAt: new Date().toISOString()
-          }, { merge: true });
+      
+      // Обновляем в ration_plan_days
+      await updateDoc(planDayDoc.ref, {
+        meals: updatedMeals,
+        updatedAt: new Date().toISOString()
+      });
+      
+      // Обновляем в ration_plans если есть связь
+      if (planDayData.planId) {
+        try {
+          const planRef = doc(db, 'ration_plans', planDayData.planId);
+          const planSnap = await getDoc(planRef);
+          if (planSnap.exists()) {
+            const planData = planSnap.data();
+            const planMeals = planData.meals || planData.days?.[0]?.meals || [];
+            const updatedPlanMeals = planMeals.map((m: any, idx: number) => idx === mealIndexNum ? newMeal : m);
+            await updateDoc(planRef, {
+              meals: updatedPlanMeals,
+              'days.0.meals': updatedPlanMeals,
+              updatedAt: new Date().toISOString()
+            });
+          }
+        } catch (planError) {
+          console.error("Error updating ration_plans:", planError);
         }
-      } catch (error) {
-        console.error("Error updating active plan:", error);
       }
-
-      Alert.alert("Успех", "Рецепт успешно заменен!");
-      router.push({ pathname: "/", params: { refreshHome: Date.now().toString() } });
+      
+      setShowWeightModal(false);
+      setSelectedRecipeForWeight(null);
+      Alert.alert("Успех", `Рецепт "${newRecipeData.title}" заменен с весом ${finalWeight} г!`);
+      router.push({ pathname: "/home", params: { refreshHome: Date.now().toString() } });
     } catch (error) {
       console.error("Error replacing meal:", error);
       Alert.alert("Ошибка", "Не удалось заменить рецепт");
     } finally {
       setIsReplacing(false);
     }
-  }, [currentUser, db, mealIndex, category, router]);
+  }, [currentUser, db, mealIndex, category, selectedWeight, router]);
+
+  // Функция для выбора рецепта и открытия модального окна веса
+  const handleRecipeSelected = (recipeData: any) => {
+    openWeightModal(recipeData);
+  };
 
   // Обертка для замены с проверкой авторизации
   const confirmReplaceMeal = useCallback((newRecipeData: any) => {
@@ -572,9 +491,9 @@ export default function Meal() {
       setPendingReplaceData(newRecipeData);
       Alert.alert("Информация", "Пожалуйста, подождите, идет авторизация...");
     } else {
-      performReplaceMeal(newRecipeData);
+      openWeightModal(newRecipeData);
     }
-  }, [isAuthReady, currentUser, performReplaceMeal]);
+  }, [isAuthReady, currentUser]);
 
   // Обработка возврата с выбора рецепта
   useEffect(() => {
@@ -636,19 +555,19 @@ export default function Meal() {
     );
   };
 
-  const handleBack = () => {
-    router.back();
-  };
+  const handleBack = () => { router.back(); };
+  const handleLike = async () => { setLiked(true); Alert.alert("Спасибо", "Спасибо за вашу оценку!"); };
+  const handleDislike = async () => { setLiked(false); Alert.alert("Спасибо", "Спасибо за вашу оценку!"); };
 
-  const handleLike = async () => {
-    setLiked(true);
-    Alert.alert("Спасибо", "Спасибо за вашу оценку!");
-  };
-
-  const handleDislike = async () => {
-    setLiked(false);
-    Alert.alert("Спасибо", "Спасибо за вашу оценку!");
-  };
+  const fallbackMealData = (name: string, type: string): FullRecipeData => ({
+    id: "fallback", title: name, mealType: type,
+    description: "Это стандартный, зарезервированный рецепт, используемый в качестве запасного варианта.",
+    caloriesPer100g: 150, proteinsPer100g: 8, fatsPer100g: 5, carbsPer100g: 20,
+    totalCalories: 375, totalProteins: 20, totalFats: 12.5, totalCarbs: 50,
+    totalWeight: 250, servings: 1, cookingTime: 20, difficulty: "Легко",
+    averageRating: 4.5, totalRatings: 53,
+    ingredients: ["Ингредиенты не указаны"], instructions: ["Инструкции не указаны"], imageUrl: undefined,
+  });
 
   const currentMealData = recipeDetails;
 
@@ -656,9 +575,7 @@ export default function Meal() {
     return (
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="large" color="#6A9AA9" />
-        <Text style={styles.loadingText}>
-          {isReplacing ? "Замена рецепта..." : "Загрузка рецепта..."}
-        </Text>
+        <Text style={styles.loadingText}>{isReplacing ? "Замена рецепта..." : "Загрузка рецепта..."}</Text>
       </View>
     );
   }
@@ -668,7 +585,7 @@ export default function Meal() {
       <View style={styles.loadingContainer}>
         <Feather name="alert-triangle" size={30} color="#DC3545" />
         <Text style={[styles.loadingText, { color: "#DC3545", marginTop: 15 }]}>Рецепт не найден</Text>
-        <TouchableOpacity style={{ marginTop: 20, padding: 10, backgroundColor: "#6A9AA9", borderRadius: 8 }} onPress={() => router.back()}>
+        <TouchableOpacity style={{ marginTop: 20, padding: 10, backgroundColor: "#6A9AA9", borderRadius: 8 }} onPress={handleBack}>
           <Text style={{ color: "white" }}>Вернуться назад</Text>
         </TouchableOpacity>
       </View>
@@ -677,11 +594,7 @@ export default function Meal() {
 
   const iconInfo = getCategoryIcon(currentMealData.mealType);
   const cookingTimeFormatted = formatMinutes(currentMealData.cookingTime);
-  
-  // Форматируем вес для отображения
-  const weightDisplay = currentMealData.totalWeight >= 1000 
-    ? `${(currentMealData.totalWeight / 1000).toFixed(1)} кг` 
-    : `${currentMealData.totalWeight} г`;
+  const weightDisplay = currentMealData.totalWeight >= 1000 ? `${(currentMealData.totalWeight / 1000).toFixed(1)} кг` : `${currentMealData.totalWeight} г`;
 
   return (
     <View style={styles.container}>
@@ -691,9 +604,7 @@ export default function Meal() {
           <Feather name="arrow-left" size={24} color="#000000" />
         </TouchableOpacity>
         <View style={styles.headerTitleContainer}>
-          <Text style={styles.headerTitle}>
-            {currentMealData.mealType.toLowerCase()}
-          </Text>
+          <Text style={styles.headerTitle}>{currentMealData.mealType.toLowerCase()}</Text>
         </View>
         <View style={styles.placeholder} />
       </View>
@@ -718,11 +629,7 @@ export default function Meal() {
           )}
           {!isCustomMeal && (
             <TouchableOpacity style={styles.bookmarkButton} onPress={handleBookmark} disabled={isLoadingBookmark}>
-              {isLoadingBookmark ? (
-                <ActivityIndicator size="small" color="#6A9AA9" />
-              ) : (
-                <Ionicons name={isBookmarked ? "bookmark" : "bookmark-outline"} size={24} color="#6A9AA9" />
-              )}
+              {isLoadingBookmark ? <ActivityIndicator size="small" color="#6A9AA9" /> : <Ionicons name={isBookmarked ? "bookmark" : "bookmark-outline"} size={24} color="#6A9AA9" />}
             </TouchableOpacity>
           )}
         </View>
@@ -757,55 +664,29 @@ export default function Meal() {
             </View>
           </View>
 
-          {/* КБЖУ на 100г */}
           <View style={styles.nutritionContainer}>
             <View style={styles.nutritionHeader}>
               <Ionicons name="nutrition-outline" size={18} color="#6A9AA9" />
               <Text style={styles.nutritionHeaderTitle}>Пищевая ценность на 100 г</Text>
             </View>
             <View style={styles.nutritionRow}>
-              <View style={styles.nutritionItem}>
-                <Text style={styles.nutritionLabelSmall}>Ккал</Text>
-                <Text style={styles.nutritionValue}>{currentMealData.caloriesPer100g}</Text>
-              </View>
-              <View style={styles.nutritionItem}>
-                <Text style={styles.nutritionLabelSmall}>Белки</Text>
-                <Text style={styles.nutritionValue}>{currentMealData.proteinsPer100g} г</Text>
-              </View>
-              <View style={styles.nutritionItem}>
-                <Text style={styles.nutritionLabelSmall}>Жиры</Text>
-                <Text style={styles.nutritionValue}>{currentMealData.fatsPer100g} г</Text>
-              </View>
-              <View style={styles.nutritionItem}>
-                <Text style={styles.nutritionLabelSmall}>Углеводы</Text>
-                <Text style={styles.nutritionValue}>{currentMealData.carbsPer100g} г</Text>
-              </View>
+              <View style={styles.nutritionItem}><Text style={styles.nutritionLabelSmall}>Ккал</Text><Text style={styles.nutritionValue}>{currentMealData.caloriesPer100g}</Text></View>
+              <View style={styles.nutritionItem}><Text style={styles.nutritionLabelSmall}>Белки</Text><Text style={styles.nutritionValue}>{currentMealData.proteinsPer100g} г</Text></View>
+              <View style={styles.nutritionItem}><Text style={styles.nutritionLabelSmall}>Жиры</Text><Text style={styles.nutritionValue}>{currentMealData.fatsPer100g} г</Text></View>
+              <View style={styles.nutritionItem}><Text style={styles.nutritionLabelSmall}>Углеводы</Text><Text style={styles.nutritionValue}>{currentMealData.carbsPer100g} г</Text></View>
             </View>
           </View>
 
-          {/* КБЖУ на всё блюдо */}
           <View style={[styles.nutritionContainer, styles.totalNutritionContainer]}>
             <View style={styles.nutritionHeader}>
               <Ionicons name="restaurant-outline" size={18} color="#9BDF11" />
               <Text style={[styles.nutritionHeaderTitle, styles.totalNutritionTitle]}>На всё блюдо ({weightDisplay})</Text>
             </View>
             <View style={styles.nutritionRow}>
-              <View style={styles.nutritionItem}>
-                <Text style={styles.nutritionLabelSmall}>Ккал</Text>
-                <Text style={[styles.nutritionValue, styles.totalNutritionValue]}>{currentMealData.totalCalories}</Text>
-              </View>
-              <View style={styles.nutritionItem}>
-                <Text style={styles.nutritionLabelSmall}>Белки</Text>
-                <Text style={[styles.nutritionValue, styles.totalNutritionValue]}>{currentMealData.totalProteins} г</Text>
-              </View>
-              <View style={styles.nutritionItem}>
-                <Text style={styles.nutritionLabelSmall}>Жиры</Text>
-                <Text style={[styles.nutritionValue, styles.totalNutritionValue]}>{currentMealData.totalFats} г</Text>
-              </View>
-              <View style={styles.nutritionItem}>
-                <Text style={styles.nutritionLabelSmall}>Углеводы</Text>
-                <Text style={[styles.nutritionValue, styles.totalNutritionValue]}>{currentMealData.totalCarbs} г</Text>
-              </View>
+              <View style={styles.nutritionItem}><Text style={styles.nutritionLabelSmall}>Ккал</Text><Text style={[styles.nutritionValue, styles.totalNutritionValue]}>{currentMealData.totalCalories}</Text></View>
+              <View style={styles.nutritionItem}><Text style={styles.nutritionLabelSmall}>Белки</Text><Text style={[styles.nutritionValue, styles.totalNutritionValue]}>{currentMealData.totalProteins} г</Text></View>
+              <View style={styles.nutritionItem}><Text style={styles.nutritionLabelSmall}>Жиры</Text><Text style={[styles.nutritionValue, styles.totalNutritionValue]}>{currentMealData.totalFats} г</Text></View>
+              <View style={styles.nutritionItem}><Text style={styles.nutritionLabelSmall}>Углеводы</Text><Text style={[styles.nutritionValue, styles.totalNutritionValue]}>{currentMealData.totalCarbs} г</Text></View>
             </View>
           </View>
 
@@ -821,12 +702,10 @@ export default function Meal() {
               <Text style={styles.likeQuestion}>Вам понравилось это блюдо?</Text>
               <View style={styles.likeButtonsContainer}>
                 <TouchableOpacity style={[styles.likeButton, styles.dislikeButton]} onPress={handleDislike}>
-                  <Ionicons name="thumbs-down" size={20} color="white" />
-                  <Text style={styles.likeText}>Не нравится</Text>
+                  <Ionicons name="thumbs-down" size={20} color="white" /><Text style={styles.likeText}>Не нравится</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={[styles.likeButton, styles.likeButtonActive]} onPress={handleLike}>
-                  <Ionicons name="thumbs-up" size={20} color="white" />
-                  <Text style={styles.likeText}>Нравится</Text>
+                  <Ionicons name="thumbs-up" size={20} color="white" /><Text style={styles.likeText}>Нравится</Text>
                 </TouchableOpacity>
               </View>
             </View>
@@ -848,9 +727,7 @@ export default function Meal() {
             <Text style={styles.sectionTitle}>Способ приготовления</Text>
             {currentMealData.instructions.map((instruction, index) => (
               <View key={index} style={styles.instructionItem}>
-                <View style={styles.stepNumberContainer}>
-                  <Text style={styles.stepNumber}>{index + 1}</Text>
-                </View>
+                <View style={styles.stepNumberContainer}><Text style={styles.stepNumber}>{index + 1}</Text></View>
                 <Text style={styles.instructionText}>{instruction}</Text>
               </View>
             ))}
@@ -859,6 +736,35 @@ export default function Meal() {
           <View style={styles.bottomSpacer} />
         </View>
       </ScrollView>
+
+      {/* Модальное окно выбора веса */}
+      <Modal visible={showWeightModal} transparent animationType="fade" onRequestClose={() => setShowWeightModal(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.weightModalContainer}>
+            <View style={styles.weightModalHeader}>
+              <Text style={styles.weightModalTitle}>Выберите вес порции</Text>
+              <TouchableOpacity onPress={() => setShowWeightModal(false)}><Ionicons name="close" size={24} color="#666" /></TouchableOpacity>
+            </View>
+            <View style={styles.weightModalContent}>
+              <Text style={styles.weightModalText}>{selectedRecipeForWeight?.title}</Text>
+              <Text style={styles.weightModalSubtext}>Калорийность: {Math.round(selectedRecipeForWeight?.caloriesPer100g || 0)} ккал на 100г</Text>
+              <View style={styles.weightInputContainer}>
+                <TextInput style={styles.weightInput} value={selectedWeight} onChangeText={setSelectedWeight} keyboardType="numeric" placeholder="Вес в граммах" placeholderTextColor="#999" />
+                <Text style={styles.weightUnit}>гр</Text>
+              </View>
+              <Text style={styles.weightHint}>КБЖУ будут автоматически пересчитаны под выбранный вес</Text>
+              <View style={styles.weightModalButtons}>
+                <TouchableOpacity style={[styles.weightModalButton, styles.weightModalButtonCancel]} onPress={() => setShowWeightModal(false)}>
+                  <Text style={styles.weightModalButtonCancelText}>Отмена</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.weightModalButton, styles.weightModalButtonSave]} onPress={() => performReplaceMeal(selectedRecipeForWeight)}>
+                  <Text style={styles.weightModalButtonSaveText}>Заменить</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -868,14 +774,11 @@ const styles = StyleSheet.create({
   loadingContainer: { flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: "#f8f8f8" },
   loadingText: { marginTop: 10, fontSize: 16, color: "#6A9AA9", fontFamily: "Playfair Display Regular", textAlign: "center", paddingHorizontal: 20 },
   header: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingHorizontal: 20, paddingTop: 50, paddingBottom: 15, backgroundColor: "#FFFFFF", borderBottomWidth: 1, borderBottomColor: "#E0E0E0" },
-  backButton: { padding: 8 },
-  headerTitleContainer: { flex: 1, alignItems: "center" },
+  backButton: { padding: 8 }, headerTitleContainer: { flex: 1, alignItems: "center" },
   headerTitle: { fontSize: 18, fontWeight: "600", color: "#000000", fontFamily: "Playfair Display Bold", textAlign: "center" },
   placeholder: { width: 40 },
   imageContainer: { position: "relative", height: 220, backgroundColor: "#E5F0F5", justifyContent: "center", alignItems: "center", borderBottomWidth: 1, borderBottomColor: "#C2DAE2" },
-  mealImage: { width: "100%", height: "100%" },
-  mealImagePlaceholder: { width: "100%", height: "100%", justifyContent: "center", alignItems: "center", backgroundColor: "#E5F0F5" },
-  mealTypeText: { fontSize: 18, color: "#6A9AA9", fontFamily: "Playfair Display Bold", marginTop: 10, textAlign: "center" },
+  mealImage: { width: "100%", height: "100%" }, mealImagePlaceholder: { width: "100%", height: "100%", justifyContent: "center", alignItems: "center", backgroundColor: "#E5F0F5" },
   difficultyBadgeContainer: { position: "absolute", top: 20, left: 20, zIndex: 10 },
   difficultyBadge: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 12, shadowColor: "#000", shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.2, shadowRadius: 1.41, elevation: 2 },
   difficultyText: { fontSize: 12, color: "#FFFFFF", fontFamily: "Playfair Display Bold" },
@@ -901,13 +804,11 @@ const styles = StyleSheet.create({
   nutritionValue: { fontSize: 18, fontWeight: "700", color: "#000000", fontFamily: "Playfair Display Bold", marginTop: 6 },
   totalNutritionValue: { color: "#2E7D32" },
   nutritionLabelSmall: { fontSize: 12, fontWeight: "600", color: "#6C757D", fontFamily: "Playfair Display Regular", textTransform: "uppercase" },
-  section: { marginBottom: 28 },
-  sectionTitle: { fontSize: 20, fontWeight: "600", color: "#000000", marginBottom: 16, fontFamily: "Playfair Display Bold" },
+  section: { marginBottom: 28 }, sectionTitle: { fontSize: 20, fontWeight: "600", color: "#000000", marginBottom: 16, fontFamily: "Playfair Display Bold" },
   descriptionText: { fontSize: 16, color: "#212529", fontFamily: "Playfair Display Regular", lineHeight: 24 },
   ingredientsContainer: { backgroundColor: "#F8F9FA", borderRadius: 10, padding: 16, borderWidth: 1, borderColor: "#E9ECEF" },
   ingredientItem: { flexDirection: "row", alignItems: "flex-start", marginBottom: 10 },
-  ingredientBullet: { marginTop: 6, marginRight: 10 },
-  ingredientText: { fontSize: 15, color: "#212529", flex: 1, fontFamily: "Playfair Display Regular", lineHeight: 22 },
+  ingredientBullet: { marginTop: 6, marginRight: 10 }, ingredientText: { fontSize: 15, color: "#212529", flex: 1, fontFamily: "Playfair Display Regular", lineHeight: 22 },
   instructionItem: { flexDirection: "row", alignItems: "flex-start", marginBottom: 16, paddingBottom: 16, borderBottomWidth: 1, borderBottomColor: "#E9ECEF" },
   stepNumberContainer: { width: 28, height: 28, borderRadius: 14, backgroundColor: "#6A9AA9", alignItems: "center", justifyContent: "center", marginRight: 12, marginTop: 2 },
   stepNumber: { fontSize: 14, fontWeight: "600", color: "#FFFFFF", fontFamily: "Playfair Display Bold" },
@@ -916,8 +817,24 @@ const styles = StyleSheet.create({
   likeQuestion: { fontSize: 16, color: "#212529", marginBottom: 16, fontFamily: "Playfair Display Regular", textAlign: "center" },
   likeButtonsContainer: { flexDirection: "row", justifyContent: "center", gap: 12 },
   likeButton: { flexDirection: "row", alignItems: "center", paddingHorizontal: 20, paddingVertical: 12, borderRadius: 25, shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 3.84, elevation: 5, minWidth: 120, justifyContent: "center" },
-  likeButtonActive: { backgroundColor: "#9BDF11" },
-  dislikeButton: { backgroundColor: "#DC3545" },
+  likeButtonActive: { backgroundColor: "#9BDF11" }, dislikeButton: { backgroundColor: "#DC3545" },
   likeText: { fontSize: 14, fontWeight: "600", color: "white", fontFamily: "Playfair Display Regular", marginLeft: 8 },
   bottomSpacer: { height: 40 },
+  modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "center", alignItems: "center", padding: 20 },
+  weightModalContainer: { backgroundColor: "#FFF", borderRadius: 20, width: "85%", overflow: "hidden" },
+  weightModalHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 16, borderBottomWidth: 1, borderBottomColor: "#E0E0E0" },
+  weightModalTitle: { fontSize: 16, fontFamily: "Playfair Display Bold", color: "#1a1a1a" },
+  weightModalContent: { padding: 20 },
+  weightModalText: { fontSize: 16, fontFamily: "Playfair Display Bold", color: "#1a1a1a", marginBottom: 8 },
+  weightModalSubtext: { fontSize: 13, color: "#666", fontFamily: "Playfair Display Regular", marginBottom: 16 },
+  weightInputContainer: { flexDirection: "row", alignItems: "center", borderWidth: 1, borderColor: "#C2DAE2", borderRadius: 12, backgroundColor: "#F5F5F5", marginBottom: 12 },
+  weightInput: { flex: 1, paddingHorizontal: 16, paddingVertical: 12, fontSize: 16, fontFamily: "Playfair Display Regular", color: "#333" },
+  weightUnit: { paddingHorizontal: 12, fontSize: 16, color: "#6A9AA9", fontFamily: "Playfair Display Bold" },
+  weightHint: { fontSize: 12, color: "#999", fontFamily: "Playfair Display Regular", marginBottom: 20, textAlign: "center" },
+  weightModalButtons: { flexDirection: "row", gap: 12 },
+  weightModalButton: { flex: 1, paddingVertical: 12, borderRadius: 25, alignItems: "center" },
+  weightModalButtonCancel: { backgroundColor: "#FFF", borderWidth: 2, borderColor: "#6A9AA9" },
+  weightModalButtonCancelText: { color: "#6A9AA9", fontSize: 14, fontFamily: "Playfair Display Bold" },
+  weightModalButtonSave: { backgroundColor: "#6A9AA9" },
+  weightModalButtonSaveText: { color: "#FFF", fontSize: 14, fontFamily: "Playfair Display Bold" },
 });

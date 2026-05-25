@@ -1,4 +1,4 @@
-// app/(tabs)/home.tsx - ПОЛНЫЙ ИСПРАВЛЕННЫЙ КОД
+// app/(tabs)/home.tsx - ПОЛНЫЙ КОД
 
 import { Feather, FontAwesome, Ionicons, MaterialIcons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -402,11 +402,72 @@ export default function Home() {
 
   const handleRefresh = async () => { setIsRefreshing(true); setMeals([]); await loadDailyPlan(); setIsRefreshing(false); };
 
+  // Инициализация Firebase
   useEffect(() => { const initFirebase = async () => { try { const firebaseConfig = typeof __firebase_config !== "undefined" ? JSON.parse(__firebase_config as string) : {}; const app = !getApps().length ? initializeApp(firebaseConfig) : getApp(); setFirestoreDb(getFirestore(app)); const authInstance = getAuth(app); const unsubscribeAuth = onAuthStateChanged(authInstance, async (user) => { setCurrentUser(user); setIsAuthReady(true); }); return () => unsubscribeAuth(); } catch (error) { console.error("Firebase init error:", error); setIsAuthReady(true); } }; initFirebase(); }, []);
+  
   useEffect(() => { if (isAuthReady && currentUser && firestoreDb && !hasInitialLoadRef.current) { hasInitialLoadRef.current = true; loadDailyPlan(); } }, [isAuthReady, currentUser, firestoreDb, loadDailyPlan]);
+  
   useEffect(() => { if (params.refreshHome && currentUser && firestoreDb) { loadDailyPlan(); setTimeout(() => router.setParams({ refreshHome: undefined }), 100); } }, [params.refreshHome, currentUser, firestoreDb, router, loadDailyPlan]);
+  
   useEffect(() => { if (params.selectedRecipe && currentUser && firestoreDb && isInitialLoadDone && !isAddingRecipeRef.current) { try { const recipeData = JSON.parse(params.selectedRecipe as string); router.setParams({ selectedRecipe: undefined }); handleAddRecipeWithWeight(recipeData); } catch (e) { console.error("❌ Ошибка парсинга selectedRecipe:", e); } } }, [params.selectedRecipe, currentUser, firestoreDb, isInitialLoadDone]);
+  
+  // Обработка замены блюда
+  useEffect(() => {
+    if (!currentUser || !firestoreDb || !isInitialLoadDone) return;
+    
+    if (params.replaceMeal && !isReplacingMealRef.current) {
+      isReplacingMealRef.current = true;
+      console.log("🔵 [ЭФФЕКТ ЗАМЕНЫ] Поймали replaceMeal. Начинаем замену...");
+      
+      try {
+        const { index, meal } = JSON.parse(params.replaceMeal as string);
+        const updatedMeal = convertToUIMeal(meal);
+        
+        setMeals(prevMeals => {
+          const currentMeals = [...prevMeals];
+          
+          if (index >= 0 && index < currentMeals.length) {
+            console.log(`🔄 Заменяем блюдо на позиции [${index}]: ${currentMeals[index].name} -> ${updatedMeal.name}`);
+            
+            updatedMeal.id = currentMeals[index].id;
+            currentMeals[index] = updatedMeal;
+            
+            const newKBRU = currentMeals.reduce((acc, m) => ({
+              proteins: acc.proteins + (m.proteins || 0),
+              fats: acc.fats + (m.fats || 0),
+              carbohydrates: acc.carbohydrates + (m.carbohydrates || 0),
+            }), { proteins: 0, fats: 0, carbohydrates: 0 });
+            
+            setRecommendedKBRU(newKBRU);
+            
+            const newConsumedCalories = currentMeals.filter(m => m.marked).reduce((sum, m) => sum + (m.calories || 0), 0);
+            setUserData(prev => ({ ...prev, consumedCalories: newConsumedCalories }));
+            
+            setHasChanges(true);
+            setIsTemplateSaved(false);
+            
+            savePlanToDatabase(currentMeals);
+            
+            return currentMeals;
+          }
+          return prevMeals;
+        });
+        
+        router.setParams({ replaceMeal: undefined });
+        
+        setTimeout(() => {
+          isReplacingMealRef.current = false;
+        }, 100);
+        
+      } catch (e) {
+        console.error("❌ Ошибка при замене блюда:", e);
+        isReplacingMealRef.current = false;
+      }
+    }
+  }, [params.replaceMeal, currentUser, firestoreDb, isInitialLoadDone, savePlanToDatabase, router, convertToUIMeal]);
+  
   useEffect(() => { if (userData.targetProteins && userData.targetProteins > 0) setTargetKBRU({ proteins: userData.targetProteins, fats: userData.targetFats, carbohydrates: userData.targetCarbs }); else { const daily = userData.dailyCalories; setTargetKBRU({ proteins: Math.round((daily * 0.3) / 4), fats: Math.round((daily * 0.3) / 9), carbohydrates: Math.round((daily * 0.4) / 4) }); } }, [userData.dailyCalories, userData.targetProteins, userData.targetFats, userData.targetCarbs]);
+  
   useEffect(() => { if (!firestoreDb || !currentUser) return; const unsubscribe = onSnapshot(doc(firestoreDb, `users/${currentUser.uid}`), (docSnap) => { if (docSnap.exists()) { const data = docSnap.data(); const name = `${data.first_name || data.firstName || data.name || ""} ${data.last_name || data.lastName || ""}`.trim(); setUserData(prev => ({ ...prev, userName: name || "Пользователь", dailyCalories: Math.round(data.dailyCalories || data.targetCalories || 2000), targetProteins: data.targetProteinGrams || 0, targetFats: data.targetFatGrams || 0, targetCarbs: data.targetCarbGrams || 0, photoURL: data.photoURL || null })); } }); return () => unsubscribe(); }, [firestoreDb, currentUser]);
 
   if (!isAuthReady || !currentUser || !firestoreDb || isPlanLoading) return <View style={styles.loadingContainer}><ActivityIndicator size="large" color="#6A9AA9" /><Text style={styles.loadingText}>Загрузка...</Text></View>;
@@ -418,10 +479,10 @@ export default function Home() {
   const progress = Math.min(100, (consumedCalories / dailyTarget) * 100);
   const isPlanOverLimit = totalPlanCalories > dailyTarget;
   const getProgressColor = () => {
-  if (consumedCalories === 0) return "#9BDF11"; // Зеленый для 0 (еще не ели)
-  if (consumedCalories > dailyTarget) return "#F44336"; // Красный только при превышении
-  return "#9BDF11"; // Зеленый во всех остальных случаях (0-100%)
-};
+    if (consumedCalories === 0) return "#9BDF11";
+    if (consumedCalories > dailyTarget) return "#F44336";
+    return "#9BDF11";
+  };
   const getButtonState = () => {
     if (isSaving) return { text: "Сохранение...", style: styles.saveRationButton, disabled: true, iconColor: "#FFFFFF", icon: "cloud-upload-outline" };
     if (isTemplateSaved && !hasChanges) return { text: "Рацион сохранен", style: [styles.saveRationButton, styles.saveButtonDisabled], disabled: true, iconColor: "#999999", icon: "checkmark-circle-outline" };
@@ -444,20 +505,20 @@ export default function Home() {
             <Text style={styles.caloriesTitle}>Цель на день: {dailyTarget} ккал</Text>
             <View style={styles.planCaloriesContainer}><Text style={styles.planCaloriesLabel}>Калорийность рациона:</Text><Text style={[styles.planCaloriesValue, isPlanOverLimit && styles.planCaloriesOverLimit]}>{totalPlanCalories} / {dailyTarget} ккал</Text></View>
             <View style={styles.remainingCaloriesContainer}>
-  <Text style={styles.remainingCaloriesLabel}>
-    {consumedCalories >= dailyTarget ? "Выполнено:" : (consumedCalories > dailyTarget ? "Превышение:" : "Осталось:")}
-  </Text>
-  <Text style={[
-    styles.remainingCaloriesValue, 
-    consumedCalories > dailyTarget && styles.remainingCaloriesOverLimit
-  ]}>
-    {consumedCalories > dailyTarget 
-      ? `${consumedCalories - dailyTarget} ккал` 
-      : consumedCalories >= dailyTarget 
-        ? "Цель достигнута!"
-        : `${remaining} ккал`}
-  </Text>
-</View>
+              <Text style={styles.remainingCaloriesLabel}>
+                {consumedCalories >= dailyTarget ? "Выполнено:" : (consumedCalories > dailyTarget ? "Превышение:" : "Осталось:")}
+              </Text>
+              <Text style={[
+                styles.remainingCaloriesValue, 
+                consumedCalories > dailyTarget && styles.remainingCaloriesOverLimit
+              ]}>
+                {consumedCalories > dailyTarget 
+                  ? `${consumedCalories - dailyTarget} ккал` 
+                  : consumedCalories >= dailyTarget 
+                    ? "Цель достигнута!"
+                    : `${remaining} ккал`}
+              </Text>
+            </View>
             <View style={styles.progressBar}><View style={[styles.progressFill, { width: `${progress}%`, backgroundColor: getProgressColor() }]} /></View>
             <View style={styles.kbruContainer}>
               <View style={styles.kbruHeaderRow}><Text style={[styles.kbruHeader, { flex: 1, textAlign: "left" }]}>Макронутриенты</Text><TouchableOpacity onPress={() => setShowInfoModal(true)} style={styles.infoButton}><Ionicons name="information-circle-outline" size={22} color="#6A9AA9" /></TouchableOpacity></View>

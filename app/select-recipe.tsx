@@ -1,3 +1,5 @@
+// app/select-recipe.tsx - С УЛУЧШЕННОЙ ФИЛЬТРАЦИЕЙ
+
 import { useRouter, useLocalSearchParams } from "expo-router";
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -13,6 +15,7 @@ import {
   Dimensions,
   RefreshControl,
   Alert,
+  Modal,
 } from "react-native";
 import {
   getFirestore,
@@ -38,21 +41,22 @@ import {
   Ionicons,
 } from "@expo/vector-icons";
 import { useAuthContext } from "@/app/contexts/AuthContext";
-import { userService } from "@/app/services/userService";
-import { getAuth, onAuthStateChanged } from "firebase/auth";
 
-// --- Константы ---
+declare const __firebase_config: string | undefined;
+
 const { width } = Dimensions.get("window");
 const CARD_WIDTH = (width - 48) / 2;
 const RECIPES_PER_PAGE = 10;
 
-// --- Интерфейс данных ---
 interface Recipe {
   id: string;
   title: string;
   description: string;
   mealType: string;
   calories?: number;
+  proteins?: number;
+  fats?: number;
+  carbohydrates?: number;
   cookingTime?: number;
   ingredientsText: string;
   isPublic: boolean;
@@ -63,27 +67,23 @@ interface Recipe {
   bookmarked: boolean;
   rating?: number;
   difficultyLevel?: string;
-  difficulty?: string; 
+  difficulty?: string;
   createdAt?: any;
-  proteins?: number;
-  fats?: number;
-  carbohydrates?: number;
+  totalWeight?: number;
 }
 
 const formatMinutes = (minutes: number): string => {
   const absMinutes = Math.abs(minutes);
   const lastDigit = absMinutes % 10;
   const lastTwoDigits = absMinutes % 100;
-
-  if (lastTwoDigits >= 11 && lastTwoDigits <= 14) return `${absMinutes} минут`;
-  if (lastDigit === 1) return `${absMinutes} минута`;
-  if (lastDigit >= 2 && lastDigit <= 4) return `${absMinutes} минуты`;
-  return `${absMinutes} минут`;
+  if (lastTwoDigits >= 11 && lastTwoDigits <= 14) return `${absMinutes} мин`;
+  if (lastDigit === 1) return `${absMinutes} мин`;
+  if (lastDigit >= 2 && lastDigit <= 4) return `${absMinutes} мин`;
+  return `${absMinutes} мин`;
 };
 
 const FooterLoader: React.FC<{ loading: boolean }> = ({ loading }) => {
   if (!loading) return null;
-
   return (
     <View style={styles.footerLoader}>
       <ActivityIndicator size="small" color="#6A9AA9" />
@@ -93,27 +93,36 @@ const FooterLoader: React.FC<{ loading: boolean }> = ({ loading }) => {
 };
 
 const getCategoryIcon = (mealType: string) => {
-  const normalizedMealType = mealType.trim().toLowerCase();
-
+  const normalizedMealType = mealType?.trim().toLowerCase() || "";
   switch (normalizedMealType) {
-    case "breakfast":
-    case "завтрак":
-      return "sunny-outline";
-    case "lunch":
-    case "обед":
-      return "restaurant-outline";
-    case "dinner":
-    case "ужин":
-      return "moon-outline";
-    case "snack":
-    case "перекусы":
-      return "cafe-outline";
-    default:
-      return "fast-food-outline";
+    case "breakfast": case "завтрак": return "sunny-outline";
+    case "lunch": case "обед": return "restaurant-outline";
+    case "dinner": case "ужин": return "moon-outline";
+    case "snack": case "перекус": case "перекусы": return "cafe-outline";
+    default: return "fast-food-outline";
   }
 };
 
-// --- Основной компонент ---
+const getCategoryName = (mealType: string) => {
+  const normalizedMealType = mealType?.trim().toLowerCase() || "";
+  switch (normalizedMealType) {
+    case "breakfast": case "завтрак": return "Завтрак";
+    case "lunch": case "обед": return "Обед";
+    case "dinner": case "ужин": return "Ужин";
+    case "snack": case "перекус": case "перекусы": return "Перекус";
+    default: return "Другое";
+  }
+};
+
+const getDifficultyColor = (difficulty: string | undefined) => {
+  switch (difficulty?.trim()) {
+    case "Легко": return "#4CAF50";
+    case "Средне": return "#FF9800";
+    case "Сложно": return "#F44336";
+    default: return "#6A9AA9";
+  }
+};
+
 export default function SelectRecipeScreen() {
   const router = useRouter();
   const params = useLocalSearchParams();
@@ -121,339 +130,269 @@ export default function SelectRecipeScreen() {
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("Все");
   const [db, setDb] = useState<Firestore | null>(null);
-  const [recipes, setRecipes] = useState<Recipe[]>([]);
+  const [allRecipes, setAllRecipes] = useState<Recipe[]>([]);
+  const [displayedRecipes, setDisplayedRecipes] = useState<Recipe[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [lastVisible, setLastVisible] =
-    useState<QueryDocumentSnapshot<DocumentData> | null>(null);
   const [hasMore, setHasMore] = useState(true);
   const [totalCount, setTotalCount] = useState(0);
+  
+  const [showWeightModal, setShowWeightModal] = useState(false);
+  const [pendingRecipeForWeight, setPendingRecipeForWeight] = useState<any>(null);
+  const [selectedWeight, setSelectedWeight] = useState("250");
 
   const { user } = useAuthContext();
   const userId = user?.uid || null;
 
-  const categories = ["Все", "Завтрак", "Обед", "Ужин", "Перекусы"];
+  const categories = ["Все", "Завтрак", "Обед", "Ужин", "Перекус"];
   const scrollViewRef = useRef<ScrollView>(null);
-
   const isInitialLoadDone = useRef(false);
   const isComponentMounted = useRef(true);
+  const currentPageRef = useRef<number>(0);
+  const filteredRecipesRef = useRef<Recipe[]>([]);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
-  // Получаем параметры для замены рецепта
   const isReplacement = params.isReplacement === "true";
   const mealIndex = params.mealIndex;
   const currentMealId = params.currentMealId;
   const currentMealCategory = params.currentMealCategory;
   const isCustomReplacement = params.isCustomReplacement === "true";
 
-  // --- Инициализация Firebase ---
   useEffect(() => {
     const initializeFirebase = async () => {
       try {
-        const firebaseConfig =
-          typeof __firebase_config !== "undefined"
-            ? JSON.parse(__firebase_config as string)
-            : {};
-
-        const app = !getApps().length
-          ? initializeApp(firebaseConfig)
-          : getApps()[0];
+        const firebaseConfig = typeof __firebase_config !== "undefined" ? JSON.parse(__firebase_config as string) : {};
+        const app = !getApps().length ? initializeApp(firebaseConfig) : getApps()[0];
         const dbInstance = getFirestore(app);
         setDb(dbInstance);
       } catch (error) {
         console.error("Ошибка инициализации Firebase:", error);
       }
     };
-
     initializeFirebase();
-
-    return () => {
-      isComponentMounted.current = false;
-    };
+    return () => { isComponentMounted.current = false; };
   }, []);
 
-  // --- Вспомогательные функции ---
-  const getDifficultyColor = (difficulty: string | undefined) => {
-    switch (difficulty?.trim()) {
-      case "Легко":
-        return "#4CAF50";
-      case "Средне":
-        return "#FF9800";
-      case "Сложно":
-        return "#F44336";
-      default:
-        return "#6A9AA9";
+  // Функция фильтрации рецептов
+  const filterRecipes = useCallback((recipesToFilter: Recipe[]) => {
+    let filtered = recipesToFilter;
+    
+    // Фильтр по категории
+    if (selectedCategory !== "Все") {
+      filtered = filtered.filter(recipe => 
+        getCategoryName(recipe.mealType) === selectedCategory
+      );
     }
-  };
-
-  const getCategoryName = (mealType: string) => {
-    const normalizedMealType = mealType.trim().toLowerCase();
-
-    switch (normalizedMealType) {
-      case "breakfast":
-      case "завтрак":
-        return "Завтрак";
-      case "lunch":
-      case "обед":
-        return "Обед";
-      case "dinner":
-      case "ужин":
-        return "Ужин";
-      case "snack":
-      case "перекусы":
-        return "Перекусы";
-      default:
-        return "Другое";
+    
+    // Фильтр по поисковому запросу
+    if (searchQuery.trim()) {
+      const queryLower = searchQuery.toLowerCase().trim();
+      filtered = filtered.filter(recipe =>
+        recipe.title.toLowerCase().includes(queryLower) ||
+        recipe.description.toLowerCase().includes(queryLower)
+      );
     }
-  };
+    
+    return filtered;
+  }, [selectedCategory, searchQuery]);
 
-  // --- Основная функция загрузки рецептов ---
-  const loadRecipes = useCallback(
-    async (loadMore = false) => {
-      if (!db || !isComponentMounted.current) {
-        return;
+  // Функция обновления отображаемых рецептов с пагинацией
+  const updateDisplayedRecipes = useCallback((filtered: Recipe[], loadMore: boolean = false) => {
+    if (loadMore) {
+      const startIndex = (currentPageRef.current + 1) * RECIPES_PER_PAGE;
+      const endIndex = Math.min(startIndex + RECIPES_PER_PAGE, filtered.length);
+      const newRecipes = filtered.slice(startIndex, endIndex);
+      
+      if (newRecipes.length > 0) {
+        setDisplayedRecipes(prev => [...prev, ...newRecipes]);
+        currentPageRef.current++;
+      }
+      
+      if (endIndex >= filtered.length) {
+        setHasMore(false);
+      } else {
+        setHasMore(true);
+      }
+    } else {
+      const paginated = filtered.slice(0, RECIPES_PER_PAGE);
+      setDisplayedRecipes(paginated);
+      currentPageRef.current = 0;
+      setHasMore(paginated.length < filtered.length);
+    }
+    
+    setTotalCount(filtered.length);
+    filteredRecipesRef.current = filtered;
+  }, []);
+
+  // Загрузка всех рецептов из Firebase
+  const loadAllRecipes = useCallback(async () => {
+    if (!db || !isComponentMounted.current) return;
+
+    try {
+      setLoading(true);
+      
+      const recipesQuery = query(
+        collection(db, "recipes"),
+        where("isPublic", "==", true),
+        orderBy("createdAt", "desc")
+      );
+
+      const recipesSnapshot = await getDocs(recipesQuery);
+      
+      let userFavorites: string[] = [];
+      if (userId) {
+        try {
+          const favoritesSnapshot = await getDocs(
+            query(collection(db, "user_favorites"), where("userId", "==", userId), where("active", "==", true))
+          );
+          userFavorites = favoritesSnapshot.docs.map(doc => doc.data().recipeId);
+        } catch (error) {
+          console.error("Ошибка загрузки избранного:", error);
+          userFavorites = [];
+        }
       }
 
-      if (loadMore && loadingMore) {
-        return;
-      }
-      if (!loadMore && loading && isInitialLoadDone.current) {
-        return;
-      }
+      const loadedRecipes: Recipe[] = recipesSnapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+          id: doc.id,
+          title: String(data.title || "Без названия"),
+          description: String(data.description || ""),
+          mealType: String(data.mealType || data.categories?.[0] || "other"),
+          calories: Number(data.calories || data.nutritionPer100g?.calories || 0),
+          proteins: Number(data.proteins || data.nutritionPer100g?.protein || 0),
+          fats: Number(data.fats || data.nutritionPer100g?.fat || 0),
+          carbohydrates: Number(data.carbohydrates || data.nutritionPer100g?.carbs || 0),
+          cookingTime: Number(data.cookingTime || 20),
+          ingredientsText: String(data.ingredientsText || ""),
+          isPublic: Boolean(data.isPublic || false),
+          likedCount: Number(data.likedCount || 0),
+          saveCount: Number(data.saveCount || 0),
+          userId: String(data.userId || ""),
+          imageUrl: data.image || data.imageUrl || "",
+          bookmarked: userFavorites.includes(doc.id),
+          rating: Number(data.averageRating || 0),
+          difficultyLevel: String(data.difficultyLevel || data.difficulty || "Легко"),
+          createdAt: data.createdAt,
+          totalWeight: Number(data.totalWeight || 250),
+        };
+      });
 
-      try {
-        if (loadMore) {
-          setLoadingMore(true);
-        } else {
-          setLoading(true);
-          setHasMore(true);
-          if (!loadMore) {
-            setLastVisible(null);
-          }
-        }
+      setAllRecipes(loadedRecipes);
+      const filtered = filterRecipes(loadedRecipes);
+      updateDisplayedRecipes(filtered, false);
+      isInitialLoadDone.current = true;
+    } catch (error) { 
+      console.error("Ошибка загрузки:", error); 
+    } finally { 
+      setLoading(false); 
+    }
+  }, [db, userId, filterRecipes, updateDisplayedRecipes]);
 
-        let recipesQuery = query(
-          collection(db, "recipes"),
-          where("isPublic", "==", true),
-          orderBy("createdAt", "desc"),
-          limit(RECIPES_PER_PAGE)
-        );
-
-        if (loadMore && lastVisible) {
-          recipesQuery = query(recipesQuery, startAfter(lastVisible));
-        }
-
-        const [recipesSnapshot, favoritesSnapshot] = await Promise.all([
-          getDocs(recipesQuery),
-          userId
-            ? getDocs(
-                query(
-                  collection(db, "user_favorites"),
-                  where("userId", "==", userId),
-                  where("active", "==", true)
-                )
-              )
-            : { docs: [] },
-        ]);
-
-        const newLastVisible =
-          recipesSnapshot.docs[recipesSnapshot.docs.length - 1] || null;
-        setLastVisible(newLastVisible);
-
-        if (recipesSnapshot.docs.length < RECIPES_PER_PAGE) {
-          setHasMore(false);
-        } else {
-          console.log("Еще есть данные для загрузки");
-        }
-
-        const userFavorites = favoritesSnapshot.docs.map(
-          (doc) => doc.data().recipeId
-        );
-
-        const loadedRecipes: Recipe[] = recipesSnapshot.docs.map((doc) => {
-          const data = doc.data();
-          const recipeId = doc.id;
-
-          return {
-            id: recipeId,
-            title: String(data.title || "Без названия"),
-            description: String(data.description || ""),
-            mealType: String(data.mealType || "other"),
-            calories: Number(data.calories) || 0,
-            cookingTime: Number(data.cookingTime) || 20,
-            ingredientsText: String(data.ingredientsText || ""),
-            isPublic: Boolean(data.isPublic || false),
-            likedCount: Number(data.likedCount) || 0,
-            saveCount: Number(data.saveCount) || 0,
-            userId: String(data.userId || ""),
-            imageUrl: String(data.image || data.imageUrl || ""),
-            bookmarked: userFavorites.includes(recipeId),
-            rating: Number(data.rating) || 0,
-            difficultyLevel: String(data.difficultyLevel || "Легко"),
-            createdAt: data.createdAt,
-          };
-        });
-
-        if (loadMore) {
-          setRecipes((prev) => [...prev, ...loadedRecipes]);
-        } else {
-          setRecipes(loadedRecipes);
-          isInitialLoadDone.current = true;
-        }
-
-        if (!loadMore) {
-          try {
-            const countQuery = query(
-              collection(db, "recipes"),
-              where("isPublic", "==", true)
-            );
-            const countSnapshot = await getDocs(countQuery);
-            setTotalCount(countSnapshot.size);
-          } catch (countError) {
-            console.error("Ошибка подсчета общего количества:", countError);
-          }
-        }
-      } catch (error) {
-        console.error("Ошибка загрузки рецептов:", error);
-        if (!loadMore) {
-          isInitialLoadDone.current = false;
-        }
-      } finally {
-        if (loadMore) {
-          setLoadingMore(false);
-        } else {
-          setLoading(false);
-        }
-      }
-    },
-    [db, userId, lastVisible, loading, loadingMore]
-  );
-
+  // Debounced загрузка при изменении фильтров
   useEffect(() => {
+    if (!isInitialLoadDone.current || loading) return;
+    
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => {
+      const filtered = filterRecipes(allRecipes);
+      updateDisplayedRecipes(filtered, false);
+      scrollViewRef.current?.scrollTo({ y: 0, animated: true });
+    }, 300);
+    
+    return () => { 
+      if (timerRef.current) clearTimeout(timerRef.current); 
+    };
+  }, [searchQuery, selectedCategory, allRecipes, filterRecipes, updateDisplayedRecipes, loading]);
+
+  useEffect(() => { 
     if (db && !isInitialLoadDone.current) {
-      loadRecipes();
+      loadAllRecipes(); 
     }
-  }, [db, loadRecipes]);
+  }, [db, loadAllRecipes]);
 
   const onRefresh = useCallback(async () => {
     if (!db || refreshing) return;
-
     setRefreshing(true);
     isInitialLoadDone.current = false;
-    await loadRecipes();
+    await loadAllRecipes();
     setRefreshing(false);
-  }, [db, loadRecipes, refreshing]);
+  }, [db, loadAllRecipes, refreshing]);
 
-  // Фильтрация применяется ко ВСЕМ загруженным рецептам
-  const filteredRecipes = recipes.filter((recipe) => {
-    const matchesSearch =
-      recipe.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      recipe.description.toLowerCase().includes(searchQuery.toLowerCase());
-
-    const normalizedMealType = recipe.mealType.trim().toLowerCase();
-    const matchesCategory =
-      selectedCategory === "Все" ||
-      getCategoryName(normalizedMealType) === selectedCategory;
-
-    return matchesSearch && matchesCategory;
-  });
-
-  const handleScroll = useCallback(
-    (event: any) => {
-      const { layoutMeasurement, contentOffset, contentSize } =
-        event.nativeEvent;
-      const paddingToBottom = 100;
-
-      const isCloseToBottom =
-        layoutMeasurement.height + contentOffset.y >=
-        contentSize.height - paddingToBottom;
-
-      if (
-        isCloseToBottom &&
-        !loadingMore &&
-        hasMore &&
-        db &&
-        !loading &&
-        !refreshing &&
-        isInitialLoadDone.current
-      ) {
-        loadRecipes(true);
-      }
-    },
-    [loadingMore, hasMore, db, loading, refreshing, loadRecipes]
-  );
+  const handleScroll = useCallback((event: any) => {
+    const { layoutMeasurement, contentOffset, contentSize } = event.nativeEvent;
+    const isCloseToBottom = layoutMeasurement.height + contentOffset.y >= contentSize.height - 100;
+    
+    if (isCloseToBottom && !loadingMore && hasMore && !loading && !refreshing && isInitialLoadDone.current) {
+      setLoadingMore(true);
+      const filtered = filterRecipes(allRecipes);
+      updateDisplayedRecipes(filtered, true);
+      setLoadingMore(false);
+    }
+  }, [loadingMore, hasMore, loading, refreshing, filterRecipes, updateDisplayedRecipes, allRecipes]);
 
   const toggleBookmark = async (recipeId: string) => {
     if (!db || !userId || isUpdating) return;
-
     setIsUpdating(true);
     try {
-      const recipe = recipes.find((r) => r.id === recipeId);
+      const recipe = allRecipes.find(r => r.id === recipeId);
       if (!recipe) return;
-
       const isCurrentlyBookmarked = recipe.bookmarked;
-
-      setRecipes((prev) =>
-        prev.map((r) =>
-          r.id === recipeId ? { ...r, bookmarked: !isCurrentlyBookmarked } : r
-        )
-      );
-
+      
+      // Обновляем состояние в allRecipes и displayedRecipes
+      setAllRecipes(prev => prev.map(r => r.id === recipeId ? { ...r, bookmarked: !isCurrentlyBookmarked } : r));
+      setDisplayedRecipes(prev => prev.map(r => r.id === recipeId ? { ...r, bookmarked: !isCurrentlyBookmarked } : r));
+      
       if (isCurrentlyBookmarked) {
-        const favoriteQuery = query(
-          collection(db, "user_favorites"),
-          where("userId", "==", userId),
-          where("recipeId", "==", recipeId)
-        );
+        const favoriteQuery = query(collection(db, "user_favorites"), where("userId", "==", userId), where("recipeId", "==", recipeId));
         const favoriteSnapshot = await getDocs(favoriteQuery);
-        favoriteSnapshot.forEach(async (doc) => {
-          await updateDoc(doc.ref, { active: false });
-        });
+        favoriteSnapshot.forEach(async (doc) => { await updateDoc(doc.ref, { active: false }); });
       } else {
-        await setDoc(
-          doc(db, "user_favorites", `${userId}_${recipeId}`),
-          {
-            userId: userId,
-            recipeId: recipeId,
-            createdAt: new Date(),
-            active: true,
-          },
-          { merge: true }
-        );
+        await setDoc(doc(db, "user_favorites", `${userId}_${recipeId}`), { userId, recipeId, createdAt: new Date(), active: true }, { merge: true });
       }
-    } catch (error) {
-      console.error("Ошибка обновления закладки:", error);
-      setRecipes((prev) =>
-        prev.map((r) =>
-          r.id === recipeId ? { ...r, bookmarked: !r.bookmarked } : r
-        )
-      );
-    } finally {
-      setIsUpdating(false);
+    } catch (error) { 
+      console.error("Ошибка закладки:", error); 
+      setAllRecipes(prev => prev.map(r => r.id === recipeId ? { ...r, bookmarked: !r.bookmarked } : r));
+      setDisplayedRecipes(prev => prev.map(r => r.id === recipeId ? { ...r, bookmarked: !r.bookmarked } : r));
+    } finally { 
+      setIsUpdating(false); 
     }
   };
 
-  const resetFiltersAndScroll = () => {
+  const resetFilters = () => {
     setSearchQuery("");
     setSelectedCategory("Все");
-    if (scrollViewRef.current) {
-      scrollViewRef.current.scrollTo({ y: 0, animated: true });
-    }
+    const filtered = filterRecipes(allRecipes);
+    updateDisplayedRecipes(filtered, false);
+    scrollViewRef.current?.scrollTo({ y: 0, animated: true });
   };
 
-  const resetAllData = () => {
-    isInitialLoadDone.current = false;
-    setRecipes([]);
-    setLastVisible(null);
-    setHasMore(true);
-    if (db) {
-      loadRecipes();
-    }
+  const handleRecipePress = (recipe: Recipe) => {
+    router.push({
+      pathname: "/meal",
+      params: {
+        mealId: recipe.id,
+        recipeId: recipe.id,
+        mealName: recipe.title,
+        category: getCategoryName(recipe.mealType),
+        mealType: recipe.mealType,
+        calories: (recipe.calories || 0).toString(),
+        proteins: (recipe.proteins || 0).toString(),
+        fats: (recipe.fats || 0).toString(),
+        carbohydrates: (recipe.carbohydrates || 0).toString(),
+        cookingTime: (recipe.cookingTime || 20).toString(),
+        difficultyLevel: recipe.difficultyLevel || "Легко",
+        rating: (recipe.rating || 0).toString(),
+        imageUrl: recipe.imageUrl || "",
+        isCustom: "false",
+        fromScreen: "select-recipe"
+      }
+    });
   };
 
-  // --- ФУНКЦИЯ ВЫБОРА РЕЦЕПТА ---
-  const handleSelectRecipe = (recipe: Recipe) => {
+  const openWeightModal = (recipe: Recipe) => {
     const recipeData = {
       id: recipe.id,
       title: recipe.title,
@@ -466,16 +405,42 @@ export default function SelectRecipeScreen() {
       imageUrl: recipe.imageUrl,
       mealType: recipe.mealType,
       category: getCategoryName(recipe.mealType),
-      weight: "250г",
       rating: recipe.rating || 0,
-      isCustom: false
+      isCustom: false,
+      caloriesPer100g: recipe.calories || 300,
+      totalWeight: recipe.totalWeight || 250
     };
+    setPendingRecipeForWeight(recipeData);
+    setSelectedWeight((recipe.totalWeight || 250).toString());
+    setShowWeightModal(true);
+  };
 
-    console.log("📦 Выбран рецепт:", recipeData);
-    console.log("🔄 Режим замены:", isReplacement);
-
+  const confirmWithWeight = () => {
+    if (!pendingRecipeForWeight) return;
+    const weightNum = parseInt(selectedWeight);
+    if (isNaN(weightNum) || weightNum < 50 || weightNum > 1000) {
+      Alert.alert("Ошибка", "Введите вес от 50 до 1000 грамм");
+      return;
+    }
+    const caloriesPer100g = pendingRecipeForWeight.caloriesPer100g || pendingRecipeForWeight.calories || 0;
+    const proteinsPer100g = pendingRecipeForWeight.proteins || 0;
+    const fatsPer100g = pendingRecipeForWeight.fats || 0;
+    const carbsPer100g = pendingRecipeForWeight.carbohydrates || 0;
+    const calculatedCalories = Math.round((caloriesPer100g * weightNum) / 100);
+    const calculatedProteins = Math.round((proteinsPer100g * weightNum) / 100);
+    const calculatedFats = Math.round((fatsPer100g * weightNum) / 100);
+    const calculatedCarbs = Math.round((carbsPer100g * weightNum) / 100);
+    const recipeWithWeight = {
+      ...pendingRecipeForWeight,
+      calories: calculatedCalories,
+      proteins: calculatedProteins,
+      fats: calculatedFats,
+      carbohydrates: calculatedCarbs,
+      weight: `${weightNum}г`,
+      totalWeight: weightNum
+    };
+    setShowWeightModal(false);
     if (isReplacement) {
-      console.log("➡️ Возвращаемся на home для замены блюда");
       router.push({
         pathname: "/home",
         params: {
@@ -483,43 +448,40 @@ export default function SelectRecipeScreen() {
             index: parseInt(mealIndex as string),
             meal: {
               id: currentMealId || `meal-${Date.now()}`,
-              category: recipeData.category,
-              name: recipeData.title,
-              calories: recipeData.calories,
-              proteins: recipeData.proteins,
-              fats: recipeData.fats,
-              carbohydrates: recipeData.carbohydrates,
-              weight: recipeData.weight,
+              category: recipeWithWeight.category,
+              name: recipeWithWeight.title,
+              calories: recipeWithWeight.calories,
+              proteins: recipeWithWeight.proteins,
+              fats: recipeWithWeight.fats,
+              carbohydrates: recipeWithWeight.carbohydrates,
+              weight: recipeWithWeight.weight,
               marked: false,
               bookmarked: false,
-              cookingTime: recipeData.cookingTime,
-              difficultyLevel: recipeData.difficultyLevel,
-              rating: recipeData.rating,
-              recipeId: recipeData.id,
+              cookingTime: recipeWithWeight.cookingTime,
+              difficultyLevel: recipeWithWeight.difficultyLevel,
+              rating: recipeWithWeight.rating,
+              recipeId: recipeWithWeight.id,
               isCustom: false,
               canBeRemoved: true,
-              imageUrl: recipeData.imageUrl,
+              imageUrl: recipeWithWeight.imageUrl,
               addedAt: new Date().toISOString()
             }
           }),
-          refreshHome: Date.now().toString(),
-          fromScreen: "select-recipe"
+          refreshHome: Date.now().toString()
         }
       });
     } else {
-      console.log("➡️ Возвращаемся на home для добавления");
       router.push({
         pathname: "/home",
         params: {
-          selectedRecipe: JSON.stringify(recipeData),
-          refreshHome: Date.now().toString(),
-          fromScreen: "select-recipe"
+          selectedRecipe: JSON.stringify(recipeWithWeight),
+          refreshHome: Date.now().toString()
         }
       });
     }
   };
 
-  if (loading && !refreshing) {
+  if (loading && !refreshing && displayedRecipes.length === 0) {
     return (
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="large" color="#6A9AA9" />
@@ -531,27 +493,16 @@ export default function SelectRecipeScreen() {
   return (
     <View style={styles.container}>
       <StatusBar barStyle="dark-content" />
-
       <View style={styles.header}>
-        <TouchableOpacity 
-          style={styles.backButton}
-          onPress={() => router.back()}
-        >
+        <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
           <Ionicons name="arrow-back" size={24} color="#1a1a1a" />
         </TouchableOpacity>
-        
         <View style={styles.headerTextContainer}>
-          <Text style={styles.greetingText}>
-            {isReplacement ? "Заменить рецепт" : "Выберите рецепт"}
-          </Text>
+          <Text style={styles.greetingText}>{isReplacement ? "Заменить рецепт" : "Выберите рецепт"}</Text>
           <Text style={styles.dietText}>
-            {isReplacement 
-              ? "Выберите новый рецепт для замены" 
-              : "Добавьте в дневной рацион"}
+            {isReplacement ? "Выберите новый рецепт для замены" : "Нажмите на рецепт для просмотра или на кнопку для добавления"}
           </Text>
         </View>
-
-        {/* Аватар удален - оставлен только пустой View для отступа */}
         <View style={{ width: 40 }} />
       </View>
 
@@ -560,532 +511,257 @@ export default function SelectRecipeScreen() {
         style={styles.scrollView}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.scrollContent}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={onRefresh}
-            colors={["#6A9AA9"]}
-            tintColor="#6A9AA9"
-          />
-        }
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={["#6A9AA9"]} tintColor="#6A9AA9" />}
         onScroll={handleScroll}
         scrollEventThrottle={400}
       >
         <View style={styles.searchSection}>
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            style={styles.categoriesContainer}
-          >
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.categoriesContainer}>
             {categories.map((category) => (
               <TouchableOpacity
                 key={category}
-                style={[
-                  styles.categoryButton,
-                  selectedCategory === category && styles.categoryButtonActive,
-                ]}
+                style={[styles.categoryButton, selectedCategory === category && styles.categoryButtonActive]}
                 onPress={() => setSelectedCategory(category)}
               >
-                <Text
-                  style={[
-                    styles.categoryText,
-                    selectedCategory === category && styles.categoryTextActive,
-                  ]}
-                >
-                  {category}
-                </Text>
+                <Text style={[styles.categoryText, selectedCategory === category && styles.categoryTextActive]}>{category}</Text>
               </TouchableOpacity>
             ))}
           </ScrollView>
 
           <View style={styles.searchRow}>
             <View style={styles.searchInputContainer}>
-              <Feather
-                name="search"
-                size={16}
-                color="#666"
-                style={styles.searchIcon}
-              />
-              <TextInput
-                style={styles.searchInput}
-                placeholder="Поиск рецептов..."
-                placeholderTextColor="#666"
-                value={searchQuery}
-                onChangeText={setSearchQuery}
+              <Feather name="search" size={16} color="#666" style={styles.searchIcon} />
+              <TextInput 
+                style={styles.searchInput} 
+                placeholder="Поиск рецептов..." 
+                placeholderTextColor="#666" 
+                value={searchQuery} 
+                onChangeText={setSearchQuery} 
               />
               {(searchQuery !== "" || selectedCategory !== "Все") && (
-                <TouchableOpacity
-                  onPress={resetFiltersAndScroll}
-                  style={styles.clearFilterButton}
-                >
+                <TouchableOpacity onPress={resetFilters} style={styles.clearFilterButton}>
                   <Feather name="x" size={16} color="#666" />
                 </TouchableOpacity>
               )}
             </View>
           </View>
-
           <View style={styles.sectionDivider} />
         </View>
 
         <View style={styles.recipesSection}>
           <View style={styles.recipesHeader}>
             <Text style={styles.recipesTitle}>
-              {filteredRecipes.length} из {totalCount} рецептов
+              {totalCount > 0 ? `${displayedRecipes.length} из ${totalCount}` : `${displayedRecipes.length} рецептов`}
             </Text>
-            <TouchableOpacity style={styles.resetButton} onPress={resetAllData}>
+            <TouchableOpacity onPress={resetFilters}>
               <Feather name="refresh-ccw" size={16} color="#6A9AA9" />
             </TouchableOpacity>
           </View>
 
           <View style={styles.recipesGrid}>
-            {filteredRecipes.map((recipe) => (
-              <View key={recipe.id} style={styles.recipeColumn}>
-                <TouchableOpacity
-                  style={styles.recipeCard}
-                  onPress={() => handleSelectRecipe(recipe)}
-                >
-                  <View style={styles.imageContainer}>
-                    {recipe.imageUrl && recipe.imageUrl.length > 5 ? (
-                      <Image
-                        source={{ uri: recipe.imageUrl }}
-                        style={styles.recipeImage}
-                        resizeMode="cover"
-                      />
-                    ) : (
-                      <View style={styles.recipeImagePlaceholder}>
-                        <Ionicons
-                          name={getCategoryIcon(recipe.mealType) as any}
-                          size={32}
-                          color="#6A9AA9"
-                        />
-                      </View>
-                    )}
-                    <View style={styles.recipeBadges}>
-                      {recipe.rating && recipe.rating > 0 ? (
-                        <View style={styles.ratingBadge}>
-                          <FontAwesome name="star" size={10} color="#FFD700" />
-                          <Text style={styles.ratingText}>
-                            {recipe.rating.toFixed(1)}
-                          </Text>
+            {displayedRecipes.map((recipe) => {
+              const safeTitle = String(recipe.title || "Без названия");
+              const safeCategory = String(getCategoryName(recipe.mealType) || "Другое");
+              const safeCalories = (recipe.calories && recipe.calories > 0) ? `${recipe.calories} ккал/100г` : null;
+              const safeTime = String(formatMinutes(recipe.cookingTime || 0));
+              const safeDifficulty = String(recipe.difficultyLevel || "Легко");
+              const safeRating = (recipe.rating && recipe.rating > 0) ? recipe.rating.toFixed(1) : null;
+              const safeId = String(recipe.id);
+              
+              return (
+                <View key={safeId} style={styles.recipeColumn}>
+                  <TouchableOpacity 
+                    style={styles.recipeCard} 
+                    onPress={() => handleRecipePress(recipe)} 
+                    activeOpacity={0.7}
+                  >
+                    <View style={styles.imageContainer}>
+                      {recipe.imageUrl && recipe.imageUrl.length > 5 ? (
+                        <Image source={{ uri: recipe.imageUrl }} style={styles.recipeImage} resizeMode="cover" />
+                      ) : (
+                        <View style={styles.recipeImagePlaceholder}>
+                          <Ionicons name={getCategoryIcon(recipe.mealType) as any} size={32} color="#6A9AA9" />
                         </View>
-                      ) : null}
-                      <View
-                        style={[
-                          styles.difficultyBadge,
-                          {
-                            backgroundColor: getDifficultyColor(
-                              recipe.difficultyLevel
-                            ),
-                          },
-                        ]}
-                      >
-                        <Text style={styles.difficultyText}>
-                          {recipe.difficultyLevel}
-                        </Text>
+                      )}
+                      <View style={styles.recipeBadges}>
+                        {safeRating !== null && (
+                          <View style={styles.ratingBadge}>
+                            <FontAwesome name="star" size={10} color="#FFD700" />
+                            <Text style={styles.ratingText}>{safeRating}</Text>
+                          </View>
+                        )}
+                        <View style={[styles.difficultyBadge, { backgroundColor: getDifficultyColor(recipe.difficultyLevel) }]}>
+                          <Text style={styles.difficultyText}>{safeDifficulty}</Text>
+                        </View>
                       </View>
-                    </View>
-                    <TouchableOpacity
-                      style={styles.bookmarkButton}
-                      onPress={(e) => {
-                        e.stopPropagation();
-                        toggleBookmark(recipe.id);
-                      }}
-                      disabled={isUpdating}
-                    >
-                      <Ionicons
-                        name={
-                          recipe.bookmarked ? "bookmark" : "bookmark-outline"
-                        }
-                        size={18}
-                        color="#6A9AA9"
-                      />
-                    </TouchableOpacity>
-                  </View>
-                  <View style={styles.recipeContent}>
-                    <View style={styles.recipeInfo}>
-                      <Text
-                        style={styles.recipeName}
-                        numberOfLines={2}
-                        ellipsizeMode="tail"
+                      <TouchableOpacity 
+                        style={styles.bookmarkButton} 
+                        onPress={(e) => { 
+                          e.stopPropagation(); 
+                          toggleBookmark(recipe.id); 
+                        }} 
+                        disabled={isUpdating}
                       >
-                        {recipe.title}
-                      </Text>
-                      <Text style={styles.recipeCategory}>
-                        {getCategoryName(recipe.mealType)}
-                      </Text>
-                      <View style={styles.recipeDetails}>
-                        {recipe.calories && recipe.calories > 0 ? (
-                          <Text style={styles.recipeCalories}>
-                            {recipe.calories} ккал
-                          </Text>
-                        ) : null}
-                        <MaterialIcons
-                          name="access-time"
-                          size={12}
-                          color="#6A9AA9"
-                          style={styles.timeIcon}
-                        />
-                        <Text style={styles.recipeTime}>
-                          {formatMinutes(recipe.cookingTime || 0)}
-                        </Text>
-                      </View>
+                        <Ionicons name={recipe.bookmarked ? "bookmark" : "bookmark-outline"} size={18} color="#6A9AA9" />
+                      </TouchableOpacity>
                     </View>
-                    <TouchableOpacity
-                      style={styles.selectButton}
-                      onPress={() => handleSelectRecipe(recipe)}
-                    >
-                      <Text style={styles.selectButtonText}>
-                        {isReplacement ? "Заменить" : "Выбрать"}
-                      </Text>
-                    </TouchableOpacity>
-                  </View>
-                </TouchableOpacity>
-              </View>
-            ))}
+                    <View style={styles.recipeContent}>
+                      <View style={styles.recipeInfo}>
+                        <Text style={styles.recipeName} numberOfLines={2}>{safeTitle}</Text>
+                        <Text style={styles.recipeCategory}>{safeCategory}</Text>
+                        <View style={styles.recipeDetails}>
+                          {safeCalories !== null && (
+                            <Text style={styles.recipeCalories}>{safeCalories}</Text>
+                          )}
+                          <MaterialIcons name="access-time" size={12} color="#6A9AA9" style={styles.timeIcon} />
+                          <Text style={styles.recipeTime}>{safeTime}</Text>
+                        </View>
+                      </View>
+                      <TouchableOpacity 
+                        style={styles.selectButton} 
+                        onPress={(e) => { 
+                          e.stopPropagation(); 
+                          openWeightModal(recipe); 
+                        }}
+                      >
+                        <Text style={styles.selectButtonText}>{isReplacement ? "Заменить" : "Добавить"}</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </TouchableOpacity>
+                </View>
+              );
+            })}
           </View>
 
           <FooterLoader loading={loadingMore} />
-
-          {filteredRecipes.length === 0 && !loading && (
+          
+          {displayedRecipes.length === 0 && !loading && (
             <View style={styles.emptyState}>
               <Ionicons name="restaurant-outline" size={64} color="#C2DAE2" />
               <Text style={styles.emptyStateText}>Рецепты не найдены</Text>
               <Text style={styles.emptyStateSubtext}>
-                {searchQuery !== "" || selectedCategory !== "Все"
-                  ? "Попробуйте изменить параметры поиска"
-                  : "Публичных рецептов пока нет"}
+                {searchQuery !== "" || selectedCategory !== "Все" ? "Попробуйте изменить параметры поиска" : "Публичных рецептов пока нет"}
               </Text>
             </View>
           )}
         </View>
       </ScrollView>
+
+      <Modal visible={showWeightModal} transparent animationType="fade" onRequestClose={() => setShowWeightModal(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.weightModalContainer}>
+            <View style={styles.weightModalHeader}>
+              <Text style={styles.weightModalTitle}>Выберите вес порции</Text>
+              <TouchableOpacity onPress={() => setShowWeightModal(false)}>
+                <Ionicons name="close" size={24} color="#666" />
+              </TouchableOpacity>
+            </View>
+            <View style={styles.weightModalContent}>
+              <Text style={styles.weightModalText}>{pendingRecipeForWeight?.title || ""}</Text>
+              <Text style={styles.weightModalSubtext}>Калорийность: {pendingRecipeForWeight?.caloriesPer100g || 0} ккал на 100г</Text>
+              <View style={styles.weightInputContainer}>
+                <TextInput 
+                  style={styles.weightInput} 
+                  value={selectedWeight} 
+                  onChangeText={setSelectedWeight} 
+                  keyboardType="numeric" 
+                  placeholder="Вес в граммах" 
+                  placeholderTextColor="#999" 
+                />
+                <Text style={styles.weightUnit}>гр</Text>
+              </View>
+              <Text style={styles.weightHint}>КБЖУ будут автоматически пересчитаны под выбранный вес</Text>
+              <View style={styles.weightModalButtons}>
+                <TouchableOpacity 
+                  style={[styles.weightModalButton, styles.weightModalButtonCancel]} 
+                  onPress={() => setShowWeightModal(false)}
+                >
+                  <Text style={styles.weightModalButtonCancelText}>Отмена</Text>
+                </TouchableOpacity>
+                <TouchableOpacity 
+                  style={[styles.weightModalButton, styles.weightModalButtonSave]} 
+                  onPress={confirmWithWeight}
+                >
+                  <Text style={styles.weightModalButtonSaveText}>Добавить</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#FFFFFF",
-    position: "relative",
-  },
-  loadingContainer: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    backgroundColor: "#FFFFFF",
-  },
-  loadingText: {
-    marginTop: 10,
-    fontSize: 16,
-    color: "#6A9AA9",
-    fontFamily: "Playfair Display Regular",
-  },
-  scrollView: {
-    flex: 1,
-  },
-  scrollContent: {
-    paddingBottom: 40,
-  },
-  emptyState: {
-    alignItems: "center",
-    padding: 40,
-    marginTop: 40,
-  },
-  emptyStateText: {
-    fontSize: 18,
-    color: "#6C757D",
-    fontFamily: "Playfair Display Regular",
-    marginBottom: 8,
-    marginTop: 16,
-  },
-  emptyStateSubtext: {
-    fontSize: 14,
-    color: "#6C757D",
-    fontFamily: "Playfair Display Regular",
-    textAlign: "center",
-    marginBottom: 24,
-  },
-  header: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "flex-start",
-    paddingHorizontal: 20,
-    paddingTop: 50,
-    paddingBottom: 15,
-    backgroundColor: "#FFFFFF",
-    borderBottomWidth: 2,
-    borderBottomColor: "#6A9AA9",
-  },
-  backButton: {
-    padding: 8,
-    marginRight: 10,
-  },
-  headerTextContainer: {
-    flex: 1,
-    marginRight: 15,
-  },
-  greetingText: {
-    fontSize: 24,
-    color: "#1a1a1a",
-    marginBottom: 4,
-    fontFamily: "Playfair Display Bold",
-  },
-  dietText: {
-    fontSize: 14,
-    color: "#666",
-    fontFamily: "Playfair Display Regular",
-  },
-  searchSection: {
-    backgroundColor: "#FFFFFF",
-    padding: 15,
-    marginBottom: 1,
-  },
-  searchRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-  },
-  searchInputContainer: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#FFFFFF",
-    borderRadius: 30,
-    borderWidth: 2,
-    borderColor: "#6A9AA9",
-    paddingHorizontal: 15,
-    paddingVertical: 6,
-  },
-  searchIcon: {
-    marginRight: 8,
-  },
-  searchInput: {
-    flex: 1,
-    fontSize: 14,
-    color: "#000",
-    paddingVertical: 4,
-    fontFamily: "Playfair Display Regular",
-  },
-  clearFilterButton: {
-    padding: 4,
-    marginLeft: 8,
-  },
-  categoriesContainer: {
-    marginBottom: 12,
-  },
-  categoryButton: {
-    backgroundColor: "white",
-    borderWidth: 2,
-    borderColor: "#6A9AA9",
-    borderRadius: 20,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    marginRight: 8,
-  },
-  categoryButtonActive: {
-    backgroundColor: "#9BDF11",
-    borderColor: "#9BDF11",
-  },
-  categoryText: {
-    fontSize: 14,
-    color: "#000000",
-    fontFamily: "Playfair Display Regular",
-    fontWeight: "600",
-  },
-  categoryTextActive: {
-    color: "#000000",
-  },
-  sectionDivider: {
-    height: 2,
-    backgroundColor: "#6A9AA9",
-    marginHorizontal: -15,
-    marginTop: 12,
-  },
-  recipesSection: {
-    backgroundColor: "#FFFFFF",
-    padding: 15,
-    paddingBottom: 20,
-  },
-  recipesHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 12,
-  },
-  recipesTitle: {
-    fontSize: 16,
-    color: "#000000ff",
-    fontWeight: "500",
-    fontFamily: "Playfair Display Regular",
-  },
-  resetButton: {
-    padding: 8,
-  },
-  recipesGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    justifyContent: "space-between",
-  },
-  recipeColumn: {
-    width: CARD_WIDTH,
-    marginBottom: 16,
-  },
-  recipeCard: {
-    backgroundColor: "#C2DAE2",
-    borderRadius: 16,
-    overflow: "hidden",
-    shadowColor: "#000",
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-    shadowOpacity: 0.1,
-    shadowRadius: 3.84,
-    elevation: 5,
-    height: 280,
-  },
-  imageContainer: {
-    position: "relative",
-    height: 120,
-    backgroundColor: "#F8F8F8",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  recipeImage: {
-    width: "100%",
-    height: "100%",
-  },
-  recipeBadges: {
-    position: "absolute",
-    top: 8,
-    left: 8,
-    flexDirection: "column",
-    gap: 4,
-  },
-  ratingBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.9)",
-    paddingHorizontal: 6,
-    paddingVertical: 3,
-    borderRadius: 10,
-  },
-  ratingText: {
-    fontSize: 10,
-    fontWeight: "bold",
-    color: "#000000",
-    fontFamily: "Playfair Display Regular",
-    marginLeft: 2,
-  },
-  difficultyBadge: {
-    paddingHorizontal: 6,
-    paddingVertical: 3,
-    borderRadius: 10,
-  },
-  difficultyText: {
-    fontSize: 9,
-    fontWeight: "bold",
-    color: "#FFFFFF",
-    fontFamily: "Playfair Display Regular",
-  },
-  bookmarkButton: {
-    position: "absolute",
-    top: 8,
-    right: 8,
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: "rgba(255, 255, 255, 0.9)",
-    alignItems: "center",
-    justifyContent: "center",
-    shadowColor: "#000",
-    shadowOffset: {
-      width: 0,
-      height: 1,
-    },
-    shadowOpacity: 0.2,
-    shadowRadius: 1.41,
-    elevation: 2,
-  },
-  recipeContent: {
-    padding: 12,
-    flex: 1,
-    justifyContent: "space-between",
-  },
-  recipeInfo: {
-    flex: 1,
-    marginBottom: 8,
-  },
-  recipeName: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: "#212529",
-    marginBottom: 4,
-    fontFamily: "Playfair Display Regular",
-    lineHeight: 18,
-    minHeight: 36,
-  },
-  recipeCategory: {
-    fontSize: 11,
-    color: "#6A9AA9",
-    fontFamily: "Playfair Display Regular",
-    fontStyle: "italic",
-    marginBottom: 6,
-  },
-  recipeDetails: {
-    flexDirection: "row",
-    alignItems: "center",
-    flexWrap: "wrap",
-  },
-  recipeCalories: {
-    fontSize: 12,
-    color: "#000000",
-    fontWeight: "normal",
-    fontFamily: "Playfair Display Bold",
-    marginRight: 8,
-  },
-  timeIcon: {
-    marginRight: 4,
-  },
-  recipeTime: {
-    fontSize: 12,
-    color: "#6C757D",
-    fontFamily: "Playfair Display Regular",
-  },
-  selectButton: {
-    backgroundColor: "#9BDF11",
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
-    alignItems: "center",
-    justifyContent: "center",
-    minHeight: 36,
-    marginTop: 8,
-  },
-  selectButtonText: {
-    color: "#000000ff",
-    fontSize: 12,
-    fontWeight: "normal",
-    fontFamily: "Playfair Display Regular",
-  },
-  footerLoader: {
-    flexDirection: "row",
-    justifyContent: "center",
-    alignItems: "center",
-    paddingVertical: 20,
-    gap: 10,
-  },
-  footerLoaderText: {
-    fontSize: 14,
-    color: "#6A9AA9",
-    fontFamily: "Playfair Display Regular",
-  },
-  recipeImagePlaceholder: {
-    width: "100%",
-    height: "100%",
-    backgroundColor: "#E5F0F5",
-    justifyContent: "center",
-    alignItems: "center",
-  },
+  container: { flex: 1, backgroundColor: "#FFFFFF" },
+  loadingContainer: { flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: "#FFFFFF" },
+  loadingText: { marginTop: 10, fontSize: 16, color: "#6A9AA9", fontFamily: "Playfair Display Regular" },
+  scrollView: { flex: 1 },
+  scrollContent: { paddingBottom: 40 },
+  emptyState: { alignItems: "center", padding: 40, marginTop: 40 },
+  emptyStateText: { fontSize: 18, color: "#6C757D", fontFamily: "Playfair Display Regular", marginBottom: 8, marginTop: 16 },
+  emptyStateSubtext: { fontSize: 14, color: "#6C757D", fontFamily: "Playfair Display Regular", textAlign: "center", marginBottom: 24 },
+  header: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", paddingHorizontal: 20, paddingTop: 50, paddingBottom: 15, backgroundColor: "#FFFFFF", borderBottomWidth: 2, borderBottomColor: "#6A9AA9" },
+  backButton: { padding: 8, marginRight: 10 },
+  headerTextContainer: { flex: 1, marginRight: 15 },
+  greetingText: { fontSize: 24, color: "#1a1a1a", marginBottom: 4, fontFamily: "Playfair Display Bold" },
+  dietText: { fontSize: 14, color: "#666", fontFamily: "Playfair Display Regular" },
+  searchSection: { backgroundColor: "#FFFFFF", padding: 15, marginBottom: 1 },
+  searchRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+  searchInputContainer: { flex: 1, flexDirection: "row", alignItems: "center", backgroundColor: "#FFFFFF", borderRadius: 30, borderWidth: 2, borderColor: "#6A9AA9", paddingHorizontal: 15, paddingVertical: 6 },
+  searchIcon: { marginRight: 8 },
+  searchInput: { flex: 1, fontSize: 14, color: "#000", paddingVertical: 4, fontFamily: "Playfair Display Regular" },
+  clearFilterButton: { padding: 4, marginLeft: 8 },
+  categoriesContainer: { marginBottom: 12 },
+  categoryButton: { backgroundColor: "white", borderWidth: 2, borderColor: "#6A9AA9", borderRadius: 20, paddingHorizontal: 16, paddingVertical: 8, marginRight: 8 },
+  categoryButtonActive: { backgroundColor: "#9BDF11", borderColor: "#9BDF11" },
+  categoryText: { fontSize: 14, color: "#000000", fontFamily: "Playfair Display Regular", fontWeight: "600" },
+  categoryTextActive: { color: "#000000" },
+  sectionDivider: { height: 2, backgroundColor: "#6A9AA9", marginHorizontal: -15, marginTop: 12 },
+  recipesSection: { backgroundColor: "#FFFFFF", padding: 15, paddingBottom: 20 },
+  recipesHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12 },
+  recipesTitle: { fontSize: 16, color: "#000000ff", fontWeight: "500", fontFamily: "Playfair Display Regular" },
+  resetButton: { padding: 8 },
+  recipesGrid: { flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between" },
+  recipeColumn: { width: CARD_WIDTH, marginBottom: 16 },
+  recipeCard: { backgroundColor: "#C2DAE2", borderRadius: 16, overflow: "hidden", shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 3.84, elevation: 5, minHeight: 280 },
+  imageContainer: { position: "relative", height: 120, backgroundColor: "#F8F8F8", justifyContent: "center", alignItems: "center" },
+  recipeImage: { width: "100%", height: "100%" },
+  recipeBadges: { position: "absolute", top: 8, left: 8, flexDirection: "column", gap: 4 },
+  ratingBadge: { flexDirection: "row", alignItems: "center", backgroundColor: "rgba(255,255,255,0.9)", paddingHorizontal: 6, paddingVertical: 3, borderRadius: 10 },
+  ratingText: { fontSize: 10, fontWeight: "bold", color: "#000000", fontFamily: "Playfair Display Regular", marginLeft: 2 },
+  difficultyBadge: { paddingHorizontal: 6, paddingVertical: 3, borderRadius: 10 },
+  difficultyText: { fontSize: 9, fontWeight: "bold", color: "#FFFFFF", fontFamily: "Playfair Display Regular" },
+  bookmarkButton: { position: "absolute", top: 8, right: 8, width: 32, height: 32, borderRadius: 16, backgroundColor: "rgba(255,255,255,0.9)", alignItems: "center", justifyContent: "center", shadowColor: "#000", shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.2, shadowRadius: 1.41, elevation: 2 },
+  recipeContent: { padding: 12, flex: 1, justifyContent: "space-between" },
+  recipeInfo: { flex: 1, marginBottom: 8 },
+  recipeName: { fontSize: 14, fontWeight: "600", color: "#212529", marginBottom: 4, fontFamily: "Playfair Display Regular", lineHeight: 18, minHeight: 36 },
+  recipeCategory: { fontSize: 11, color: "#6A9AA9", fontFamily: "Playfair Display Regular", fontStyle: "italic", marginBottom: 6 },
+  recipeDetails: { flexDirection: "row", alignItems: "center", flexWrap: "wrap" },
+  recipeCalories: { fontSize: 12, color: "#000000", fontWeight: "normal", fontFamily: "Playfair Display Bold", marginRight: 8 },
+  timeIcon: { marginRight: 4 },
+  recipeTime: { fontSize: 12, color: "#6C757D", fontFamily: "Playfair Display Regular" },
+  selectButton: { backgroundColor: "#9BDF11", paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, alignItems: "center", justifyContent: "center", minHeight: 36, marginTop: 8 },
+  selectButtonText: { color: "#000000ff", fontSize: 12, fontWeight: "normal", fontFamily: "Playfair Display Regular" },
+  footerLoader: { flexDirection: "row", justifyContent: "center", alignItems: "center", paddingVertical: 20, gap: 10 },
+  footerLoaderText: { fontSize: 14, color: "#6A9AA9", fontFamily: "Playfair Display Regular" },
+  recipeImagePlaceholder: { width: "100%", height: "100%", backgroundColor: "#E5F0F5", justifyContent: "center", alignItems: "center" },
+  modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "center", alignItems: "center", padding: 20 },
+  weightModalContainer: { backgroundColor: "#FFF", borderRadius: 20, width: "85%", overflow: "hidden" },
+  weightModalHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 16, borderBottomWidth: 1, borderBottomColor: "#E0E0E0" },
+  weightModalTitle: { fontSize: 16, fontFamily: "Playfair Display Bold", color: "#1a1a1a" },
+  weightModalContent: { padding: 20 },
+  weightModalText: { fontSize: 16, fontFamily: "Playfair Display Bold", color: "#1a1a1a", marginBottom: 8 },
+  weightModalSubtext: { fontSize: 13, color: "#666", fontFamily: "Playfair Display Regular", marginBottom: 16 },
+  weightInputContainer: { flexDirection: "row", alignItems: "center", borderWidth: 1, borderColor: "#C2DAE2", borderRadius: 12, backgroundColor: "#F5F5F5", marginBottom: 12 },
+  weightInput: { flex: 1, paddingHorizontal: 16, paddingVertical: 12, fontSize: 16, fontFamily: "Playfair Display Regular", color: "#333" },
+  weightUnit: { paddingHorizontal: 12, fontSize: 16, color: "#6A9AA9", fontFamily: "Playfair Display Bold" },
+  weightHint: { fontSize: 12, color: "#999", fontFamily: "Playfair Display Regular", marginBottom: 20, textAlign: "center" },
+  weightModalButtons: { flexDirection: "row", gap: 12 },
+  weightModalButton: { flex: 1, paddingVertical: 12, borderRadius: 25, alignItems: "center" },
+  weightModalButtonCancel: { backgroundColor: "#FFF", borderWidth: 2, borderColor: "#6A9AA9" },
+  weightModalButtonCancelText: { color: "#6A9AA9", fontSize: 14, fontFamily: "Playfair Display Bold" },
+  weightModalButtonSave: { backgroundColor: "#6A9AA9" },
+  weightModalButtonSaveText: { color: "#FFF", fontSize: 14, fontFamily: "Playfair Display Bold" },
 });
