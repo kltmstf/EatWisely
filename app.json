@@ -13,11 +13,17 @@
     },
     "android": {
       "softwareKeyboardLayoutMode": "resize",
-      "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "edgeToEdgeEnabled": false,
+      "predictiveBackGestureEnabled": false,
+      "package": "com.kltmstf.EatWisely",
+      "statusBar": {
+        "barStyle": "dark-content",
+        "backgroundColor": "#ffffff",
+        "translucent": false
+      }
     },
     "androidNavigationBar": {
-      "visible": "immersive",
+      "visible": "navigationAndStatus",
       "backgroundColor": "#ffffff"
     },
     "web": {
@@ -32,6 +38,12 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "1243ddfb-00b4-4cb0-8df7-647f2d6103f7"
+      }
     }
   }
 }

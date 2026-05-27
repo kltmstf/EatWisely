@@ -404,30 +404,62 @@ export default function Home() {
       let mealsWithFavorites = await loadFavoritesStatus(currentUser.uid, newPlan.meals.map(convertToUIMeal));
       mealsWithFavorites = mealsWithFavorites.map(meal => ({ 
         ...meal, 
-        id: `${meal.id}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}` 
+        id: `${meal.id}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+        marked: false // Сбрасываем отметки о приеме
       }));
       
+      // ✅ 1. Рассчитываем КБЖУ нового рациона
+      const newRecommendedKBRU = mealsWithFavorites.reduce((acc, m) => ({ 
+        proteins: acc.proteins + (m.proteins || 0), 
+        fats: acc.fats + (m.fats || 0), 
+        carbohydrates: acc.carbohydrates + (m.carbohydrates || 0) 
+      }), { proteins: 0, fats: 0, carbohydrates: 0 });
+      
+      // ✅ 2. Рассчитываем потребленные калории (все блюда не отмечены, так что =0)
+      const newConsumedCalories = 0;
+      
+      // ✅ 3. Получаем уникальное имя для рациона
       const qTemplates = query(collection(firestoreDb, 'ration_plans'), where('userId', '==', currentUser.uid));
       const templatesSnap = await getDocs(qTemplates);
       const existingTitles = templatesSnap.docs.map((d: any) => d.data().title || d.data().planName || "");
       
-      let finalGenName = "Сгенерированный рацион", counter = 1;
+      let finalGenName = "Сгенерированный рацион";
+      let counter = 1;
       while (existingTitles.includes(finalGenName)) { 
         finalGenName = `Сгенерированный рацион (${counter})`; 
         counter++; 
       }
       
+      // ✅ 4. Обновляем состояния в правильном порядке
       setMeals(mealsWithFavorites);
-      setActivePlanName(null); 
+      setRecommendedKBRU(newRecommendedKBRU);
+      setUserData(prev => ({ 
+        ...prev, 
+        consumedCalories: newConsumedCalories 
+      }));
+      
+      // ✅ 5. Обновляем targetKBRU
+      if (userData.targetProteins && userData.targetProteins > 0) {
+        setTargetKBRU({ 
+          proteins: userData.targetProteins, 
+          fats: userData.targetFats, 
+          carbohydrates: userData.targetCarbs 
+        });
+      } else {
+        const daily = userData.dailyCalories;
+        setTargetKBRU({ 
+          proteins: Math.round((daily * 0.3) / 4), 
+          fats: Math.round((daily * 0.3) / 9), 
+          carbohydrates: Math.round((daily * 0.4) / 4) 
+        });
+      }
+      
+      setActivePlanName(finalGenName);  // ✅ Теперь используем finalGenName
       setActivePlanSourceId(null);
       setHasChanges(false);
       setIsTemplateSaved(false);
       
-      setUserData(prev => ({ 
-        ...prev, 
-        consumedCalories: mealsWithFavorites.filter(m => m.marked).reduce((sum, m) => sum + (m.calories || 0), 0) 
-      }));
-      
+      // ✅ 6. Сохраняем в БД
       const todayStr = new Date().toISOString().split('T')[0];
       const currentDayId = activePlanId || `${currentUser.uid}_${todayStr}`;
       const cleanedMeals = mealsWithFavorites.map((m: any) => ({ 
@@ -449,12 +481,23 @@ export default function Home() {
       
       await updateDoc(doc(firestoreDb, 'ration_plan_days', currentDayId), { 
         meals: cleanedMeals, 
-        planName: finalGenName, 
+        planName: finalGenName,  // ✅ Используем finalGenName
         planId: null, 
         updatedAt: new Date().toISOString() 
       });
       
       setActivePlanId(currentDayId);
+      
+      // ✅ 7. Отладочный вывод
+      console.log("✅ Новый рацион сгенерирован:", {
+        name: finalGenName,
+        mealsCount: mealsWithFavorites.length,
+        totalCalories: mealsWithFavorites.reduce((sum, m) => sum + (m.calories || 0), 0),
+        totalProteins: newRecommendedKBRU.proteins,
+        totalFats: newRecommendedKBRU.fats,
+        totalCarbs: newRecommendedKBRU.carbohydrates
+      });
+      
       Alert.alert("Успех", `Сгенерирован рацион "${finalGenName}"!`);
     } else {
       Alert.alert("Ошибка", "Не удалось сгенерировать рацион. Попробуйте позже.");
@@ -466,7 +509,7 @@ export default function Home() {
     setIsGeneratingPlan(false);
     setShowGeneratingModal(false);
   }
-}, [currentUser, firestoreDb, isGeneratingPlan, activePlanId, convertToUIMeal]);
+}, [currentUser, firestoreDb, isGeneratingPlan, activePlanId, convertToUIMeal, userData]);
 
   const navigateToMealPage = (mealIndex: number) => {
     const meal = meals[mealIndex];
@@ -619,7 +662,11 @@ export default function Home() {
               <View style={[styles.kbruRow, styles.targetKBRURow]}><Text style={[styles.kbruLabel, { flex: 1, textAlign: "left", fontFamily: "Playfair Display Bold" }]}>Норма</Text><Text style={[styles.kbruValue, { fontFamily: "Playfair Display Bold" }]}>{targetKBRU.proteins}</Text><Text style={[styles.kbruValue, { fontFamily: "Playfair Display Bold" }]}>{targetKBRU.fats}</Text><Text style={[styles.kbruValue, { fontFamily: "Playfair Display Bold" }]}>{targetKBRU.carbohydrates}</Text></View>
             </View>
             <View style={styles.buttonsRow}>
-              <TouchableOpacity style={styles.selectRationButton} onPress={() => setShowRationSelectModal(true)}><Ionicons name="swap-horizontal-outline" size={18} color="#6A9AA9" /><Text style={styles.selectRationButtonText}>Выбрать рацион</Text></TouchableOpacity>
+              <TouchableOpacity style={styles.selectRationButton} onPress={() => setShowRationSelectModal(true)}>
+  {/* Поменяли цвет иконки на #000 */}
+  <Ionicons name="swap-horizontal-outline" size={18} color="#000" />
+  <Text style={styles.selectRationButtonText}>Составить рацион</Text>
+</TouchableOpacity>
               <TouchableOpacity style={[currentButton.style, isSaving && styles.saveRationButtonSaving]} onPress={handleSavePress} disabled={currentButton.disabled}>{isSaving ? <ActivityIndicator size="small" color="#FFFFFF" /> : <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}><Ionicons name={hasChanges && !isTemplateSaved ? "refresh-outline" : "save-outline"} size={18} color={currentButton.iconColor} /><Text style={[styles.saveRationButtonText, (isTemplateSaved && !hasChanges) && styles.saveButtonTextDisabled]}>{currentButton.text}</Text></View>}</TouchableOpacity>
             </View>
             <View style={styles.planNameContainer}><Ionicons name={activePlanName ? "bookmark" : "create-outline"} size={18} color="#6A9AA9" /><Text style={styles.planNameValue} numberOfLines={1}>{displayPlanName}</Text></View>
@@ -690,7 +737,28 @@ const styles = StyleSheet.create({
   remainingCaloriesContainer: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 4 }, remainingCaloriesLabel: { fontSize: 14, color: "#666", fontFamily: "Playfair Display Regular" }, remainingCaloriesValue: { fontSize: 18, color: "#9BDF11", fontFamily: "Playfair Display Bold" }, remainingCaloriesOverLimit: { color: "#F44336" },
   progressBar: { height: 12, backgroundColor: "#C2DAE2", borderRadius: 6, overflow: "hidden", marginBottom: 16 }, progressFill: { height: "100%", borderRadius: 6 },
   planNameContainer: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, marginBottom: 16, paddingVertical: 8, paddingHorizontal: 12, backgroundColor: "#F0F7F0", borderRadius: 12, borderWidth: 1, borderColor: "#C2DAE2" }, planNameValue: { fontSize: 13, color: "#4CAF50", fontFamily: "Playfair Display Bold", flex: 1, textAlign: "center" },
-  buttonsRow: { flexDirection: "row", gap: 12, marginBottom: 10 }, selectRationButton: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", backgroundColor: "#E5F0F5", paddingHorizontal: 16, paddingVertical: 12, borderRadius: 12, borderWidth: 1, borderColor: "#C2DAE2", gap: 8 }, selectRationButtonText: { fontSize: 14, color: "#6A9AA9", fontFamily: "Playfair Display Regular" },
+  buttonsRow: { flexDirection: "row", gap: 12, marginBottom: 10 }, selectRationButton: { 
+    flex: 1, 
+    flexDirection: "row", 
+    alignItems: "center", 
+    justifyContent: "center", 
+    backgroundColor: "#9BDF11", // Яркий салатовый фон
+    paddingHorizontal: 16, 
+    paddingVertical: 12, 
+    borderRadius: 12, 
+    // Убираем бледную рамку, добавляем легкую тень для объема:
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.15,
+    shadowRadius: 2,
+    elevation: 3,
+    gap: 8 
+  }, 
+  selectRationButtonText: { 
+    fontSize: 14, 
+    color: "#000000", // Темный текст для контраста с ярким фоном
+    fontFamily: "Playfair Display Bold" // Делаем шрифт жирнее
+  },
   saveRationButton: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", backgroundColor: "#6A9AA9", paddingHorizontal: 16, paddingVertical: 12, borderRadius: 12, gap: 8 }, saveRationButtonUpdate: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", backgroundColor: "#FF9800", paddingHorizontal: 16, paddingVertical: 12, borderRadius: 12, gap: 8 }, saveRationButtonSaving: { opacity: 0.7 }, saveRationButtonText: { fontSize: 14, color: "#FFF", fontFamily: "Playfair Display Regular" },
   kbruContainer: { paddingHorizontal: 5, borderWidth: 1, borderColor: "#C2DAE2", borderRadius: 8, backgroundColor: "#F7F7F7", marginBottom: 12, marginTop: 8 }, kbruRow: { flexDirection: "row", justifyContent: "space-around", alignItems: "center", paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: "#E0E0E0" }, targetKBRURow: { borderBottomWidth: 0, backgroundColor: "#DDEEF4", borderRadius: 8, marginHorizontal: -1, paddingHorizontal: 6 }, kbruHeader: { fontSize: 12, color: "#6A9AA9", fontFamily: "Playfair Display Bold", textAlign: "center", width: "23%" }, kbruLabel: { fontSize: 14, color: "#212529", fontFamily: "Playfair Display Regular", width: "23%" }, kbruValue: { fontSize: 14, fontFamily: "Playfair Display Bold", textAlign: "center", width: "23%" }, kbruHeaderRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 5, paddingVertical: 4 }, infoButton: { padding: 4 },
   sectionDivider: { height: 2, backgroundColor: "#6A9AA9", marginHorizontal: -20, marginTop: 10 }, mealsTitleSection: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingHorizontal: 20, paddingTop: 20, paddingBottom: 16 }, mealsTitle: { fontSize: 20, color: "#1a1a1a", fontFamily: "Playfair Display Bold", flex: 1 }, addRecipeButton: { flexDirection: "row", alignItems: "center", paddingHorizontal: 16, paddingVertical: 10, borderRadius: 20, backgroundColor: "#E5F0F5", borderWidth: 1, borderColor: "#C2DAE2", marginLeft: 12 }, addRecipeText: { fontSize: 14, color: "#6A9AA9", fontFamily: "Playfair Display Regular", marginLeft: 6 },
