@@ -1345,16 +1345,7 @@ export default function Community() {
                         />
                       </View>
                       <View style={styles.userDetails}>
-                        <View style={styles.userNameContainer}>
                           <Text style={styles.userName}>{post.userName}</Text>
-                          {post.verified && (
-                            <MaterialIcons
-                              name="verified"
-                              size={14}
-                              color="#000000ff"
-                            />
-                          )}
-                        </View>
                         <Text style={styles.postTime}>{post.timeAgo}</Text>
                       </View>
                     </TouchableOpacity>
@@ -1368,29 +1359,26 @@ export default function Community() {
                     </View>
                   </View>
 
-                  <TouchableOpacity
-                    style={styles.postContent}
-                    onPress={() => console.log("Переход к посту:", post.title)}
-                  >
-                    <Text style={styles.postTitle}>{post.title}</Text>
-                    <Text style={styles.postText}>{post.content}</Text>
-                    
-                    {/* Улучшенный слайдер с изображениями */}
-                    {post.images && post.images.length > 0 && (
-                      <ImageSlider images={post.images} postId={post.id} />
-                    )}
-                    
-                    {/* Для обратной совместимости с одним изображением */}
-                    {post.image && (!post.images || post.images.length === 0) && (
-                      <View style={styles.singleImageContainer}>
-                        <Image 
-                          source={post.image} 
-                          style={styles.postImage}
-                          resizeMode="contain"
-                        />
-                      </View>
-                    )}
-                  </TouchableOpacity>
+                  <View style={styles.postContent}>
+  <Text style={styles.postTitle}>{post.title}</Text>
+  <Text style={styles.postText}>{post.content}</Text>
+  
+  {/* Улучшенный слайдер с изображениями */}
+  {post.images && post.images.length > 0 && (
+    <ImageSlider images={post.images} postId={post.id} />
+  )}
+  
+  {/* Для обратной совместимости с одним изображением */}
+  {post.image && (!post.images || post.images.length === 0) && (
+    <View style={styles.singleImageContainer}>
+      <Image 
+        source={post.image} 
+        style={styles.postImage}
+        resizeMode="contain"
+      />
+    </View>
+  )}
+</View>
 
                   <View style={styles.postActions}>
                     <TouchableOpacity

@@ -1,30 +1,35 @@
 // app/(tabs)/profile.tsx - ИСПРАВЛЕННАЯ ВЕРСИЯ
 
-import { Ionicons } from "@expo/vector-icons";
+import { useAuthContext } from "@/app/contexts/AuthContext";
+import { auth, db } from "@/app/firebase/config";
+import { favoriteService } from "@/app/services/favoriteService";
+import { followService } from "@/app/services/followService";
+import { rationPlanService } from "@/app/services/rationPlanService";
+import { recipeService } from "@/app/services/recipeService";
+import { userService } from "@/app/services/userService";
+import { FontAwesome, Ionicons, MaterialIcons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useFocusEffect, useRouter, useLocalSearchParams } from "expo-router";
-import React, { useCallback, useMemo, useState, useEffect } from "react";
+import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
+import {
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  query,
+  where,
+} from "firebase/firestore";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
+  Dimensions,
   Image,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
-  Dimensions,
-  Alert,
 } from "react-native";
-import { favoriteService } from "@/app/services/favoriteService";
-import { rationPlanService } from "@/app/services/rationPlanService";
-import { recipeService } from "@/app/services/recipeService";
-import { auth } from "@/app/firebase/config";
-import { FontAwesome, MaterialIcons } from "@expo/vector-icons";
-import { followService } from "@/app/services/followService";
-import { userService } from "@/app/services/userService";
-import { useAuthContext } from "@/app/contexts/AuthContext";
-import { collection, query, where, getDocs, doc, getDoc } from "firebase/firestore";
-import { db } from "@/app/firebase/config";
 
 // --- ТИПЫ ДАННЫХ ---
 type ProfileData = {
@@ -134,15 +139,15 @@ const formatActivity = (activity: string): string => {
   if (!activity) return "-";
   const maxLength = 25;
   if (activity.length <= maxLength) return activity;
-  const periodIndex = activity.indexOf('.', maxLength - 10);
+  const periodIndex = activity.indexOf(".", maxLength - 10);
   if (periodIndex !== -1 && periodIndex < maxLength + 10) {
     return activity.substring(0, periodIndex + 1);
   }
-  const commaIndex = activity.indexOf(',', maxLength - 10);
+  const commaIndex = activity.indexOf(",", maxLength - 10);
   if (commaIndex !== -1 && commaIndex < maxLength + 10) {
     return activity.substring(0, commaIndex + 1);
   }
-  return activity.substring(0, maxLength - 3) + '...';
+  return activity.substring(0, maxLength - 3) + "...";
 };
 
 const formatDietType = (dietType: string | string[] | undefined): string => {
@@ -184,10 +189,11 @@ export default function ProfileScreen() {
   const router = useRouter();
   const params = useLocalSearchParams();
   const { user, userProfile, loading: authLoading } = useAuthContext();
-  const [profileData, setProfileData] = useState<ProfileData>(defaultProfileData);
+  const [profileData, setProfileData] =
+    useState<ProfileData>(defaultProfileData);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<"profile" | "saved">(
-    params.tab === "saved" ? "saved" : "profile"
+    params.tab === "saved" ? "saved" : "profile",
   );
   const [favoriteRecipes, setFavoriteRecipes] = useState<Recipe[]>([]);
   const [savedPlans, setSavedPlans] = useState<Plan[]>([]);
@@ -198,7 +204,7 @@ export default function ProfileScreen() {
   const [profileCompleted, setProfileCompleted] = useState(false);
   const [followStats, setFollowStats] = useState({
     followersCount: 0,
-    followingCount: 0
+    followingCount: 0,
   });
   const [postsCount, setPostsCount] = useState(0);
   const [followStatsLoading, setFollowStatsLoading] = useState(false);
@@ -221,7 +227,7 @@ export default function ProfileScreen() {
       setFollowStatsLoading(true);
       const [followersCount, followingCount] = await Promise.all([
         followService.getFollowersCount(userId),
-        followService.getFollowingCount(userId)
+        followService.getFollowingCount(userId),
       ]);
       setFollowStats({ followersCount, followingCount });
     } catch (error) {
@@ -243,11 +249,11 @@ export default function ProfileScreen() {
       // Публикации - это посты из коллекции community_posts
       const communityQuery = query(
         collection(db, "community_posts"),
-        where("userId", "==", userId)
+        where("userId", "==", userId),
       );
       const communitySnapshot = await getDocs(communityQuery);
       const posts = communitySnapshot.docs.length;
-      
+
       setPostsCount(posts);
       console.log(`📊 Публикаций в сообществе: ${posts}`);
     } catch (error) {
@@ -268,35 +274,40 @@ export default function ProfileScreen() {
       const favoritesQuery = query(
         collection(db, "user_favorites"),
         where("userId", "==", userId),
-        where("active", "==", true)
+        where("active", "==", true),
       );
       const favoritesSnapshot = await getDocs(favoritesQuery);
-      
+
       if (favoritesSnapshot.empty) {
         setFavoriteRecipes([]);
         return;
       }
 
       const recipes: Recipe[] = [];
-      
+
       for (const favDoc of favoritesSnapshot.docs) {
         const favData = favDoc.data();
         const recipeId = favData.recipeId;
-        
+
         if (!recipeId) continue;
-        
+
         try {
           const recipeRef = doc(db, "recipes", recipeId);
           const recipeDoc = await getDoc(recipeRef);
-          
+
           if (recipeDoc.exists()) {
             const recipeData = recipeDoc.data();
             const title = recipeData.title || "Рецепт без названия";
-            const rawCategory = recipeData.mealType || recipeData.categories?.[0] || "other";
+            const rawCategory =
+              recipeData.mealType || recipeData.categories?.[0] || "other";
             const category = getCategoryName(rawCategory);
-            
-            let calories = recipeData.nutritionPer100g?.calories || recipeData.caloriesPer100g || recipeData.calories || 0;
-            
+
+            let calories =
+              recipeData.nutritionPer100g?.calories ||
+              recipeData.caloriesPer100g ||
+              recipeData.calories ||
+              0;
+
             let cookingTimeValue = 20;
             const rawTime = recipeData.prepTime || recipeData.cookingTime;
             if (rawTime) {
@@ -308,11 +319,12 @@ export default function ProfileScreen() {
               }
             }
             const cookingTime = formatMinutes(cookingTimeValue);
-            
+
             const rating = recipeData.averageRating || recipeData.rating || 0;
-            
+
             let difficulty = "Легко";
-            const rawDifficulty = recipeData.difficulty || recipeData.difficultyLevel;
+            const rawDifficulty =
+              recipeData.difficulty || recipeData.difficultyLevel;
             if (rawDifficulty) {
               const normalizedDifficulty = String(rawDifficulty).trim();
               if (normalizedDifficulty.toLowerCase().includes("легк")) {
@@ -325,29 +337,31 @@ export default function ProfileScreen() {
                 difficulty = normalizedDifficulty;
               }
             }
-            
+
             let imageUri = recipeData.imageUrl || recipeData.image;
-            
+
             recipes.push({
               id: favDoc.id,
               name: title,
               category: category,
               calories: calories,
               cookingTime: cookingTime,
-              image: imageUri ? { uri: imageUri } : require("@/assets/images/dinner-rice.png"),
+              image: imageUri
+                ? { uri: imageUri }
+                : require("@/assets/images/dinner-rice.png"),
               bookmarked: true,
               rating: rating,
               difficulty: difficulty,
               favoriteId: favDoc.id,
               originalRecipeId: recipeId,
-              item: recipeData
+              item: recipeData,
             });
           }
         } catch (recipeError) {
           console.error(`Ошибка загрузки рецепта ${recipeId}:`, recipeError);
         }
       }
-      
+
       setFavoriteRecipes(recipes);
     } catch (error) {
       console.error("Ошибка при загрузке избранных рецептов:", error);
@@ -408,7 +422,9 @@ export default function ProfileScreen() {
         };
       });
 
-      const sortedPlans = formattedPlans.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+      const sortedPlans = formattedPlans.sort(
+        (a, b) => (b.createdAt || 0) - (a.createdAt || 0),
+      );
       setSavedPlans(sortedPlans.slice(0, 3));
     } catch (error) {
       console.error("Ошибка при загрузке планов пользователя:", error);
@@ -442,8 +458,14 @@ export default function ProfileScreen() {
       if (userId && (user || auth.currentUser)) {
         const authUser = user || auth.currentUser;
 
-        if (!profileFromStorage.name || profileFromStorage.name === "Пользователь") {
-          profileFromStorage.name = authUser?.displayName || authUser?.email?.split("@")[0] || "Пользователь";
+        if (
+          !profileFromStorage.name ||
+          profileFromStorage.name === "Пользователь"
+        ) {
+          profileFromStorage.name =
+            authUser?.displayName ||
+            authUser?.email?.split("@")[0] ||
+            "Пользователь";
         }
 
         if (!profileFromStorage.email) {
@@ -462,7 +484,8 @@ export default function ProfileScreen() {
               profileFromStorage.photoURL = firestoreData.photoURL;
             }
 
-            let nutritionTypeValue: string | string[] = profileFromStorage.nutritionType;
+            let nutritionTypeValue: string | string[] =
+              profileFromStorage.nutritionType;
             if (firestoreData.dietType) {
               nutritionTypeValue = firestoreData.dietType;
             } else if (firestoreData.nutritionType) {
@@ -473,7 +496,8 @@ export default function ProfileScreen() {
               ...profileFromStorage,
               name: firestoreData.name || profileFromStorage.name,
               email: firestoreData.email || profileFromStorage.email,
-              description: firestoreData.description || profileFromStorage.description,
+              description:
+                firestoreData.description || profileFromStorage.description,
               age: firestoreData.age || profileFromStorage.age,
               height: firestoreData.height || profileFromStorage.height,
               gender: firestoreData.gender || profileFromStorage.gender,
@@ -481,16 +505,30 @@ export default function ProfileScreen() {
               goal: firestoreData.goal || profileFromStorage.goal,
               activity: firestoreData.activity || profileFromStorage.activity,
               nutritionType: nutritionTypeValue,
-              allergies: firestoreData.allergies || profileFromStorage.allergies,
-              dislikes: firestoreData.excludedIngredients || firestoreData.dislikes || profileFromStorage.dislikes,
-              isPrivate: firestoreData.isProfilePrivate ?? profileFromStorage.isPrivate,
-              cookingTimeLimit: firestoreData.cookingTimeLimit || profileFromStorage.cookingTimeLimit,
-              isProfileFilled: firestoreData.isProfileFilled ?? profileFromStorage.isProfileFilled,
-              cloudinaryPublicId: firestoreData.cloudinaryPublicId || profileFromStorage.cloudinaryPublicId,
+              allergies:
+                firestoreData.allergies || profileFromStorage.allergies,
+              dislikes:
+                firestoreData.excludedIngredients ||
+                firestoreData.dislikes ||
+                profileFromStorage.dislikes,
+              isPrivate:
+                firestoreData.isProfilePrivate ?? profileFromStorage.isPrivate,
+              cookingTimeLimit:
+                firestoreData.cookingTimeLimit ||
+                profileFromStorage.cookingTimeLimit,
+              isProfileFilled:
+                firestoreData.isProfileFilled ??
+                profileFromStorage.isProfileFilled,
+              cloudinaryPublicId:
+                firestoreData.cloudinaryPublicId ||
+                profileFromStorage.cloudinaryPublicId,
             };
           }
         } catch (firestoreError) {
-          console.error("Ошибка загрузки профиля из Firestore:", firestoreError);
+          console.error(
+            "Ошибка загрузки профиля из Firestore:",
+            firestoreError,
+          );
         }
       }
 
@@ -510,12 +548,20 @@ export default function ProfileScreen() {
     } finally {
       setLoading(false);
     }
-  }, [getCurrentUserId, loadFavoritesFromDB, loadUserPlans, loadMyRecipesCount, loadFollowStats, loadPostsCount, user]);
+  }, [
+    getCurrentUserId,
+    loadFavoritesFromDB,
+    loadUserPlans,
+    loadMyRecipesCount,
+    loadFollowStats,
+    loadPostsCount,
+    user,
+  ]);
 
   useFocusEffect(
     useCallback(() => {
       loadProfileData();
-    }, [loadProfileData])
+    }, [loadProfileData]),
   );
 
   const toggleBookmark = async (recipe: Recipe) => {
@@ -534,7 +580,9 @@ export default function ProfileScreen() {
         firebaseRecipeId = recipe.item.id;
       } else if (recipe.favoriteId) {
         const allFavorites = await favoriteService.getUserFavorites(userId);
-        const targetFavorite = allFavorites.find(fav => fav.id === recipe.favoriteId);
+        const targetFavorite = allFavorites.find(
+          (fav) => fav.id === recipe.favoriteId,
+        );
         if (targetFavorite && targetFavorite.recipeId) {
           firebaseRecipeId = targetFavorite.recipeId;
         }
@@ -545,7 +593,11 @@ export default function ProfileScreen() {
         return;
       }
 
-      await favoriteService.removeFromFavorites(firebaseRecipeId, "recipe", userId);
+      await favoriteService.removeFromFavorites(
+        firebaseRecipeId,
+        "recipe",
+        userId,
+      );
       setFavoriteRecipes((prev) => prev.filter((r) => r.id !== recipe.id));
     } catch (error) {
       console.error("Ошибка при удалении из избранного:", error);
@@ -557,7 +609,7 @@ export default function ProfileScreen() {
     const userId = getCurrentUserId();
     router.push({
       pathname: "/saved-recipes",
-      params: { userId: userId || '' }
+      params: { userId: userId || "" },
     });
   };
 
@@ -586,9 +638,12 @@ export default function ProfileScreen() {
     router.push("/following");
   };
 
-  const handleNavigation = useCallback((path: string, params?: any) => {
-    router.push(params ? { pathname: path as any, params } : path as any);
-  }, [router]);
+  const handleNavigation = useCallback(
+    (path: string, params?: any) => {
+      router.push(params ? { pathname: path as any, params } : (path as any));
+    },
+    [router],
+  );
 
   const navigateToRecipe = (recipe: Recipe) => {
     router.push({
@@ -605,10 +660,10 @@ export default function ProfileScreen() {
   const handlePlanPress = (plan: Plan) => {
     router.push({
       pathname: "/create-ration",
-      params: { 
+      params: {
         planId: plan.id,
         mode: "view",
-        source: "profile"
+        source: "profile",
       },
     });
   };
@@ -622,15 +677,18 @@ export default function ProfileScreen() {
     return "#6A9AA9";
   };
 
-  const renderMenuItem = useCallback((iconName: string, label: string, onPress: () => void) => (
-    <TouchableOpacity style={styles.menuItem} onPress={onPress}>
-      <View style={styles.menuIconContainer}>
-        <Ionicons name={iconName as any} size={24} color="#555" />
-      </View>
-      <Text style={styles.menuItemText}>{label}</Text>
-      <Ionicons name="chevron-forward" size={20} color="#ccc" />
-    </TouchableOpacity>
-  ), []);
+  const renderMenuItem = useCallback(
+    (iconName: string, label: string, onPress: () => void) => (
+      <TouchableOpacity style={styles.menuItem} onPress={onPress}>
+        <View style={styles.menuIconContainer}>
+          <Ionicons name={iconName as any} size={24} color="#555" />
+        </View>
+        <Text style={styles.menuItemText}>{label}</Text>
+        <Ionicons name="chevron-forward" size={20} color="#ccc" />
+      </TouchableOpacity>
+    ),
+    [],
+  );
 
   const AvatarComponent = () => {
     if (profileData.photoURL) {
@@ -647,43 +705,80 @@ export default function ProfileScreen() {
 
   const renderRecipeCard = (recipe: Recipe) => (
     <View key={recipe.id} style={styles.recipeColumn}>
-      <TouchableOpacity style={styles.recipeCard} onPress={() => navigateToRecipe(recipe)} activeOpacity={0.8}>
+      <TouchableOpacity
+        style={styles.recipeCard}
+        onPress={() => navigateToRecipe(recipe)}
+        activeOpacity={0.8}
+      >
         <View style={styles.imageContainer}>
-          {recipe.image && recipe.image.uri && recipe.image.uri.length > 5 && !recipe.image.uri.includes('dinner-rice.png') ? (
-            <Image source={{ uri: recipe.image.uri }} style={styles.recipeImage} resizeMode="cover" />
+          {recipe.image &&
+          recipe.image.uri &&
+          recipe.image.uri.length > 5 &&
+          !recipe.image.uri.includes("dinner-rice.png") ? (
+            <Image
+              source={{ uri: recipe.image.uri }}
+              style={styles.recipeImage}
+              resizeMode="cover"
+            />
           ) : (
             <View style={styles.recipeImagePlaceholder}>
-              <Ionicons name={getCategoryIcon(recipe.category)} size={32} color="#6A9AA9" />
+              <Ionicons
+                name={getCategoryIcon(recipe.category)}
+                size={32}
+                color="#6A9AA9"
+              />
             </View>
           )}
           <View style={styles.recipeBadges}>
             {recipe.rating && recipe.rating > 0 ? (
               <View style={styles.ratingBadge}>
                 <FontAwesome name="star" size={10} color="#FFD700" />
-                <Text style={styles.ratingText}>{recipe.rating.toFixed(1)}</Text>
+                <Text style={styles.ratingText}>
+                  {recipe.rating.toFixed(1)}
+                </Text>
               </View>
             ) : null}
-            <View style={[styles.difficultyBadge, { backgroundColor: getDifficultyColor(recipe.difficulty) }]}>
+            <View
+              style={[
+                styles.difficultyBadge,
+                { backgroundColor: getDifficultyColor(recipe.difficulty) },
+              ]}
+            >
               <Text style={styles.difficultyText}>{recipe.difficulty}</Text>
             </View>
           </View>
-          <TouchableOpacity style={styles.bookmarkButton} onPress={() => toggleBookmark(recipe)}>
+          <TouchableOpacity
+            style={styles.bookmarkButton}
+            onPress={() => toggleBookmark(recipe)}
+          >
             <Ionicons name="bookmark" size={18} color="#6A9AA9" />
           </TouchableOpacity>
         </View>
         <View style={styles.recipeContent}>
           <View style={styles.recipeInfo}>
-            <Text style={styles.recipeName} numberOfLines={2}>{recipe.name}</Text>
+            <Text style={styles.recipeName} numberOfLines={2}>
+              {recipe.name}
+            </Text>
             <Text style={styles.recipeCategory}>{recipe.category}</Text>
             <View style={styles.recipeDetails}>
               {recipe.calories && recipe.calories > 0 ? (
-                <Text style={styles.recipeCalories}>{recipe.calories} ккал</Text>
+                <Text style={styles.recipeCalories}>
+                  {recipe.calories} ккал
+                </Text>
               ) : null}
-              <MaterialIcons name="access-time" size={12} color="#6A9AA9" style={styles.timeIcon} />
+              <MaterialIcons
+                name="access-time"
+                size={12}
+                color="#6A9AA9"
+                style={styles.timeIcon}
+              />
               <Text style={styles.recipeTime}>{recipe.cookingTime}</Text>
             </View>
           </View>
-          <TouchableOpacity style={styles.viewButton} onPress={() => navigateToRecipe(recipe)}>
+          <TouchableOpacity
+            style={styles.viewButton}
+            onPress={() => navigateToRecipe(recipe)}
+          >
             <Text style={styles.viewButtonText}>Посмотреть</Text>
           </TouchableOpacity>
         </View>
@@ -692,13 +787,21 @@ export default function ProfileScreen() {
   );
 
   const renderPlanCard = (plan: Plan) => (
-    <TouchableOpacity key={plan.id} style={styles.planCard} onPress={() => handlePlanPress(plan)}>
+    <TouchableOpacity
+      key={plan.id}
+      style={styles.planCard}
+      onPress={() => handlePlanPress(plan)}
+    >
       <View style={styles.planIconContainer}>
         <Ionicons name="calendar-outline" size={32} color="#6A9AA9" />
       </View>
       <View style={styles.planContent}>
-        <Text style={styles.planName} numberOfLines={1}>{plan.name}</Text>
-        <Text style={styles.planDescription} numberOfLines={2}>{plan.description}</Text>
+        <Text style={styles.planName} numberOfLines={1}>
+          {plan.name}
+        </Text>
+        <Text style={styles.planDescription} numberOfLines={2}>
+          {plan.description}
+        </Text>
         <View style={styles.planDetails}>
           <View style={styles.planDetail}>
             <Ionicons name="flame-outline" size={14} color="#FF6B6B" />
@@ -711,7 +814,10 @@ export default function ProfileScreen() {
         </View>
         <View style={styles.planFooter}>
           <Text style={styles.planDate}>Создан: {plan.savedDate}</Text>
-          <TouchableOpacity style={styles.viewPlanButton} onPress={() => handlePlanPress(plan)}>
+          <TouchableOpacity
+            style={styles.viewPlanButton}
+            onPress={() => handlePlanPress(plan)}
+          >
             <Text style={styles.viewPlanButtonText}>Просмотр</Text>
           </TouchableOpacity>
         </View>
@@ -720,25 +826,31 @@ export default function ProfileScreen() {
   );
 
   const renderDietType = (item: any) => {
-    const dietTypeArray = Array.isArray(profileData.nutritionType) 
-      ? profileData.nutritionType 
+    const dietTypeArray = Array.isArray(profileData.nutritionType)
+      ? profileData.nutritionType
       : [profileData.nutritionType];
-    
+
     const displayValue = formatDietType(profileData.nutritionType);
     const fullValue = getFullDietType(profileData.nutritionType);
     const isLong = fullValue.length > 30;
-    
+
     return (
       <View key={item.label} style={styles.preferenceRow}>
         <Text style={styles.preferenceLabel}>{item.label}</Text>
         <View style={styles.activityContainer}>
-          <Text style={styles.preferenceValue} numberOfLines={1}>{displayValue}</Text>
+          <Text style={styles.preferenceValue} numberOfLines={1}>
+            {displayValue}
+          </Text>
           {isLong && (
-            <TouchableOpacity 
-              style={styles.infoButton} 
+            <TouchableOpacity
+              style={styles.infoButton}
               onPress={() => Alert.alert("Тип питания", fullValue)}
             >
-              <Ionicons name="information-circle-outline" size={16} color="#6A9AA9" />
+              <Ionicons
+                name="information-circle-outline"
+                size={16}
+                color="#6A9AA9"
+              />
             </TouchableOpacity>
           )}
         </View>
@@ -752,10 +864,19 @@ export default function ProfileScreen() {
       <View key={item.label} style={styles.preferenceRow}>
         <Text style={styles.preferenceLabel}>{item.label}</Text>
         <View style={styles.activityContainer}>
-          <Text style={styles.preferenceValue} numberOfLines={1}>{item.value}</Text>
+          <Text style={styles.preferenceValue} numberOfLines={1}>
+            {item.value}
+          </Text>
           {showFullActivity && (
-            <TouchableOpacity style={styles.infoButton} onPress={() => Alert.alert("Уровень активности", item.fullValue)}>
-              <Ionicons name="information-circle-outline" size={16} color="#6A9AA9" />
+            <TouchableOpacity
+              style={styles.infoButton}
+              onPress={() => Alert.alert("Уровень активности", item.fullValue)}
+            >
+              <Ionicons
+                name="information-circle-outline"
+                size={16}
+                color="#6A9AA9"
+              />
             </TouchableOpacity>
           )}
         </View>
@@ -763,33 +884,77 @@ export default function ProfileScreen() {
     );
   };
 
-  const primaryInfo = useMemo(() => [
-    { label: "Возраст", value: profileData.age ? `${profileData.age} лет` : "-" },
-    { label: "Рост", value: profileData.height ? `${profileData.height} см` : "-" },
-    { label: "Вес", value: profileData.weight ? `${profileData.weight} кг` : "-" },
-    { label: "Пол", value: profileData.gender || "-" },
-  ], [profileData.age, profileData.height, profileData.weight, profileData.gender]);
+  const primaryInfo = useMemo(
+    () => [
+      {
+        label: "Возраст",
+        value: profileData.age ? `${profileData.age} лет` : "-",
+      },
+      {
+        label: "Рост",
+        value: profileData.height ? `${profileData.height} см` : "-",
+      },
+      {
+        label: "Вес",
+        value: profileData.weight ? `${profileData.weight} кг` : "-",
+      },
+      { label: "Пол", value: profileData.gender || "-" },
+    ],
+    [
+      profileData.age,
+      profileData.height,
+      profileData.weight,
+      profileData.gender,
+    ],
+  );
 
-  const preferences = useMemo(() => [
-    { label: "Цель", value: profileData.goal || "-" },
-    { label: "Активность", value: formatActivity(profileData.activity) || "-", fullValue: profileData.activity },
-    { label: "Тип питания", value: formatDietType(profileData.nutritionType), fullValue: getFullDietType(profileData.nutritionType) },
-    { label: "Аллергии", value: profileData.allergies || "Нет" },
-    { label: "Нелюбимые продукты", value: profileData.dislikes || "Нет" },
-  ], [profileData.goal, profileData.activity, profileData.nutritionType, profileData.allergies, profileData.dislikes]);
+  const preferences = useMemo(
+    () => [
+      { label: "Цель", value: profileData.goal || "-" },
+      {
+        label: "Активность",
+        value: formatActivity(profileData.activity) || "-",
+        fullValue: profileData.activity,
+      },
+      {
+        label: "Тип питания",
+        value: formatDietType(profileData.nutritionType),
+        fullValue: getFullDietType(profileData.nutritionType),
+      },
+      { label: "Аллергии", value: profileData.allergies || "Нет" },
+      { label: "Нелюбимые продукты", value: profileData.dislikes || "Нет" },
+    ],
+    [
+      profileData.goal,
+      profileData.activity,
+      profileData.nutritionType,
+      profileData.allergies,
+      profileData.dislikes,
+    ],
+  );
 
   const userName = profileData.name || "Пользователь";
-  const profileTypeLabel = profileData.isPrivate ? "Приватный профиль" : "Публичный профиль";
+  const profileTypeLabel = profileData.isPrivate
+    ? "Приватный профиль"
+    : "Публичный профиль";
   const profileTypeDescription = profileData.isPrivate
     ? "Ваш профиль и данные видны только вам."
     : "Другие пользователи могут просматривать ваши данные и рекомендации.";
 
   const renderProfileTab = () => (
-    <ScrollView style={styles.content} contentContainerStyle={styles.contentContainer} showsVerticalScrollIndicator={false}>
+    <ScrollView
+      style={styles.content}
+      contentContainerStyle={styles.contentContainer}
+      showsVerticalScrollIndicator={false}
+    >
       <View style={styles.profileCard}>
-        <View style={styles.avatar}><AvatarComponent /></View>
+        <View style={styles.avatar}>
+          <AvatarComponent />
+        </View>
         <Text style={styles.nameText}>{userName}</Text>
-        <Text style={styles.descriptionText}>{profileData.description || "Вы еще не рассказали о себе"}</Text>
+        <Text style={styles.descriptionText}>
+          {profileData.description || "Вы еще не рассказали о себе"}
+        </Text>
         <TouchableOpacity style={styles.editButton} onPress={handleEdit}>
           <Ionicons name="create-outline" size={18} color="#000" />
           <Text style={styles.editButtonText}>Редактировать</Text>
@@ -800,20 +965,44 @@ export default function ProfileScreen() {
         <Text style={styles.sectionTitleProfile}>Тип профиля</Text>
         <View style={styles.profileTypeCard}>
           <View style={styles.profileTypeHeader}>
-            <Ionicons name={profileData.isPrivate ? "lock-closed-outline" : "earth-outline"} size={22} color="#555" />
+            <Ionicons
+              name={
+                profileData.isPrivate ? "lock-closed-outline" : "earth-outline"
+              }
+              size={22}
+              color="#555"
+            />
             <Text style={styles.profileTypeLabel}>{profileTypeLabel}</Text>
           </View>
-          <Text style={styles.profileTypeDescription}>{profileTypeDescription}</Text>
+          <Text style={styles.profileTypeDescription}>
+            {profileTypeDescription}
+          </Text>
         </View>
       </View>
 
       <View style={styles.section}>
         <Text style={styles.sectionTitleProfile}>Сообщество</Text>
         <View style={styles.communityMenu}>
-          {renderMenuItem("restaurant-outline", `Мои рецепты (${myRecipesCount})`, navigateToMyRecipes)}
-          {renderMenuItem("earth-outline", `Публикации (${postsCount})`, navigateToMyPosts)}
-          {renderMenuItem("person-add-outline", `Подписки (${followStats.followingCount})`, navigateToFollowing)}
-          {renderMenuItem("people-outline", `Подписчики (${followStats.followersCount})`, navigateToFollowers)}
+          {renderMenuItem(
+            "restaurant-outline",
+            `Мои рецепты (${myRecipesCount})`,
+            navigateToMyRecipes,
+          )}
+          {renderMenuItem(
+            "earth-outline",
+            `Публикации (${postsCount})`,
+            navigateToMyPosts,
+          )}
+          {renderMenuItem(
+            "person-add-outline",
+            `Подписки (${followStats.followingCount})`,
+            navigateToFollowing,
+          )}
+          {renderMenuItem(
+            "people-outline",
+            `Подписчики (${followStats.followersCount})`,
+            navigateToFollowers,
+          )}
         </View>
       </View>
 
@@ -836,9 +1025,17 @@ export default function ProfileScreen() {
             if (item.label === "Активность") return renderActivity(item);
             if (item.label === "Тип питания") return renderDietType(item);
             return (
-              <View key={item.label} style={[styles.preferenceRow, index === preferences.length - 1 && styles.preferenceRowLast]}>
+              <View
+                key={item.label}
+                style={[
+                  styles.preferenceRow,
+                  index === preferences.length - 1 && styles.preferenceRowLast,
+                ]}
+              >
                 <Text style={styles.preferenceLabel}>{item.label}</Text>
-                <Text style={styles.preferenceValue} numberOfLines={1}>{item.value}</Text>
+                <Text style={styles.preferenceValue} numberOfLines={1}>
+                  {item.value}
+                </Text>
               </View>
             );
           })}
@@ -848,7 +1045,11 @@ export default function ProfileScreen() {
   );
 
   const renderSavedTab = () => (
-    <ScrollView style={styles.savedContainer} contentContainerStyle={styles.savedContentContainer} showsVerticalScrollIndicator={false}>
+    <ScrollView
+      style={styles.savedContainer}
+      contentContainerStyle={styles.savedContentContainer}
+      showsVerticalScrollIndicator={false}
+    >
       {favoritesLoading || plansLoading ? (
         <View style={styles.loaderContainer}>
           <ActivityIndicator size="large" color="#6A9AA9" />
@@ -857,28 +1058,44 @@ export default function ProfileScreen() {
       ) : (
         <>
           <View style={styles.section}>
-            <TouchableOpacity style={styles.sectionHeader} onPress={navigateToAllRecipes}>
-              <Text style={styles.sectionTitle}>Рецепты ({favoriteRecipes.length})</Text>
+            <TouchableOpacity
+              style={styles.sectionHeader}
+              onPress={navigateToAllRecipes}
+            >
+              <Text style={styles.sectionTitle}>
+                Рецепты ({favoriteRecipes.length})
+              </Text>
               <Ionicons name="chevron-forward" size={20} color="#000" />
             </TouchableOpacity>
             {favoriteRecipes.length === 0 ? (
               <View style={styles.emptyState}>
                 <Ionicons name="bookmark-outline" size={48} color="#C2DAE2" />
                 <Text style={styles.emptyTitle}>В избранном пока пусто</Text>
-                <Text style={styles.emptyText}>Сохраняйте рецепты, нажимая на значок закладки</Text>
+                <Text style={styles.emptyText}>
+                  Сохраняйте рецепты, нажимая на значок закладки
+                </Text>
               </View>
             ) : (
               <View style={styles.recipesGrid}>
-                {favoriteRecipes.slice(0, 4).map((recipe) => renderRecipeCard(recipe))}
+                {favoriteRecipes
+                  .slice(0, 4)
+                  .map((recipe) => renderRecipeCard(recipe))}
               </View>
             )}
           </View>
 
           <View style={styles.section}>
-            <TouchableOpacity style={styles.sectionHeader} onPress={navigateToAllPlans}>
+            <TouchableOpacity
+              style={styles.sectionHeader}
+              onPress={navigateToAllPlans}
+            >
               <View style={styles.plansHeader}>
-                <Text style={styles.sectionTitle}>Последние рационы ({savedPlans.length})</Text>
-                <Text style={styles.subtitle}>Показаны последние 3 созданных плана</Text>
+                <Text style={styles.sectionTitle}>
+                  Последние рационы ({savedPlans.length})
+                </Text>
+                <Text style={styles.subtitle}>
+                  Показаны последние 3 созданных плана
+                </Text>
               </View>
               <Ionicons name="chevron-forward" size={20} color="#000" />
             </TouchableOpacity>
@@ -886,8 +1103,13 @@ export default function ProfileScreen() {
               <View style={styles.emptyState}>
                 <Ionicons name="calendar-outline" size={48} color="#C2DAE2" />
                 <Text style={styles.emptyTitle}>Нет созданных планов</Text>
-                <Text style={styles.emptyText}>Создайте свой первый план питания!</Text>
-                <TouchableOpacity style={styles.createPlanButton} onPress={() => router.push("/create-ration")}>
+                <Text style={styles.emptyText}>
+                  Создайте свой первый план питания!
+                </Text>
+                <TouchableOpacity
+                  style={styles.createPlanButton}
+                  onPress={() => router.push("/create-ration")}
+                >
                   <Text style={styles.createPlanButtonText}>Создать план</Text>
                 </TouchableOpacity>
               </View>
@@ -914,13 +1136,41 @@ export default function ProfileScreen() {
   return (
     <View style={styles.container}>
       <View style={styles.tabsContainer}>
-        <TouchableOpacity style={[styles.tab, activeTab === "profile" && styles.tabActive]} onPress={() => setActiveTab("profile")}>
-          <Ionicons name="person-outline" size={20} color={activeTab === "profile" ? "#6A9AA9" : "#666"} />
-          <Text style={[styles.tabText, activeTab === "profile" && styles.tabTextActive]}>Профиль</Text>
+        <TouchableOpacity
+          style={[styles.tab, activeTab === "profile" && styles.tabActive]}
+          onPress={() => setActiveTab("profile")}
+        >
+          <Ionicons
+            name="person-outline"
+            size={20}
+            color={activeTab === "profile" ? "#6A9AA9" : "#666"}
+          />
+          <Text
+            style={[
+              styles.tabText,
+              activeTab === "profile" && styles.tabTextActive,
+            ]}
+          >
+            Профиль
+          </Text>
         </TouchableOpacity>
-        <TouchableOpacity style={[styles.tab, activeTab === "saved" && styles.tabActive]} onPress={() => setActiveTab("saved")}>
-          <Ionicons name="bookmark-outline" size={20} color={activeTab === "saved" ? "#6A9AA9" : "#666"} />
-          <Text style={[styles.tabText, activeTab === "saved" && styles.tabTextActive]}>Сохраненные</Text>
+        <TouchableOpacity
+          style={[styles.tab, activeTab === "saved" && styles.tabActive]}
+          onPress={() => setActiveTab("saved")}
+        >
+          <Ionicons
+            name="bookmark-outline"
+            size={20}
+            color={activeTab === "saved" ? "#6A9AA9" : "#666"}
+          />
+          <Text
+            style={[
+              styles.tabText,
+              activeTab === "saved" && styles.tabTextActive,
+            ]}
+          >
+            Сохраненные
+          </Text>
         </TouchableOpacity>
       </View>
       {activeTab === "profile" && renderProfileTab()}
@@ -931,87 +1181,471 @@ export default function ProfileScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#FFFFFF" },
-  tabsContainer: { flexDirection: "row", backgroundColor: "#fff", borderBottomWidth: 1, borderBottomColor: "#E5E7EB" },
-  tab: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", paddingVertical: 16, gap: 8 },
+  tabsContainer: {
+    flexDirection: "row",
+    backgroundColor: "#fff",
+    borderBottomWidth: 1,
+    borderBottomColor: "#E5E7EB",
+  },
+  tab: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 16,
+    gap: 8,
+  },
   tabActive: { borderBottomWidth: 2, borderBottomColor: "#6A9AA9" },
-  tabText: { fontSize: 14, color: "#666", fontFamily: "Playfair Display Regular", fontWeight: "500" },
+  tabText: {
+    fontSize: 14,
+    color: "#666",
+    fontFamily: "Playfair Display Regular",
+    fontWeight: "500",
+  },
   tabTextActive: { color: "#6A9AA9", fontWeight: "600" },
   savedContainer: { flex: 1, paddingHorizontal: 16 },
   savedContentContainer: { paddingVertical: 20 },
   section: { marginBottom: 24 },
-  sectionHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 16, paddingHorizontal: 4 },
-  sectionTitle: { fontSize: 20, color: "#212529", fontFamily: "Playfair Display Bold" },
+  sectionHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 16,
+    paddingHorizontal: 4,
+  },
+  sectionTitle: {
+    fontSize: 20,
+    color: "#212529",
+    fontFamily: "Playfair Display Bold",
+  },
   plansHeader: { flex: 1 },
-  subtitle: { fontSize: 12, color: "#6A9AA9", fontFamily: "Playfair Display Regular", marginTop: 2 },
-  recipesGrid: { flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between" },
+  subtitle: {
+    fontSize: 12,
+    color: "#6A9AA9",
+    fontFamily: "Playfair Display Regular",
+    marginTop: 2,
+  },
+  recipesGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "space-between",
+  },
   recipeColumn: { width: CARD_WIDTH, marginBottom: 16 },
-  recipeCard: { backgroundColor: "#C2DAE2", borderRadius: 16, overflow: "hidden", shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 3.84, elevation: 5, height: 280 },
-  imageContainer: { position: "relative", height: 120, backgroundColor: "#F8F8F8", justifyContent: "center", alignItems: "center" },
+  recipeCard: {
+    backgroundColor: "#C2DAE2",
+    borderRadius: 16,
+    overflow: "hidden",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 3.84,
+    elevation: 5,
+    height: 280,
+  },
+  imageContainer: {
+    position: "relative",
+    height: 120,
+    backgroundColor: "#F8F8F8",
+    justifyContent: "center",
+    alignItems: "center",
+  },
   recipeImage: { width: "100%", height: "100%" },
-  recipeImagePlaceholder: { width: "100%", height: "100%", backgroundColor: "#E5F0F5", justifyContent: "center", alignItems: "center" },
-  recipeBadges: { position: "absolute", top: 8, left: 8, flexDirection: "column", gap: 4 },
-  ratingBadge: { flexDirection: "row", alignItems: "center", backgroundColor: "rgba(255, 255, 255, 0.9)", paddingHorizontal: 6, paddingVertical: 3, borderRadius: 10 },
-  ratingText: { fontSize: 10, fontWeight: "bold", color: "#000000", fontFamily: "Playfair Display Regular", marginLeft: 2 },
-  difficultyBadge: { paddingHorizontal: 6, paddingVertical: 3, borderRadius: 10 },
-  difficultyText: { fontSize: 9, fontWeight: "bold", color: "#FFFFFF", fontFamily: "Playfair Display Regular" },
-  bookmarkButton: { position: "absolute", top: 8, right: 8, width: 32, height: 32, borderRadius: 16, backgroundColor: "rgba(255, 255, 255, 0.9)", alignItems: "center", justifyContent: "center", shadowColor: "#000", shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.2, shadowRadius: 1.41, elevation: 2 },
+  recipeImagePlaceholder: {
+    width: "100%",
+    height: "100%",
+    backgroundColor: "#E5F0F5",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  recipeBadges: {
+    position: "absolute",
+    top: 8,
+    left: 8,
+    flexDirection: "column",
+    gap: 4,
+  },
+  ratingBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(255, 255, 255, 0.9)",
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: 10,
+  },
+  ratingText: {
+    fontSize: 10,
+    fontWeight: "bold",
+    color: "#000000",
+    fontFamily: "Playfair Display Regular",
+    marginLeft: 2,
+  },
+  difficultyBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: 10,
+  },
+  difficultyText: {
+    fontSize: 9,
+    fontWeight: "bold",
+    color: "#FFFFFF",
+    fontFamily: "Playfair Display Regular",
+  },
+  bookmarkButton: {
+    position: "absolute",
+    top: 8,
+    right: 8,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: "rgba(255, 255, 255, 0.9)",
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.2,
+    shadowRadius: 1.41,
+    elevation: 2,
+  },
   recipeContent: { padding: 12, flex: 1, justifyContent: "space-between" },
   recipeInfo: { flex: 1, marginBottom: 8 },
-  recipeName: { fontSize: 14, fontWeight: "600", color: "#212529", marginBottom: 4, fontFamily: "Playfair Display Regular", lineHeight: 18, minHeight: 36 },
-  recipeCategory: { fontSize: 11, color: "#6A9AA9", fontFamily: "Playfair Display Regular", fontStyle: "italic", marginBottom: 6 },
-  recipeDetails: { flexDirection: "row", alignItems: "center", flexWrap: "wrap" },
-  recipeCalories: { fontSize: 12, color: "#000000", fontWeight: "normal", fontFamily: "Playfair Display Bold", marginRight: 8 },
+  recipeName: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#212529",
+    marginBottom: 4,
+    fontFamily: "Playfair Display Regular",
+    lineHeight: 18,
+    minHeight: 36,
+  },
+  recipeCategory: {
+    fontSize: 11,
+    color: "#6A9AA9",
+    fontFamily: "Playfair Display Regular",
+    fontStyle: "italic",
+    marginBottom: 6,
+  },
+  recipeDetails: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+  },
+  recipeCalories: {
+    fontSize: 12,
+    color: "#000000",
+    fontWeight: "normal",
+    fontFamily: "Playfair Display Bold",
+    marginRight: 8,
+  },
   timeIcon: { marginRight: 4 },
-  recipeTime: { fontSize: 12, color: "#6C757D", fontFamily: "Playfair Display Regular" },
-  viewButton: { backgroundColor: "#9BDF11", paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, alignItems: "center", justifyContent: "center", minHeight: 36, marginTop: 8 },
-  viewButtonText: { color: "#000000ff", fontSize: 12, fontWeight: "normal", fontFamily: "Playfair Display Regular" },
+  recipeTime: {
+    fontSize: 12,
+    color: "#6C757D",
+    fontFamily: "Playfair Display Regular",
+  },
+  viewButton: {
+    backgroundColor: "#9BDF11",
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+    alignItems: "center",
+    justifyContent: "center",
+    minHeight: 36,
+    marginTop: 8,
+  },
+  viewButtonText: {
+    color: "#000000ff",
+    fontSize: 12,
+    fontWeight: "normal",
+    fontFamily: "Playfair Display Regular",
+  },
   plansList: { gap: 16 },
-  planCard: { backgroundColor: "#C2DAE2", borderRadius: 16, overflow: "hidden", flexDirection: "row", shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 3.84, elevation: 5, minHeight: 140 },
-  planIconContainer: { width: 70, backgroundColor: "#C2DAE2", justifyContent: "center", alignItems: "center", padding: 12 },
+  planCard: {
+    backgroundColor: "#C2DAE2",
+    borderRadius: 16,
+    overflow: "hidden",
+    flexDirection: "row",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 3.84,
+    elevation: 5,
+    minHeight: 140,
+  },
+  planIconContainer: {
+    width: 70,
+    backgroundColor: "#C2DAE2",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 12,
+  },
   planContent: { flex: 1, padding: 12, justifyContent: "space-between" },
-  planName: { fontSize: 16, fontWeight: "600", color: "#212529", fontFamily: "Playfair Display Bold", marginBottom: 4 },
-  planDescription: { fontSize: 13, color: "#6A9AA9", fontFamily: "Playfair Display Regular", marginBottom: 8, lineHeight: 16 },
-  planDetails: { flexDirection: "row", alignItems: "center", gap: 20, marginBottom: 8 },
+  planName: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: "#212529",
+    fontFamily: "Playfair Display Bold",
+    marginBottom: 4,
+  },
+  planDescription: {
+    fontSize: 13,
+    color: "#6A9AA9",
+    fontFamily: "Playfair Display Regular",
+    marginBottom: 8,
+    lineHeight: 16,
+  },
+  planDetails: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 20,
+    marginBottom: 8,
+  },
   planDetail: { flexDirection: "row", alignItems: "center", gap: 6 },
-  planDetailText: { fontSize: 13, color: "#000000", fontFamily: "Playfair Display Regular", fontWeight: "500" },
-  planFooter: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-  planDate: { fontSize: 11, color: "#6C757D", fontFamily: "Playfair Display Regular" },
-  viewPlanButton: { backgroundColor: "#9BDF11", paddingHorizontal: 14, paddingVertical: 7, borderRadius: 15 },
-  viewPlanButtonText: { color: "#000000", fontSize: 12, fontWeight: "600", fontFamily: "Playfair Display Regular" },
-  createPlanButton: { backgroundColor: "#6A9AA9", paddingHorizontal: 20, paddingVertical: 12, borderRadius: 25, marginTop: 16 },
-  createPlanButtonText: { color: "#FFFFFF", fontSize: 14, fontWeight: "600", fontFamily: "Playfair Display Regular" },
-  emptyState: { alignItems: "center", justifyContent: "center", paddingVertical: 40, backgroundColor: "#fff", borderRadius: 12, padding: 20, borderWidth: 1, borderColor: "#E5E7EB" },
-  emptyTitle: { fontSize: 16, color: "#212529", fontFamily: "Playfair Display Regular", marginTop: 12, marginBottom: 6, textAlign: "center" },
-  emptyText: { fontSize: 14, color: "#6C757D", fontFamily: "Playfair Display Regular", textAlign: "center", lineHeight: 18 },
+  planDetailText: {
+    fontSize: 13,
+    color: "#000000",
+    fontFamily: "Playfair Display Regular",
+    fontWeight: "500",
+  },
+  planFooter: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  planDate: {
+    fontSize: 11,
+    color: "#6C757D",
+    fontFamily: "Playfair Display Regular",
+  },
+  viewPlanButton: {
+    backgroundColor: "#9BDF11",
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: 15,
+  },
+  viewPlanButtonText: {
+    color: "#000000",
+    fontSize: 12,
+    fontWeight: "600",
+    fontFamily: "Playfair Display Regular",
+  },
+  createPlanButton: {
+    backgroundColor: "#6A9AA9",
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 25,
+    marginTop: 16,
+  },
+  createPlanButtonText: {
+    color: "#FFFFFF",
+    fontSize: 14,
+    fontWeight: "600",
+    fontFamily: "Playfair Display Regular",
+  },
+  emptyState: {
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 40,
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+  },
+  emptyTitle: {
+    fontSize: 16,
+    color: "#212529",
+    fontFamily: "Playfair Display Regular",
+    marginTop: 12,
+    marginBottom: 6,
+    textAlign: "center",
+  },
+  emptyText: {
+    fontSize: 14,
+    color: "#6C757D",
+    fontFamily: "Playfair Display Regular",
+    textAlign: "center",
+    lineHeight: 18,
+  },
   content: { flex: 1 },
   contentContainer: { paddingBottom: 30, paddingHorizontal: 16 },
-  loaderContainer: { flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: "#FFFFFF" },
-  loaderText: { marginTop: 10, fontSize: 16, color: "#6C757D", fontFamily: "Playfair Display Regular" },
-  profileCard: { backgroundColor: "#fff", borderRadius: 16, padding: 20, alignItems: "center", marginBottom: 20, marginTop: 20, shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 3.84, elevation: 5 },
-  avatar: { width: 80, height: 80, borderRadius: 40, backgroundColor: "#E5F0F5", justifyContent: "center", alignItems: "center", marginBottom: 10, overflow: "hidden", borderWidth: 2, borderColor: "#9BDF11" },
+  loaderContainer: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "#FFFFFF",
+  },
+  loaderText: {
+    marginTop: 10,
+    fontSize: 16,
+    color: "#6C757D",
+    fontFamily: "Playfair Display Regular",
+  },
+  profileCard: {
+    backgroundColor: "#fff",
+    borderRadius: 16,
+    padding: 20,
+    alignItems: "center",
+    marginBottom: 20,
+    marginTop: 20,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 3.84,
+    elevation: 5,
+  },
+  avatar: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: "#E5F0F5",
+    justifyContent: "center",
+    alignItems: "center",
+    marginBottom: 10,
+    overflow: "hidden",
+    borderWidth: 2,
+    borderColor: "#9BDF11",
+  },
   avatarImage: { width: "100%", height: "100%" },
-  nameText: { fontSize: 22, color: "#212529", fontFamily: "Playfair Display Bold", marginBottom: 4 },
-  descriptionText: { fontSize: 14, color: "#6C757D", textAlign: "center", marginBottom: 15, fontFamily: "Playfair Display Regular" },
-  editButton: { flexDirection: "row", alignItems: "center", backgroundColor: "#9BDF11", paddingHorizontal: 15, paddingVertical: 8, borderRadius: 20, gap: 5 },
-  editButtonText: { fontSize: 14, color: "#000", fontFamily: "Playfair Display Regular" },
-  sectionTitleProfile: { fontSize: 18, color: "#212529", marginBottom: 10, fontFamily: "Playfair Display Bold" },
-  profileTypeCard: { backgroundColor: "#fff", borderRadius: 12, padding: 15, borderWidth: 1, borderColor: "#E5E7EB" },
-  profileTypeHeader: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 5 },
-  profileTypeLabel: { fontSize: 16, color: "#212529", fontFamily: "Playfair Display Regular" },
-  profileTypeDescription: { fontSize: 13, color: "#6C757D", fontFamily: "Playfair Display Regular" },
-  communityMenu: { backgroundColor: "#fff", borderRadius: 12, overflow: "hidden", borderWidth: 1, borderColor: "#E5E7EB" },
-  menuItem: { flexDirection: "row", alignItems: "center", paddingVertical: 15, paddingHorizontal: 15, borderBottomWidth: 1, borderBottomColor: "#F5F7F9" },
-  menuItemText: { flex: 1, fontSize: 15, color: "#212529", fontFamily: "Playfair Display Regular" },
+  nameText: {
+    fontSize: 22,
+    color: "#212529",
+    fontFamily: "Playfair Display Bold",
+    marginBottom: 4,
+  },
+  descriptionText: {
+    fontSize: 14,
+    color: "#6C757D",
+    textAlign: "center",
+    marginBottom: 15,
+    fontFamily: "Playfair Display Regular",
+  },
+  editButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#9BDF11",
+    paddingHorizontal: 15,
+    paddingVertical: 8,
+    borderRadius: 20,
+    gap: 5,
+  },
+  editButtonText: {
+    fontSize: 14,
+    color: "#000",
+    fontFamily: "Playfair Display Regular",
+  },
+  sectionTitleProfile: {
+    fontSize: 18,
+    color: "#212529",
+    marginBottom: 10,
+    fontFamily: "Playfair Display Bold",
+  },
+  profileTypeCard: {
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    padding: 15,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+  },
+  profileTypeHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 5,
+  },
+  profileTypeLabel: {
+    fontSize: 16,
+    color: "#212529",
+    fontFamily: "Playfair Display Regular",
+  },
+  profileTypeDescription: {
+    fontSize: 13,
+    color: "#6C757D",
+    fontFamily: "Playfair Display Regular",
+  },
+  communityMenu: {
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+  },
+  menuItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 15,
+    paddingHorizontal: 15,
+    borderBottomWidth: 1,
+    borderBottomColor: "#F5F7F9",
+  },
+  menuItemText: {
+    flex: 1,
+    fontSize: 15,
+    color: "#212529",
+    fontFamily: "Playfair Display Regular",
+  },
   menuIconContainer: { marginRight: 15 },
-  infoGrid: { flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between", marginBottom: 10 },
-  infoCard: { width: "48%", backgroundColor: "#fff", borderRadius: 12, padding: 15, marginBottom: 10, borderWidth: 1, borderColor: "#E5E7EB" },
-  infoLabel: { fontSize: 12, color: "#6C757D", fontFamily: "Playfair Display Regular", marginBottom: 4 },
-  infoValue: { fontSize: 18, color: "#212529", fontFamily: "Playfair Display Bold" },
-  preferences: { backgroundColor: "#fff", borderRadius: 12, overflow: "hidden", borderWidth: 1, borderColor: "#E5E7EB" },
-  preferenceRow: { flexDirection: "row", justifyContent: "space-between", paddingVertical: 12, paddingHorizontal: 15, borderBottomWidth: 1, borderBottomColor: "#F5F7F9", alignItems: "center" },
+  infoGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "space-between",
+    marginBottom: 10,
+  },
+  infoCard: {
+    width: "48%",
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    padding: 15,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+  },
+  infoLabel: {
+    fontSize: 12,
+    color: "#6C757D",
+    fontFamily: "Playfair Display Regular",
+    marginBottom: 4,
+  },
+  infoValue: {
+    fontSize: 18,
+    color: "#212529",
+    fontFamily: "Playfair Display Bold",
+  },
+  preferences: {
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+  },
+  preferenceRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    paddingVertical: 12,
+    paddingHorizontal: 15,
+    borderBottomWidth: 1,
+    borderBottomColor: "#F5F7F9",
+    alignItems: "center",
+  },
   preferenceRowLast: { borderBottomWidth: 0 },
-  preferenceLabel: { fontSize: 15, color: "#212529", fontFamily: "Playfair Display Regular", flex: 1 },
-  preferenceValue: { fontSize: 15, color: "#212529", fontFamily: "Playfair Display Regular", flex: 2, textAlign: "right", marginLeft: 8 },
-  activityContainer: { flexDirection: "row", alignItems: "center", flex: 2, justifyContent: "flex-end" },
+  preferenceLabel: {
+    fontSize: 15,
+    color: "#212529",
+    fontFamily: "Playfair Display Regular",
+    flex: 1,
+  },
+  preferenceValue: {
+    fontSize: 15,
+    color: "#212529",
+    fontFamily: "Playfair Display Regular",
+    flex: 2,
+    textAlign: "right",
+    marginLeft: 8,
+  },
+  activityContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    flex: 2,
+    justifyContent: "flex-end",
+  },
   infoButton: { marginLeft: 8, padding: 2 },
 });
